@@ -97,6 +97,28 @@ sqlite.exec(`
   );
 `);
 sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS briefs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL,
+    client_name TEXT NOT NULL,
+    client_avatar TEXT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    location TEXT NOT NULL,
+    remote INTEGER DEFAULT 0,
+    start_date TEXT,
+    duration TEXT,
+    budget_min REAL,
+    budget_max REAL,
+    budget_type TEXT NOT NULL DEFAULT 'project',
+    requirements TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    application_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+sqlite.exec(`
   CREATE TABLE IF NOT EXISTS posts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
