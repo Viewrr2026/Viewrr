@@ -98,19 +98,29 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     setEquipment(e => e.includes(id) ? e.filter(x => x !== id) : [...e, id]);
   }
 
-  // Generate + "send" a verification code
-  function sendVerificationCode() {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    setVerifyCode(code);
+  // Send verification code via Resend email API
+  async function sendVerificationCode() {
     setCodeInput(["", "", "", "", "", ""]);
     setCodeError(false);
     setResendCooldown(30);
-    // In production this would call an email API. For demo, show in toast.
-    toast({
-      title: "Verification code sent",
-      description: `A 6-digit code has been sent to ${clientEmail}. (Demo code: ${code})`,
-      duration: 8000,
-    });
+    try {
+      const res = await fetch("/api/auth/send-verification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: clientEmail }),
+      });
+      if (!res.ok) throw new Error("Failed to send");
+      toast({
+        title: "Verification code sent",
+        description: `A 6-digit code has been sent to ${clientEmail}. Please check your inbox.`,
+      });
+    } catch {
+      toast({
+        title: "Couldn't send code",
+        description: "Please check your email address and try again.",
+        variant: "destructive",
+      });
+    }
   }
 
   async function proceedToVerify() {
@@ -119,7 +129,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
       return;
     }
     setStep("client-verify");
-    sendVerificationCode();
+    await sendVerificationCode();
     // Focus first input after render
     setTimeout(() => inputRefs.current[0]?.focus(), 100);
   }
@@ -151,22 +161,47 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     inputRefs.current[Math.min(paste.length, 5)]?.focus();
   }
 
-  function verifyAndFinish() {
+  async function verifyAndFinish() {
     const entered = codeInput.join("");
     if (entered.length < 6) {
       setCodeError(true);
       toast({ title: "Please enter the full 6-digit code", variant: "destructive" });
       return;
     }
-    if (entered !== verifyCode) {
-      setCodeError(true);
-      toast({ title: "Incorrect code — please try again", variant: "destructive" });
-      setCodeInput(["", "", "", "", "", ""]);
-      inputRefs.current[0]?.focus();
+    // Verify against server
+    try {
+      const verifyRes = await fetch("/api/auth/verify-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: clientEmail, code: entered }),
+      });
+      if (!verifyRes.ok) {
+        setCodeError(true);
+        toast({ title: "Incorrect code — please try again", variant: "destructive" });
+        setCodeInput(["", "", "", "", "", ""]);
+        inputRefs.current[0]?.focus();
+        return;
+      }
+    } catch {
+      toast({ title: "Verification failed — please try again", variant: "destructive" });
       return;
     }
-    // Correct — log in
-    login({ id: 99, name: clientName, email: clientEmail, role: "client", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+    // Correct — register and log in
+    try {
+      const regRes = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: clientName, email: clientEmail, role: "client" }),
+      });
+      const data = await regRes.json();
+      if (data.user) {
+        login(data.user);
+      } else {
+        login({ id: 99, name: clientName, email: clientEmail, role: "client", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+      }
+    } catch {
+      login({ id: 99, name: clientName, email: clientEmail, role: "client", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+    }
     setStep("done");
     setTimeout(() => { handleClose(); }, 1800);
   }
