@@ -1,6 +1,12 @@
 import type { Express } from "express";
 import { Server } from "http";
 import { storage } from "./storage";
+import { Resend } from "resend";
+
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+// In-memory store for verification codes (email -> { code, expires })
+const verificationCodes = new Map<string, { code: string; expires: number }>();
 import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema } from "@shared/schema";
 
 export async function registerRoutes(httpServer: Server, app: Express) {
@@ -26,7 +32,67 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ─── Profiles ──────────────────────────────────────────────────────────────
+  // ─── Email Verification ───────────────────────────────────────────────────
+  app.post("/api/auth/send-verification", async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: "Email required" });
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    verificationCodes.set(email.toLowerCase(), { code, expires: Date.now() + 10 * 60 * 1000 }); // 10 min expiry
+
+    if (!resend) {
+      console.log(`[verify] Code for ${email}: ${code}`);
+      return res.json({ ok: true, dev: true });
+    }
+
+    try {
+      await resend.emails.send({
+        from: "Viewrr <noreply@viewrr.co.uk>",
+        to: email,
+        subject: "Your Viewrr verification code",
+        html: `
+          <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;">
+            <div style="margin-bottom:24px;">
+              <svg width="40" height="40" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect width="32" height="32" rx="8" fill="#FF5A1F"/>
+                <path d="M7 8l7 16h4l7-16h-4l-5 11.5L11 8H7z" fill="white"/>
+              </svg>
+            </div>
+            <h1 style="font-size:24px;font-weight:700;color:#111;margin:0 0 8px;">Your verification code</h1>
+            <p style="color:#555;margin:0 0 32px;">Enter this code in the Viewrr signup page. It expires in 10 minutes.</p>
+            <div style="background:#f5f5f5;border-radius:12px;padding:24px;text-align:center;margin-bottom:32px;">
+              <span style="font-size:48px;font-weight:800;letter-spacing:12px;color:#FF5A1F;">${code}</span>
+            </div>
+            <p style="color:#999;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>
+          </div>
+        `,
+      });
+      res.json({ ok: true });
+    } catch (e: any) {
+      console.error("[verify] Resend error:", e.message);
+      res.status(500).json({ error: "Failed to send email" });
+    }
+  });
+
+  app.post("/api/auth/verify-code", async (req, res) => {
+    const { email, code } = req.body;
+    if (!email || !code) return res.status(400).json({ error: "Email and code required" });
+
+    const stored = verificationCodes.get(email.toLowerCase());
+    if (!stored) return res.status(400).json({ error: "No code found — please request a new one" });
+    if (Date.now() > stored.expires) {
+      verificationCodes.delete(email.toLowerCase());
+      return res.status(400).json({ error: "Code expired — please request a new one" });
+    }
+    if (stored.code !== String(code).trim()) {
+      return res.status(400).json({ error: "Incorrect code" });
+    }
+
+    verificationCodes.delete(email.toLowerCase());
+    res.json({ ok: true });
+  });
+
+    // ─── Profiles ──────────────────────────────────────────────────────────────
   app.get("/api/profiles", async (req, res) => {
     const { specialism, availability, search } = req.query as Record<string, string>;
     const profiles = await storage.getProfiles({ specialism, availability, search });

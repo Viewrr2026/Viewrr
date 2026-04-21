@@ -35,7 +35,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const [company, setCompany] = useState("");
 
   // Email verification
-  const [verifyCode, setVerifyCode] = useState(""); // the generated code
   const [codeInput, setCodeInput] = useState(["", "", "", "", "", ""]); // 6 digit inputs
   const [codeError, setCodeError] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
@@ -85,7 +84,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   function reset() {
     setStep("role"); setRole(null);
     setClientName(""); setClientEmail(""); setCompany("");
-    setVerifyCode(""); setCodeInput(["", "", "", "", "", ""]); setCodeError(false); setResendCooldown(0);
+    setCodeInput(["", "", "", "", "", ""]); setCodeError(false); setResendCooldown(0);
     setFreeName(""); setFreeEmail(""); setFreeSpecialisms([]); setExperience(""); setEquipment([]); setBio("");
     setUploads([]); setDragOver(false);
   }
@@ -114,7 +113,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     });
   }
 
-  function proceedToVerify() {
+  async function proceedToVerify() {
     if (!clientName || !clientEmail) {
       toast({ title: "Please fill in all required fields", variant: "destructive" });
       return;
