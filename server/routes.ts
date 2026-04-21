@@ -35,16 +35,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Email Verification ───────────────────────────────────────────────────
   app.post("/api/auth/send-verification", async (req, res) => {
     const { email } = req.body;
+    console.log(`[verify] Request received for: ${email}`);
     if (!email) return res.status(400).json({ error: "Email required" });
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
     verificationCodes.set(email.toLowerCase(), { code, expires: Date.now() + 10 * 60 * 1000 }); // 10 min expiry
 
     if (!resend) {
-      console.log(`[verify] Code for ${email}: ${code}`);
-      return res.json({ ok: true, dev: true });
+      console.log(`[verify] RESEND_API_KEY not set — code for ${email}: ${code}`);
+      return res.json({ ok: true, dev: true, code });
     }
 
+    console.log(`[verify] Sending email via Resend to: ${email}`);
     try {
       await resend.emails.send({
         from: "Viewrr <noreply@viewrr.co.uk>",
@@ -69,8 +71,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       });
       res.json({ ok: true });
     } catch (e: any) {
-      console.error("[verify] Resend error:", e.message);
-      res.status(500).json({ error: "Failed to send email" });
+      console.error("[verify] Resend error:", e.message, e.statusCode, JSON.stringify(e));
+      res.status(500).json({ error: "Failed to send email", detail: e.message });
     }
   });
 
