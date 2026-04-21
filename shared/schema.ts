@@ -1,10 +1,10 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { pgTable, text, integer, real, serial, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // ─── Users ───────────────────────────────────────────────────────────────────
-export const users = sqliteTable("users", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   role: text("role").notNull().default("freelancer"), // "freelancer" | "client"
@@ -19,24 +19,24 @@ export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
 // ─── Freelancer Profiles ──────────────────────────────────────────────────────
-export const profiles = sqliteTable("profiles", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const profiles = pgTable("profiles", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   specialisms: text("specialisms").notNull().default("[]"), // JSON array
   skills: text("skills").notNull().default("[]"),           // JSON array
   hourlyRate: real("hourly_rate"),
   dayRate: real("day_rate"),
-  availability: text("availability").notNull().default("available"), // available | busy | unavailable
+  availability: text("availability").notNull().default("available"),
   yearsExperience: integer("years_experience"),
   reelUrl: text("reel_url"),
-  portfolioItems: text("portfolio_items").notNull().default("[]"), // JSON array of {title, url, thumbnail, type}
-  socialLinks: text("social_links").notNull().default("{}"),       // JSON object
+  portfolioItems: text("portfolio_items").notNull().default("[]"),
+  socialLinks: text("social_links").notNull().default("{}"),
   rating: real("rating").default(0),
   reviewCount: integer("review_count").default(0),
   projectCount: integer("project_count").default(0),
-  featured: integer("featured").default(0), // boolean
-  badges: text("badges").notNull().default("[]"), // JSON array
-  isPro: integer("is_pro").default(0), // boolean — Pro Viewrr subscriber
+  featured: integer("featured").default(0),
+  badges: text("badges").notNull().default("[]"),
+  isPro: integer("is_pro").default(0),
   proSince: text("pro_since"),
 });
 
@@ -45,8 +45,8 @@ export type InsertProfile = z.infer<typeof insertProfileSchema>;
 export type Profile = typeof profiles.$inferSelect;
 
 // ─── Reviews ─────────────────────────────────────────────────────────────────
-export const reviews = sqliteTable("reviews", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const reviews = pgTable("reviews", {
+  id: serial("id").primaryKey(),
   profileId: integer("profile_id").notNull(),
   clientId: integer("client_id").notNull(),
   clientName: text("client_name").notNull(),
@@ -62,8 +62,8 @@ export type InsertReview = z.infer<typeof insertReviewSchema>;
 export type Review = typeof reviews.$inferSelect;
 
 // ─── Messages ────────────────────────────────────────────────────────────────
-export const messages = sqliteTable("messages", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const messages = pgTable("messages", {
+  id: serial("id").primaryKey(),
   fromId: integer("from_id").notNull(),
   toId: integer("to_id").notNull(),
   content: text("content").notNull(),
@@ -76,13 +76,13 @@ export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type Message = typeof messages.$inferSelect;
 
 // ─── Feed Posts ─────────────────────────────────────────────────────────────
-export const posts = sqliteTable("posts", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const posts = pgTable("posts", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   caption: text("caption").notNull().default(""),
-  mediaUrl: text("media_url"),           // image or video URL
-  mediaType: text("media_type"),          // "image" | "video" | null
-  tags: text("tags").notNull().default("[]"), // JSON array of strings
+  mediaUrl: text("media_url"),
+  mediaType: text("media_type"),
+  tags: text("tags").notNull().default("[]"),
   likeCount: integer("like_count").notNull().default(0),
   commentCount: integer("comment_count").notNull().default(0),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
@@ -93,8 +93,8 @@ export type InsertPost = z.infer<typeof insertPostSchema>;
 export type Post = typeof posts.$inferSelect;
 
 // ─── Post Likes ───────────────────────────────────────────────────────────────
-export const postLikes = sqliteTable("post_likes", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const postLikes = pgTable("post_likes", {
+  id: serial("id").primaryKey(),
   postId: integer("post_id").notNull(),
   userId: integer("user_id").notNull(),
 });
@@ -104,8 +104,8 @@ export type InsertPostLike = z.infer<typeof insertPostLikeSchema>;
 export type PostLike = typeof postLikes.$inferSelect;
 
 // ─── Post Comments ────────────────────────────────────────────────────────────
-export const postComments = sqliteTable("post_comments", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const postComments = pgTable("post_comments", {
+  id: serial("id").primaryKey(),
   postId: integer("post_id").notNull(),
   userId: integer("user_id").notNull(),
   content: text("content").notNull(),
@@ -117,15 +117,14 @@ export type InsertPostComment = z.infer<typeof insertPostCommentSchema>;
 export type PostComment = typeof postComments.$inferSelect;
 
 // ─── Projects ────────────────────────────────────────────────────────────────
-// A project links a client to a freelancer with a shared progress timeline.
-export const projects = sqliteTable("projects", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const projects = pgTable("projects", {
+  id: serial("id").primaryKey(),
   clientId: integer("client_id").notNull(),
   freelancerId: integer("freelancer_id").notNull(),
   title: text("title").notNull(),
   description: text("description").notNull().default(""),
-  status: text("status").notNull().default("active"), // active | completed | paused
-  currentStage: integer("current_stage").notNull().default(0), // index into stages array
+  status: text("status").notNull().default("active"),
+  currentStage: integer("current_stage").notNull().default(0),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 
@@ -133,9 +132,9 @@ export const insertProjectSchema = createInsertSchema(projects).omit({ id: true,
 export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type Project = typeof projects.$inferSelect;
 
-// Stage updates — a log entry for each milestone advance or comment
-export const projectUpdates = sqliteTable("project_updates", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+// ─── Project Updates ─────────────────────────────────────────────────────────
+export const projectUpdates = pgTable("project_updates", {
+  id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull(),
   authorId: integer("author_id").notNull(),
   stage: integer("stage").notNull(),
@@ -147,24 +146,24 @@ export const insertProjectUpdateSchema = createInsertSchema(projectUpdates).omit
 export type InsertProjectUpdate = z.infer<typeof insertProjectUpdateSchema>;
 export type ProjectUpdate = typeof projectUpdates.$inferSelect;
 
-// ─── Briefs (Client Job Posts) ──────────────────────────────────────────────
-export const briefs = sqliteTable("briefs", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+// ─── Briefs ──────────────────────────────────────────────────────────────────
+export const briefs = pgTable("briefs", {
+  id: serial("id").primaryKey(),
   clientId: integer("client_id").notNull(),
   clientName: text("client_name").notNull(),
   clientAvatar: text("client_avatar"),
   title: text("title").notNull(),
   description: text("description").notNull(),
-  category: text("category").notNull(), // "Videography" | "Video Editing" | "Photography" | "Marketing" | "Other"
+  category: text("category").notNull(),
   location: text("location").notNull(),
-  remote: integer("remote").default(0), // boolean — remote/hybrid ok
+  remote: integer("remote").default(0),
   startDate: text("start_date"),
-  duration: text("duration"),           // e.g. "1 day", "1 week", "Ongoing"
+  duration: text("duration"),
   budgetMin: real("budget_min"),
   budgetMax: real("budget_max"),
-  budgetType: text("budget_type").notNull().default("project"), // "project" | "day" | "hour"
+  budgetType: text("budget_type").notNull().default("project"),
   requirements: text("requirements").notNull().default(""),
-  status: text("status").notNull().default("open"), // "open" | "closed"
+  status: text("status").notNull().default("open"),
   applicationCount: integer("application_count").notNull().default(0),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
@@ -174,8 +173,8 @@ export type InsertBrief = z.infer<typeof insertBriefSchema>;
 export type Brief = typeof briefs.$inferSelect;
 
 // ─── Saved Freelancers ────────────────────────────────────────────────────────
-export const saved = sqliteTable("saved", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const saved = pgTable("saved", {
+  id: serial("id").primaryKey(),
   clientId: integer("client_id").notNull(),
   profileId: integer("profile_id").notNull(),
 });

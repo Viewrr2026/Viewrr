@@ -1,30 +1,32 @@
-import { Database } from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import BetterSqlite3 from "better-sqlite3";
-import { eq, like, or, and, desc } from "drizzle-orm";
+import { neon } from "@neondatabase/serverless";
+import { drizzle } from "drizzle-orm/neon-http";
+import { eq, or, and, desc } from "drizzle-orm";
 import * as schema from "@shared/schema";
-import path from "path";
 
-const dbPath = process.env.DATABASE_PATH || path.resolve(process.cwd(), "viewr.db");
-console.log(`[db] Opening database at: ${dbPath}`);
-const sqlite: Database = new BetterSqlite3(dbPath);
-const db = drizzle(sqlite, { schema });
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL environment variable is required");
+}
 
-// Run migrations
-sqlite.exec(`
+const sql = neon(process.env.DATABASE_URL);
+const db = drizzle(sql, { schema });
+
+// Run migrations — create all tables if they don't exist
+async function runMigrations() {
+await sql`
   CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     role TEXT NOT NULL DEFAULT 'freelancer',
     avatar TEXT,
     bio TEXT,
     location TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS profiles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL,
     specialisms TEXT NOT NULL DEFAULT '[]',
     skills TEXT NOT NULL DEFAULT '[]',
@@ -42,10 +44,11 @@ sqlite.exec(`
     badges TEXT NOT NULL DEFAULT '[]',
     is_pro INTEGER DEFAULT 0,
     pro_since TEXT
-  );
-
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS reviews (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     profile_id INTEGER NOT NULL,
     client_id INTEGER NOT NULL,
     client_name TEXT NOT NULL,
@@ -53,52 +56,51 @@ sqlite.exec(`
     rating INTEGER NOT NULL,
     comment TEXT NOT NULL,
     project_type TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     from_id INTEGER NOT NULL,
     to_id INTEGER NOT NULL,
     content TEXT NOT NULL,
     read INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS saved (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     client_id INTEGER NOT NULL,
     profile_id INTEGER NOT NULL
-  );
-
-  -- Add is_pro columns if upgrading an existing DB
-  -- (no-op if already present)
-`);
-try { sqlite.exec(`ALTER TABLE profiles ADD COLUMN is_pro INTEGER DEFAULT 0`); } catch {}
-try { sqlite.exec(`ALTER TABLE profiles ADD COLUMN pro_since TEXT`); } catch {}
-sqlite.exec(`
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     client_id INTEGER NOT NULL,
     freelancer_id INTEGER NOT NULL,
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     current_stage INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS project_updates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     project_id INTEGER NOT NULL,
     author_id INTEGER NOT NULL,
     stage INTEGER NOT NULL,
     note TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
-sqlite.exec(`
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS briefs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     client_id INTEGER NOT NULL,
     client_name TEXT NOT NULL,
     client_avatar TEXT,
@@ -115,12 +117,12 @@ sqlite.exec(`
     requirements TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'open',
     application_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
-sqlite.exec(`
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS posts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL,
     caption TEXT NOT NULL DEFAULT '',
     media_url TEXT,
@@ -128,79 +130,82 @@ sqlite.exec(`
     tags TEXT NOT NULL DEFAULT '[]',
     like_count INTEGER NOT NULL DEFAULT 0,
     comment_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS post_likes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     post_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL
-  );
-
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS post_comments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     post_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+}
 
 export interface IStorage {
   // Users
-  getUser(id: number): schema.User | undefined;
-  getUserByEmail(email: string): schema.User | undefined;
-  createUser(data: schema.InsertUser): schema.User;
-  
+  getUser(id: number): Promise<schema.User | undefined>;
+  getUserByEmail(email: string): Promise<schema.User | undefined>;
+  createUser(data: schema.InsertUser): Promise<schema.User>;
+
   // Profiles
-  getProfiles(filters?: { specialism?: string; availability?: string; search?: string }): ProfileWithUser[];
-  getProfile(id: number): ProfileWithUser | undefined;
-  getProfileByUserId(userId: number): schema.Profile | undefined;
-  createProfile(data: schema.InsertProfile): schema.Profile;
-  updateProfile(id: number, data: Partial<schema.InsertProfile>): schema.Profile | undefined;
-  getFeaturedProfiles(): ProfileWithUser[];
+  getProfiles(filters?: { specialism?: string; availability?: string; search?: string }): Promise<ProfileWithUser[]>;
+  getProfile(id: number): Promise<ProfileWithUser | undefined>;
+  getProfileByUserId(userId: number): Promise<schema.Profile | undefined>;
+  createProfile(data: schema.InsertProfile): Promise<schema.Profile>;
+  updateProfile(id: number, data: Partial<schema.InsertProfile>): Promise<schema.Profile | undefined>;
+  getFeaturedProfiles(): Promise<ProfileWithUser[]>;
 
   // Reviews
-  getReviewsByProfile(profileId: number): schema.Review[];
-  createReview(data: schema.InsertReview): schema.Review;
+  getReviewsByProfile(profileId: number): Promise<schema.Review[]>;
+  createReview(data: schema.InsertReview): Promise<schema.Review>;
 
   // Messages
-  getMessagesBetween(fromId: number, toId: number): schema.Message[];
-  getConversations(userId: number): ConversationSummary[];
-  createMessage(data: schema.InsertMessage): schema.Message;
-  markMessagesRead(fromId: number, toId: number): void;
+  getMessagesBetween(fromId: number, toId: number): Promise<schema.Message[]>;
+  getConversations(userId: number): Promise<ConversationSummary[]>;
+  createMessage(data: schema.InsertMessage): Promise<schema.Message>;
+  markMessagesRead(fromId: number, toId: number): Promise<void>;
 
   // Saved
-  getSaved(clientId: number): ProfileWithUser[];
-  toggleSaved(clientId: number, profileId: number): boolean;
-  isSaved(clientId: number, profileId: number): boolean;
+  getSaved(clientId: number): Promise<ProfileWithUser[]>;
+  toggleSaved(clientId: number, profileId: number): Promise<boolean>;
+  isSaved(clientId: number, profileId: number): Promise<boolean>;
 
   // Feed
-  getFeedPosts(limit?: number, offset?: number): PostWithUser[];
-  getPost(id: number): PostWithUser | undefined;
-  createPost(data: schema.InsertPost): schema.Post;
-  deletePost(id: number, userId: number): boolean;
-  toggleLike(postId: number, userId: number): boolean;
-  isLiked(postId: number, userId: number): boolean;
-  getComments(postId: number): CommentWithUser[];
-  createComment(data: schema.InsertPostComment): CommentWithUser;
+  getFeedPosts(limit?: number, offset?: number, viewerUserId?: number): Promise<PostWithUser[]>;
+  getPost(id: number): Promise<PostWithUser | undefined>;
+  createPost(data: schema.InsertPost): Promise<schema.Post>;
+  deletePost(id: number, userId: number): Promise<boolean>;
+  toggleLike(postId: number, userId: number): Promise<boolean>;
+  isLiked(postId: number, userId: number): Promise<boolean>;
+  getComments(postId: number): Promise<CommentWithUser[]>;
+  createComment(data: schema.InsertPostComment): Promise<CommentWithUser>;
 
-  // Pro Viewrrr
-  subscribePro(profileId: number): schema.Profile | undefined;
-  isProSubscriber(profileId: number): boolean;
+  // Pro Viewrr
+  subscribePro(profileId: number): Promise<schema.Profile | undefined>;
+  isProSubscriber(profileId: number): Promise<boolean>;
 
   // Projects
-  getProjectsForUser(userId: number): ProjectWithDetails[];
-  getProject(id: number): ProjectWithDetails | undefined;
-  createProject(data: schema.InsertProject): schema.Project;
-  advanceProjectStage(projectId: number, note: string, authorId: number): schema.Project | undefined;
-  addProjectUpdate(data: schema.InsertProjectUpdate): schema.ProjectUpdate;
-  getProjectUpdates(projectId: number): ProjectUpdateWithAuthor[];
+  getProjectsForUser(userId: number): Promise<ProjectWithDetails[]>;
+  getProject(id: number): Promise<ProjectWithDetails | undefined>;
+  createProject(data: schema.InsertProject): Promise<schema.Project>;
+  advanceProjectStage(projectId: number, note: string, authorId: number): Promise<schema.Project | undefined>;
+  addProjectUpdate(data: schema.InsertProjectUpdate): Promise<schema.ProjectUpdate>;
+  getProjectUpdates(projectId: number): Promise<ProjectUpdateWithAuthor[]>;
 
   // Briefs
-  getBriefs(): schema.Brief[];
-  getBrief(id: number): schema.Brief | undefined;
-  createBrief(data: schema.InsertBrief): schema.Brief;
+  getBriefs(): Promise<schema.Brief[]>;
+  getBrief(id: number): Promise<schema.Brief | undefined>;
+  createBrief(data: schema.InsertBrief): Promise<schema.Brief>;
 }
 
 export interface ProfileWithUser {
@@ -241,21 +246,24 @@ export interface ConversationSummary {
 }
 
 class Storage implements IStorage {
-  getUser(id: number) {
-    return db.select().from(schema.users).where(eq(schema.users.id, id)).get();
+  async getUser(id: number): Promise<schema.User | undefined> {
+    const r = await db.select().from(schema.users).where(eq(schema.users.id, id));
+    return r[0];
   }
 
-  getUserByEmail(email: string) {
-    return db.select().from(schema.users).where(eq(schema.users.email, email)).get();
+  async getUserByEmail(email: string): Promise<schema.User | undefined> {
+    const r = await db.select().from(schema.users).where(eq(schema.users.email, email));
+    return r[0];
   }
 
-  createUser(data: schema.InsertUser) {
-    return db.insert(schema.users).values(data).returning().get();
+  async createUser(data: schema.InsertUser): Promise<schema.User> {
+    const r = await db.insert(schema.users).values(data).returning();
+    return r[0];
   }
 
-  getProfiles(filters?: { specialism?: string; availability?: string; search?: string }): ProfileWithUser[] {
-    const allProfiles = db.select().from(schema.profiles).all();
-    const allUsers = db.select().from(schema.users).all();
+  async getProfiles(filters?: { specialism?: string; availability?: string; search?: string }): Promise<ProfileWithUser[]> {
+    const allProfiles = await db.select().from(schema.profiles);
+    const allUsers = await db.select().from(schema.users);
     const userMap = new Map(allUsers.map(u => [u.id, u]));
 
     let results: ProfileWithUser[] = allProfiles
@@ -288,7 +296,7 @@ class Storage implements IStorage {
       });
     }
 
-    // Pro Viewrrrs always sort to top, then by rating
+    // Pro Viewrrs always sort to top, then by rating
     return results.sort((a, b) => {
       const proA = a.profile.isPro || 0;
       const proB = b.profile.isPro || 0;
@@ -297,29 +305,33 @@ class Storage implements IStorage {
     });
   }
 
-  getProfile(id: number): ProfileWithUser | undefined {
-    const profile = db.select().from(schema.profiles).where(eq(schema.profiles.id, id)).get();
+  async getProfile(id: number): Promise<ProfileWithUser | undefined> {
+    const r = await db.select().from(schema.profiles).where(eq(schema.profiles.id, id));
+    const profile = r[0];
     if (!profile) return undefined;
-    const user = this.getUser(profile.userId);
+    const user = await this.getUser(profile.userId);
     if (!user) return undefined;
     return { profile, user };
   }
 
-  getProfileByUserId(userId: number) {
-    return db.select().from(schema.profiles).where(eq(schema.profiles.userId, userId)).get();
+  async getProfileByUserId(userId: number): Promise<schema.Profile | undefined> {
+    const r = await db.select().from(schema.profiles).where(eq(schema.profiles.userId, userId));
+    return r[0];
   }
 
-  createProfile(data: schema.InsertProfile) {
-    return db.insert(schema.profiles).values(data).returning().get();
+  async createProfile(data: schema.InsertProfile): Promise<schema.Profile> {
+    const r = await db.insert(schema.profiles).values(data).returning();
+    return r[0];
   }
 
-  updateProfile(id: number, data: Partial<schema.InsertProfile>) {
-    return db.update(schema.profiles).set(data).where(eq(schema.profiles.id, id)).returning().get();
+  async updateProfile(id: number, data: Partial<schema.InsertProfile>): Promise<schema.Profile | undefined> {
+    const r = await db.update(schema.profiles).set(data).where(eq(schema.profiles.id, id)).returning();
+    return r[0];
   }
 
-  getFeaturedProfiles(): ProfileWithUser[] {
-    const allProfiles = db.select().from(schema.profiles).all();
-    const allUsers = db.select().from(schema.users).all();
+  async getFeaturedProfiles(): Promise<ProfileWithUser[]> {
+    const allProfiles = await db.select().from(schema.profiles);
+    const allUsers = await db.select().from(schema.users);
     const userMap = new Map(allUsers.map(u => [u.id, u]));
     return allProfiles
       .filter(p => p.featured === 1)
@@ -328,38 +340,36 @@ class Storage implements IStorage {
       .slice(0, 8);
   }
 
-  getReviewsByProfile(profileId: number) {
-    return db.select().from(schema.reviews).where(eq(schema.reviews.profileId, profileId)).all();
+  async getReviewsByProfile(profileId: number): Promise<schema.Review[]> {
+    return db.select().from(schema.reviews).where(eq(schema.reviews.profileId, profileId));
   }
 
-  createReview(data: schema.InsertReview) {
-    const review = db.insert(schema.reviews).values(data).returning().get();
+  async createReview(data: schema.InsertReview): Promise<schema.Review> {
+    const r = await db.insert(schema.reviews).values(data).returning();
+    const review = r[0];
     // Update profile rating
-    const reviews = this.getReviewsByProfile(data.profileId);
-    const avg = reviews.reduce((s, r) => s + r.rating, 0) / reviews.length;
-    db.update(schema.profiles)
+    const reviews = await this.getReviewsByProfile(data.profileId);
+    const avg = reviews.reduce((s, rev) => s + rev.rating, 0) / reviews.length;
+    await db.update(schema.profiles)
       .set({ rating: Math.round(avg * 10) / 10, reviewCount: reviews.length })
-      .where(eq(schema.profiles.id, data.profileId))
-      .run();
+      .where(eq(schema.profiles.id, data.profileId));
     return review;
   }
 
-  getMessagesBetween(fromId: number, toId: number) {
-    return db.select().from(schema.messages)
+  async getMessagesBetween(fromId: number, toId: number): Promise<schema.Message[]> {
+    const msgs = await db.select().from(schema.messages)
       .where(
         or(
           and(eq(schema.messages.fromId, fromId), eq(schema.messages.toId, toId)),
           and(eq(schema.messages.fromId, toId), eq(schema.messages.toId, fromId))
         )
-      )
-      .all()
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      );
+    return msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
-  getConversations(userId: number): ConversationSummary[] {
-    const allMessages = db.select().from(schema.messages)
-      .where(or(eq(schema.messages.fromId, userId), eq(schema.messages.toId, userId)))
-      .all();
+  async getConversations(userId: number): Promise<ConversationSummary[]> {
+    const allMessages = await db.select().from(schema.messages)
+      .where(or(eq(schema.messages.fromId, userId), eq(schema.messages.toId, userId)));
 
     const convMap = new Map<number, schema.Message[]>();
     for (const msg of allMessages) {
@@ -369,11 +379,11 @@ class Storage implements IStorage {
     }
 
     const results: ConversationSummary[] = [];
-    for (const [otherId, msgs] of convMap.entries()) {
-      const other = this.getUser(otherId);
+    for (const [otherId, msgs] of Array.from(convMap.entries())) {
+      const other = await this.getUser(otherId);
       if (!other) continue;
-      const sorted = msgs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      const unread = msgs.filter(m => m.toId === userId && !m.read).length;
+      const sorted = msgs.sort((a: schema.Message, b: schema.Message) => b.createdAt.localeCompare(a.createdAt));
+      const unread = msgs.filter((m: schema.Message) => m.toId === userId && !m.read).length;
       results.push({
         otherId,
         otherName: other.name,
@@ -387,200 +397,239 @@ class Storage implements IStorage {
     return results.sort((a, b) => b.lastAt.localeCompare(a.lastAt));
   }
 
-  createMessage(data: schema.InsertMessage) {
-    return db.insert(schema.messages).values(data).returning().get();
+  async createMessage(data: schema.InsertMessage): Promise<schema.Message> {
+    const r = await db.insert(schema.messages).values(data).returning();
+    return r[0];
   }
 
-  markMessagesRead(fromId: number, toId: number) {
-    db.update(schema.messages)
+  async markMessagesRead(fromId: number, toId: number): Promise<void> {
+    await db.update(schema.messages)
       .set({ read: 1 })
-      .where(and(eq(schema.messages.fromId, fromId), eq(schema.messages.toId, toId)))
-      .run();
+      .where(and(eq(schema.messages.fromId, fromId), eq(schema.messages.toId, toId)));
   }
 
-  getSaved(clientId: number): ProfileWithUser[] {
-    const savedRows = db.select().from(schema.saved).where(eq(schema.saved.clientId, clientId)).all();
-    return savedRows.map(s => this.getProfile(s.profileId)).filter(Boolean) as ProfileWithUser[];
+  async getSaved(clientId: number): Promise<ProfileWithUser[]> {
+    const savedRows = await db.select().from(schema.saved).where(eq(schema.saved.clientId, clientId));
+    const results: ProfileWithUser[] = [];
+    for (const s of savedRows) {
+      const pw = await this.getProfile(s.profileId);
+      if (pw) results.push(pw);
+    }
+    return results;
   }
 
-  toggleSaved(clientId: number, profileId: number): boolean {
-    const existing = db.select().from(schema.saved)
-      .where(and(eq(schema.saved.clientId, clientId), eq(schema.saved.profileId, profileId)))
-      .get();
+  async toggleSaved(clientId: number, profileId: number): Promise<boolean> {
+    const r = await db.select().from(schema.saved)
+      .where(and(eq(schema.saved.clientId, clientId), eq(schema.saved.profileId, profileId)));
+    const existing = r[0];
     if (existing) {
-      db.delete(schema.saved).where(eq(schema.saved.id, existing.id)).run();
+      await db.delete(schema.saved).where(eq(schema.saved.id, existing.id));
       return false;
     } else {
-      db.insert(schema.saved).values({ clientId, profileId }).run();
+      await db.insert(schema.saved).values({ clientId, profileId });
       return true;
     }
   }
 
-  isSaved(clientId: number, profileId: number): boolean {
-    return !!db.select().from(schema.saved)
-      .where(and(eq(schema.saved.clientId, clientId), eq(schema.saved.profileId, profileId)))
-      .get();
+  async isSaved(clientId: number, profileId: number): Promise<boolean> {
+    const r = await db.select().from(schema.saved)
+      .where(and(eq(schema.saved.clientId, clientId), eq(schema.saved.profileId, profileId)));
+    return !!r[0];
   }
 
   // ── Feed ─────────────────────────────────────────────────────────────────
-  getFeedPosts(limit = 20, offset = 0, viewerUserId?: number): PostWithUser[] {
-    const allPosts = db.select().from(schema.posts).all()
+  async getFeedPosts(limit = 20, offset = 0, viewerUserId?: number): Promise<PostWithUser[]> {
+    const allPosts = await db.select().from(schema.posts);
+    const sorted = allPosts
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(offset, offset + limit);
-    return allPosts.map(post => {
-      const user = this.getUser(post.userId)!;
-      const liked = viewerUserId ? this.isLiked(post.id, viewerUserId) : false;
-      return { post, user, liked };
-    }).filter(p => p.user);
+
+    const results: PostWithUser[] = [];
+    for (const post of sorted) {
+      const user = await this.getUser(post.userId);
+      if (!user) continue;
+      const liked = viewerUserId ? await this.isLiked(post.id, viewerUserId) : false;
+      results.push({ post, user, liked });
+    }
+    return results;
   }
 
-  getPost(id: number): PostWithUser | undefined {
-    const post = db.select().from(schema.posts).where(eq(schema.posts.id, id)).get();
+  async getPost(id: number): Promise<PostWithUser | undefined> {
+    const r = await db.select().from(schema.posts).where(eq(schema.posts.id, id));
+    const post = r[0];
     if (!post) return undefined;
-    const user = this.getUser(post.userId);
+    const user = await this.getUser(post.userId);
     if (!user) return undefined;
     return { post, user, liked: false };
   }
 
-  createPost(data: schema.InsertPost): schema.Post {
-    return db.insert(schema.posts).values(data).returning().get();
+  async createPost(data: schema.InsertPost): Promise<schema.Post> {
+    const r = await db.insert(schema.posts).values(data).returning();
+    return r[0];
   }
 
-  deletePost(id: number, userId: number): boolean {
-    const post = db.select().from(schema.posts).where(eq(schema.posts.id, id)).get();
+  async deletePost(id: number, userId: number): Promise<boolean> {
+    const r = await db.select().from(schema.posts).where(eq(schema.posts.id, id));
+    const post = r[0];
     if (!post || post.userId !== userId) return false;
-    db.delete(schema.posts).where(eq(schema.posts.id, id)).run();
+    await db.delete(schema.posts).where(eq(schema.posts.id, id));
     return true;
   }
 
-  toggleLike(postId: number, userId: number): boolean {
-    const existing = db.select().from(schema.postLikes)
-      .where(and(eq(schema.postLikes.postId, postId), eq(schema.postLikes.userId, userId)))
-      .get();
+  async toggleLike(postId: number, userId: number): Promise<boolean> {
+    const r = await db.select().from(schema.postLikes)
+      .where(and(eq(schema.postLikes.postId, postId), eq(schema.postLikes.userId, userId)));
+    const existing = r[0];
     if (existing) {
-      db.delete(schema.postLikes).where(eq(schema.postLikes.id, existing.id)).run();
-      db.update(schema.posts).set({ likeCount: Math.max(0, (db.select().from(schema.posts).where(eq(schema.posts.id, postId)).get()?.likeCount || 1) - 1) }).where(eq(schema.posts.id, postId)).run();
+      await db.delete(schema.postLikes).where(eq(schema.postLikes.id, existing.id));
+      const pr = await db.select().from(schema.posts).where(eq(schema.posts.id, postId));
+      const cur = pr[0];
+      await db.update(schema.posts)
+        .set({ likeCount: Math.max(0, (cur?.likeCount || 1) - 1) })
+        .where(eq(schema.posts.id, postId));
       return false;
     } else {
-      db.insert(schema.postLikes).values({ postId, userId }).run();
-      const cur = db.select().from(schema.posts).where(eq(schema.posts.id, postId)).get();
-      db.update(schema.posts).set({ likeCount: (cur?.likeCount || 0) + 1 }).where(eq(schema.posts.id, postId)).run();
+      await db.insert(schema.postLikes).values({ postId, userId });
+      const pr = await db.select().from(schema.posts).where(eq(schema.posts.id, postId));
+      const cur = pr[0];
+      await db.update(schema.posts)
+        .set({ likeCount: (cur?.likeCount || 0) + 1 })
+        .where(eq(schema.posts.id, postId));
       return true;
     }
   }
 
-  isLiked(postId: number, userId: number): boolean {
-    return !!db.select().from(schema.postLikes)
-      .where(and(eq(schema.postLikes.postId, postId), eq(schema.postLikes.userId, userId)))
-      .get();
+  async isLiked(postId: number, userId: number): Promise<boolean> {
+    const r = await db.select().from(schema.postLikes)
+      .where(and(eq(schema.postLikes.postId, postId), eq(schema.postLikes.userId, userId)));
+    return !!r[0];
   }
 
-  getComments(postId: number): CommentWithUser[] {
-    const comments = db.select().from(schema.postComments)
-      .where(eq(schema.postComments.postId, postId)).all()
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    return comments.map(comment => {
-      const user = this.getUser(comment.userId);
-      if (!user) return null;
-      return { comment, user };
-    }).filter(Boolean) as CommentWithUser[];
+  async getComments(postId: number): Promise<CommentWithUser[]> {
+    const comments = await db.select().from(schema.postComments)
+      .where(eq(schema.postComments.postId, postId));
+    const sorted = comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const results: CommentWithUser[] = [];
+    for (const comment of sorted) {
+      const user = await this.getUser(comment.userId);
+      if (!user) continue;
+      results.push({ comment, user });
+    }
+    return results;
   }
 
-  createComment(data: schema.InsertPostComment): CommentWithUser {
-    const comment = db.insert(schema.postComments).values(data).returning().get();
-    const cur = db.select().from(schema.posts).where(eq(schema.posts.id, data.postId)).get();
-    db.update(schema.posts).set({ commentCount: (cur?.commentCount || 0) + 1 }).where(eq(schema.posts.id, data.postId)).run();
-    const user = this.getUser(data.userId)!;
-    return { comment, user };
+  async createComment(data: schema.InsertPostComment): Promise<CommentWithUser> {
+    const r = await db.insert(schema.postComments).values(data).returning();
+    const comment = r[0];
+    const pr = await db.select().from(schema.posts).where(eq(schema.posts.id, data.postId));
+    const cur = pr[0];
+    await db.update(schema.posts)
+      .set({ commentCount: (cur?.commentCount || 0) + 1 })
+      .where(eq(schema.posts.id, data.postId));
+    const user = await this.getUser(data.userId);
+    return { comment, user: user! };
   }
 
-  // ── Pro Viewrrr ────────────────────────────────────────────────────────────
-  subscribePro(profileId: number): schema.Profile | undefined {
-    return db.update(schema.profiles)
+  // ── Pro Viewrr ────────────────────────────────────────────────────────────
+  async subscribePro(profileId: number): Promise<schema.Profile | undefined> {
+    const r = await db.update(schema.profiles)
       .set({ isPro: 1, proSince: new Date().toISOString() })
       .where(eq(schema.profiles.id, profileId))
-      .returning()
-      .get();
+      .returning();
+    return r[0];
   }
 
-  isProSubscriber(profileId: number): boolean {
-    const p = db.select().from(schema.profiles).where(eq(schema.profiles.id, profileId)).get();
-    return p?.isPro === 1;
+  async isProSubscriber(profileId: number): Promise<boolean> {
+    const r = await db.select().from(schema.profiles).where(eq(schema.profiles.id, profileId));
+    return r[0]?.isPro === 1;
   }
 
   // ── Projects ─────────────────────────────────────────────────────────
-  _buildProjectWithDetails(project: schema.Project): ProjectWithDetails | undefined {
-    const client = this.getUser(project.clientId);
-    const freelancer = this.getUser(project.freelancerId);
+  async _buildProjectWithDetails(project: schema.Project): Promise<ProjectWithDetails | undefined> {
+    const client = await this.getUser(project.clientId);
+    const freelancer = await this.getUser(project.freelancerId);
     if (!client || !freelancer) return undefined;
-    const updates = this.getProjectUpdates(project.id);
+    const updates = await this.getProjectUpdates(project.id);
     return { project, client, freelancer, updates };
   }
 
-  getProjectsForUser(userId: number): ProjectWithDetails[] {
-    const all = db.select().from(schema.projects)
-      .where(or(eq(schema.projects.clientId, userId), eq(schema.projects.freelancerId, userId)))
-      .all()
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return all.map(p => this._buildProjectWithDetails(p)).filter(Boolean) as ProjectWithDetails[];
+  async getProjectsForUser(userId: number): Promise<ProjectWithDetails[]> {
+    const all = await db.select().from(schema.projects)
+      .where(or(eq(schema.projects.clientId, userId), eq(schema.projects.freelancerId, userId)));
+    const sorted = all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const results: ProjectWithDetails[] = [];
+    for (const p of sorted) {
+      const details = await this._buildProjectWithDetails(p);
+      if (details) results.push(details);
+    }
+    return results;
   }
 
-  getProject(id: number): ProjectWithDetails | undefined {
-    const project = db.select().from(schema.projects).where(eq(schema.projects.id, id)).get();
+  async getProject(id: number): Promise<ProjectWithDetails | undefined> {
+    const r = await db.select().from(schema.projects).where(eq(schema.projects.id, id));
+    const project = r[0];
     if (!project) return undefined;
     return this._buildProjectWithDetails(project);
   }
 
-  createProject(data: schema.InsertProject): schema.Project {
-    return db.insert(schema.projects).values(data).returning().get();
+  async createProject(data: schema.InsertProject): Promise<schema.Project> {
+    const r = await db.insert(schema.projects).values(data).returning();
+    return r[0];
   }
 
-  advanceProjectStage(projectId: number, note: string, authorId: number): schema.Project | undefined {
-    const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  async advanceProjectStage(projectId: number, note: string, authorId: number): Promise<schema.Project | undefined> {
+    const r = await db.select().from(schema.projects).where(eq(schema.projects.id, projectId));
+    const project = r[0];
     if (!project) return undefined;
     const nextStage = project.currentStage + 1;
-    db.update(schema.projects).set({ currentStage: nextStage }).where(eq(schema.projects.id, projectId)).run();
+    await db.update(schema.projects).set({ currentStage: nextStage }).where(eq(schema.projects.id, projectId));
     if (note.trim()) {
-      db.insert(schema.projectUpdates).values({ projectId, authorId, stage: nextStage, note }).run();
+      await db.insert(schema.projectUpdates).values({ projectId, authorId, stage: nextStage, note });
     }
-    return db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+    const updated = await db.select().from(schema.projects).where(eq(schema.projects.id, projectId));
+    return updated[0];
   }
 
-  addProjectUpdate(data: schema.InsertProjectUpdate): schema.ProjectUpdate {
-    return db.insert(schema.projectUpdates).values(data).returning().get();
+  async addProjectUpdate(data: schema.InsertProjectUpdate): Promise<schema.ProjectUpdate> {
+    const r = await db.insert(schema.projectUpdates).values(data).returning();
+    return r[0];
   }
 
-  getProjectUpdates(projectId: number): ProjectUpdateWithAuthor[] {
-    const updates = db.select().from(schema.projectUpdates)
-      .where(eq(schema.projectUpdates.projectId, projectId))
-      .all()
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    return updates.map(update => {
-      const author = this.getUser(update.authorId);
-      if (!author) return null;
-      return { update, author };
-    }).filter(Boolean) as ProjectUpdateWithAuthor[];
+  async getProjectUpdates(projectId: number): Promise<ProjectUpdateWithAuthor[]> {
+    const updates = await db.select().from(schema.projectUpdates)
+      .where(eq(schema.projectUpdates.projectId, projectId));
+    const sorted = updates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const results: ProjectUpdateWithAuthor[] = [];
+    for (const update of sorted) {
+      const author = await this.getUser(update.authorId);
+      if (!author) continue;
+      results.push({ update, author });
+    }
+    return results;
   }
 
-  // ─── Briefs ──────────────────────────────────────────────────────────────
-  getBriefs(): schema.Brief[] {
-    return db.select().from(schema.briefs).all().reverse();
+  // ─── Briefs ────────────────────────────────────────────────────────────────
+  async getBriefs(): Promise<schema.Brief[]> {
+    const r = await db.select().from(schema.briefs);
+    return r.reverse();
   }
 
-  getBrief(id: number): schema.Brief | undefined {
-    return db.select().from(schema.briefs).where(eq(schema.briefs.id, id)).get();
+  async getBrief(id: number): Promise<schema.Brief | undefined> {
+    const r = await db.select().from(schema.briefs).where(eq(schema.briefs.id, id));
+    return r[0];
   }
 
-  createBrief(data: schema.InsertBrief): schema.Brief {
-    return db.insert(schema.briefs).values({ ...data, createdAt: new Date().toISOString() }).returning().get();
+  async createBrief(data: schema.InsertBrief): Promise<schema.Brief> {
+    const r = await db.insert(schema.briefs).values({ ...data, createdAt: new Date().toISOString() }).returning();
+    return r[0];
   }
 }
 
 export const storage = new Storage();
 
 // ─── Seed data ───────────────────────────────────────────────────────────────
-function seedIfEmpty() {
-  const existing = db.select().from(schema.users).all();
+async function seedIfEmpty() {
+  const existing = await db.select().from(schema.users);
   if (existing.length > 0) return;
 
   const freelancers = [
@@ -663,9 +712,9 @@ function seedIfEmpty() {
   ];
 
   for (let i = 0; i < freelancers.length; i++) {
-    const user = storage.createUser(freelancers[i] as any);
+    const user = await storage.createUser(freelancers[i] as any);
     const pd = profileData[i];
-    storage.createProfile({
+    await storage.createProfile({
       userId: user.id,
       specialisms: JSON.stringify(pd.specialisms),
       skills: JSON.stringify(pd.skills),
@@ -684,13 +733,13 @@ function seedIfEmpty() {
     } as any);
 
     // Add a client user for reviews
-    let clientUser = storage.getUserByEmail(`client${i}@viewr.co`);
+    let clientUser = await storage.getUserByEmail(`client${i}@viewr.co`);
     if (!clientUser) {
-      clientUser = storage.createUser({ name: reviewSets[i][0].clientName, email: `client${i}@viewr.co`, role: "client", avatar: `https://i.pravatar.cc/150?img=${60 + i}` });
+      clientUser = await storage.createUser({ name: reviewSets[i][0].clientName, email: `client${i}@viewr.co`, role: "client", avatar: `https://i.pravatar.cc/150?img=${60 + i}` });
     }
-    const profile = storage.getProfileByUserId(user.id);
+    const profile = await storage.getProfileByUserId(user.id);
     if (profile) {
-      storage.createReview({
+      await storage.createReview({
         profileId: profile.id,
         clientId: clientUser.id,
         clientName: reviewSets[i][0].clientName,
@@ -703,44 +752,44 @@ function seedIfEmpty() {
   }
 
   // Add a demo client
-  const alexClient = storage.createUser({ name: "Alex Taylor", email: "alex@business.co", role: "client", avatar: "https://i.pravatar.cc/150?img=32", bio: "Marketing Director at Taylor & Co.", location: "London, UK" });
+  const alexClient = await storage.createUser({ name: "Alex Taylor", email: "alex@business.co", role: "client", avatar: "https://i.pravatar.cc/150?img=32", bio: "Marketing Director at Taylor & Co.", location: "London, UK" });
 
   // Seed demo projects (after users created)
-  const freshUsers = db.select().from(schema.users).all();
+  const freshUsers = await db.select().from(schema.users);
   const marcus = freshUsers.find(u => u.email === "marcus@viewrr.co");
   const sophia = freshUsers.find(u => u.email === "sophia@viewrr.co");
   const priya  = freshUsers.find(u => u.email === "priya@viewr.co");
 
   if (marcus && sophia && priya) {
     // Project 1: Alex + Marcus — Brand Film, stage 3
-    const p1 = storage.createProject({ clientId: alexClient.id, freelancerId: marcus.id, title: "Taylor & Co. Brand Film", description: "60-second brand film for social media and website hero.", status: "active", currentStage: 3 });
-    storage.addProjectUpdate({ projectId: p1.id, authorId: alexClient.id, stage: 0, note: "Project kicked off. Brief shared with Marcus." });
-    storage.addProjectUpdate({ projectId: p1.id, authorId: marcus.id, stage: 1, note: "Pre-production complete. Shot list and location scouting done. Ready to shoot Thursday." });
-    storage.addProjectUpdate({ projectId: p1.id, authorId: alexClient.id, stage: 2, note: "Shoot day looked amazing — really happy with the rushes. Great work on set." });
-    storage.addProjectUpdate({ projectId: p1.id, authorId: marcus.id, stage: 3, note: "First cut delivered. Please review and leave feedback by Friday." });
+    const p1 = await storage.createProject({ clientId: alexClient.id, freelancerId: marcus.id, title: "Taylor & Co. Brand Film", description: "60-second brand film for social media and website hero.", status: "active", currentStage: 3 });
+    await storage.addProjectUpdate({ projectId: p1.id, authorId: alexClient.id, stage: 0, note: "Project kicked off. Brief shared with Marcus." });
+    await storage.addProjectUpdate({ projectId: p1.id, authorId: marcus.id, stage: 1, note: "Pre-production complete. Shot list and location scouting done. Ready to shoot Thursday." });
+    await storage.addProjectUpdate({ projectId: p1.id, authorId: alexClient.id, stage: 2, note: "Shoot day looked amazing — really happy with the rushes. Great work on set." });
+    await storage.addProjectUpdate({ projectId: p1.id, authorId: marcus.id, stage: 3, note: "First cut delivered. Please review and leave feedback by Friday." });
 
     // Project 2: Alex + Sophia — Post Production, stage 2
-    const p2 = storage.createProject({ clientId: alexClient.id, freelancerId: sophia.id, title: "Product Launch Video Grade", description: "Colour grade and audio mix for 3-part product launch series.", status: "active", currentStage: 2 });
-    storage.addProjectUpdate({ projectId: p2.id, authorId: alexClient.id, stage: 0, note: "Footage sent over to Sophia. Three files, all in BRAW." });
-    storage.addProjectUpdate({ projectId: p2.id, authorId: sophia.id, stage: 1, note: "Ingested and organised. Starting grade on part 1 today." });
-    storage.addProjectUpdate({ projectId: p2.id, authorId: sophia.id, stage: 2, note: "Part 1 grade done. Preview link sent. Parts 2 & 3 in progress." });
+    const p2 = await storage.createProject({ clientId: alexClient.id, freelancerId: sophia.id, title: "Product Launch Video Grade", description: "Colour grade and audio mix for 3-part product launch series.", status: "active", currentStage: 2 });
+    await storage.addProjectUpdate({ projectId: p2.id, authorId: alexClient.id, stage: 0, note: "Footage sent over to Sophia. Three files, all in BRAW." });
+    await storage.addProjectUpdate({ projectId: p2.id, authorId: sophia.id, stage: 1, note: "Ingested and organised. Starting grade on part 1 today." });
+    await storage.addProjectUpdate({ projectId: p2.id, authorId: sophia.id, stage: 2, note: "Part 1 grade done. Preview link sent. Parts 2 & 3 in progress." });
 
     // Project 3: Alex + Priya — Photography, stage 4 (complete)
-    const p3 = storage.createProject({ clientId: alexClient.id, freelancerId: priya.id, title: "SS26 Campaign Photography", description: "Product and lifestyle photography for Spring/Summer 2026 campaign.", status: "completed", currentStage: 5 });
-    storage.addProjectUpdate({ projectId: p3.id, authorId: alexClient.id, stage: 0, note: "Brief sent. 3 looks, 2 locations, 1 day shoot." });
-    storage.addProjectUpdate({ projectId: p3.id, authorId: priya.id, stage: 1, note: "Moodboard and shot list approved. Studio booked for the 3rd." });
-    storage.addProjectUpdate({ projectId: p3.id, authorId: priya.id, stage: 2, note: "Shoot complete. 400+ selects to review." });
-    storage.addProjectUpdate({ projectId: p3.id, authorId: alexClient.id, stage: 3, note: "Selection done — 42 finals chosen. Retouching can begin." });
-    storage.addProjectUpdate({ projectId: p3.id, authorId: priya.id, stage: 4, note: "All retouching complete. Full gallery delivered via WeTransfer." });
-    storage.addProjectUpdate({ projectId: p3.id, authorId: alexClient.id, stage: 5, note: "Incredible work. Campaign goes live next week. Thank you Priya!" });
+    const p3 = await storage.createProject({ clientId: alexClient.id, freelancerId: priya.id, title: "SS26 Campaign Photography", description: "Product and lifestyle photography for Spring/Summer 2026 campaign.", status: "completed", currentStage: 5 });
+    await storage.addProjectUpdate({ projectId: p3.id, authorId: alexClient.id, stage: 0, note: "Brief sent. 3 looks, 2 locations, 1 day shoot." });
+    await storage.addProjectUpdate({ projectId: p3.id, authorId: priya.id, stage: 1, note: "Moodboard and shot list approved. Studio booked for the 3rd." });
+    await storage.addProjectUpdate({ projectId: p3.id, authorId: priya.id, stage: 2, note: "Shoot complete. 400+ selects to review." });
+    await storage.addProjectUpdate({ projectId: p3.id, authorId: alexClient.id, stage: 3, note: "Selection done — 42 finals chosen. Retouching can begin." });
+    await storage.addProjectUpdate({ projectId: p3.id, authorId: priya.id, stage: 4, note: "All retouching complete. Full gallery delivered via WeTransfer." });
+    await storage.addProjectUpdate({ projectId: p3.id, authorId: alexClient.id, stage: 5, note: "Incredible work. Campaign goes live next week. Thank you Priya!" });
   }
 
   // Seed demo feed posts
-  const allUsers = db.select().from(schema.users).all();
+  const allUsers = await db.select().from(schema.users);
   const seedPosts = [
     {
       email: "marcus@viewrr.co",
-      caption: "Just wrapped a two-day brand shoot for a luxury watchmaker in the City. Shooting on the ARRI Alexa 35 — the skin tones are something else. Can\'t wait to show the final cut. 🎬",
+      caption: "Just wrapped a two-day brand shoot for a luxury watchmaker in the City. Shooting on the ARRI Alexa 35 — the skin tones are something else. Can't wait to show the final cut. 🎬",
       mediaUrl: "https://images.unsplash.com/photo-1542744173-8e7e53415bb0?w=900&q=85",
       mediaType: "image",
       tags: JSON.stringify(["BrandFilm", "Cinematography", "London"]),
@@ -748,7 +797,7 @@ function seedIfEmpty() {
     },
     {
       email: "sophia@viewrr.co",
-      caption: "Before & after colour grade on a feature documentary. The original log footage looked flat — here\'s what a proper grade can do. DaVinci Resolve + custom LUTs built from scratch.",
+      caption: "Before & after colour grade on a feature documentary. The original log footage looked flat — here's what a proper grade can do. DaVinci Resolve + custom LUTs built from scratch.",
       mediaUrl: "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=900&q=85",
       mediaType: "image",
       tags: JSON.stringify(["ColourGrade", "PostProduction", "DaVinci"]),
@@ -756,7 +805,7 @@ function seedIfEmpty() {
     },
     {
       email: "aisha@viewr.co",
-      caption: "Excited to share — my short documentary \'Roots\' has been officially selected for the SXSW 2026 programme. Three years of work, hundreds of interviews, one story. ❤️",
+      caption: "Excited to share — my short documentary 'Roots' has been officially selected for the SXSW 2026 programme. Three years of work, hundreds of interviews, one story. ❤️",
       mediaUrl: "https://images.unsplash.com/photo-1485846234645-a62644f84728?w=900&q=85",
       mediaType: "image",
       tags: JSON.stringify(["Documentary", "SXSW", "Storytelling"]),
@@ -764,7 +813,7 @@ function seedIfEmpty() {
     },
     {
       email: "priya@viewr.co",
-      caption: "Campaign stills from last week\'s shoot for a SS26 fashion label. Natural light, minimal retouching. Let the clothes do the talking.",
+      caption: "Campaign stills from last week's shoot for a SS26 fashion label. Natural light, minimal retouching. Let the clothes do the talking.",
       mediaUrl: "https://images.unsplash.com/photo-1469334031218-e382a71b716b?w=900&q=85",
       mediaType: "image",
       tags: JSON.stringify(["FashionPhotography", "Campaign", "Editorial"]),
@@ -807,22 +856,23 @@ function seedIfEmpty() {
   for (const p of seedPosts) {
     const u = allUsers.find(u => u.email === p.email);
     if (!u) continue;
-    storage.createPost({
+    await storage.createPost({
       userId: u.id,
       caption: p.caption,
       mediaUrl: p.mediaUrl,
       mediaType: p.mediaType,
       tags: p.tags,
     });
-    // Manually set like counts since createPost doesn\'t accept them
-    const created = db.select().from(schema.posts).where(eq(schema.posts.userId, u.id)).all().slice(-1)[0];
+    // Manually set like counts since createPost doesn't accept them
+    const postsForUser = await db.select().from(schema.posts).where(eq(schema.posts.userId, u.id));
+    const created = postsForUser.slice(-1)[0];
     if (created) {
-      db.update(schema.posts).set({ likeCount: p.likeCount }).where(eq(schema.posts.id, created.id)).run();
+      await db.update(schema.posts).set({ likeCount: p.likeCount }).where(eq(schema.posts.id, created.id));
     }
   }
 
   // Add a few demo comments
-  const postsAll = db.select().from(schema.posts).all();
+  const postsAll = await db.select().from(schema.posts);
   const clientUser = allUsers.find(u => u.email === "alex@business.co");
   if (clientUser && postsAll.length > 0) {
     const demoComments = [
@@ -833,17 +883,15 @@ function seedIfEmpty() {
     for (const c of demoComments) {
       const post = postsAll[c.postIdx];
       if (post) {
-        storage.createComment({ postId: post.id, userId: clientUser.id, content: c.content });
+        await storage.createComment({ postId: post.id, userId: clientUser.id, content: c.content });
       }
     }
   }
 }
 
-seedIfEmpty();
-
-// Seed demo briefs
-function seedBriefs() {
-  const existing = db.select().from(schema.briefs).all();
+// ─── Seed briefs ─────────────────────────────────────────────────────────────
+async function seedBriefs() {
+  const existing = await db.select().from(schema.briefs);
   if (existing.length > 0) return;
 
   const demoBriefs: schema.InsertBrief[] = [
@@ -935,8 +983,12 @@ function seedBriefs() {
   ];
 
   for (const b of demoBriefs) {
-    storage.createBrief(b);
+    await storage.createBrief(b);
   }
 }
 
-seedBriefs();
+export async function initStorage() {
+  await runMigrations();
+  await seedIfEmpty();
+  await seedBriefs();
+}
