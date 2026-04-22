@@ -17,6 +17,8 @@ await sql`
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
+    password_hash TEXT,
+    phone TEXT,
     role TEXT NOT NULL DEFAULT 'freelancer',
     avatar TEXT,
     bio TEXT,
@@ -24,6 +26,10 @@ await sql`
     created_at TEXT NOT NULL DEFAULT NOW()::text
   )
 `;
+// Add new columns to existing users table if they don't exist
+try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`; } catch {}
+try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT`; } catch {}
+
 await sql`
   CREATE TABLE IF NOT EXISTS profiles (
     id SERIAL PRIMARY KEY,

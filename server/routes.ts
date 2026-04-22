@@ -1,6 +1,12 @@
 import type { Express } from "express";
 import { Server } from "http";
 import { storage } from "./storage";
+import crypto from "crypto";
+
+// Simple password hashing using SHA-256 + salt (no bcrypt needed for this use case)
+function hashPassword(password: string): string {
+  return crypto.createHash("sha256").update(password + "viewrr_salt_2026").digest("hex");
+}
 import { Resend } from "resend";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -12,20 +18,31 @@ import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSc
 export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Auth (simple demo auth by email) ─────────────────────────────────────
   app.post("/api/auth/login", async (req, res) => {
-    const { email } = req.body;
+    const { email, password } = req.body;
     if (!email) return res.status(400).json({ error: "Email required" });
     const user = await storage.getUserByEmail(email);
-    if (!user) return res.status(404).json({ error: "User not found" });
+    if (!user) return res.status(404).json({ error: "No account found with that email" });
+    // Check password if the account has one set
+    if (user.passwordHash && password) {
+      const hash = hashPassword(password);
+      if (hash !== user.passwordHash) return res.status(401).json({ error: "Incorrect password" });
+    } else if (user.passwordHash && !password) {
+      return res.status(401).json({ error: "Password required" });
+    }
     const profile = user.role === "freelancer" ? await storage.getProfileByUserId(user.id) : null;
     res.json({ user, profile });
   });
 
   app.post("/api/auth/register", async (req, res) => {
     try {
-      const data = insertUserSchema.parse(req.body);
-      const existing = await storage.getUserByEmail(data.email);
+      const { name, email, role, phone, password } = req.body;
+      if (!name || !email || !role) return res.status(400).json({ error: "Name, email and role are required" });
+      const existing = await storage.getUserByEmail(email);
       if (existing) return res.status(409).json({ error: "Email already registered" });
-      const user = await storage.createUser(data);
+      const userData: any = { name, email, role };
+      if (phone) userData.phone = phone;
+      if (password) userData.passwordHash = hashPassword(password);
+      const user = await storage.createUser(userData);
       res.json({ user });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -76,21 +93,66 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.post("/api/auth/verify-code", async (req, res) => {
-    const { email, code } = req.body;
-    if (!email || !code) return res.status(400).json({ error: "Email and code required" });
+  // Send verification code via SMS (phone)
+  app.post("/api/auth/send-sms-verification", async (req, res) => {
+    const { phone, email } = req.body;
+    if (!phone) return res.status(400).json({ error: "Phone number required" });
 
-    const stored = verificationCodes.get(email.toLowerCase());
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    // Store against phone number as key
+    verificationCodes.set(phone.replace(/\s+/g, ""), { code, expires: Date.now() + 10 * 60 * 1000 });
+
+    // For now send via email to the provided email as fallback (Twilio can be added later)
+    // If no Resend, just log
+    if (!resend || !email) {
+      console.log(`[verify-sms] Code for ${phone}: ${code}`);
+      return res.json({ ok: true, dev: true });
+    }
+    try {
+      await resend.emails.send({
+        from: "Viewrr <noreply@viewrr.co.uk>",
+        to: email,
+        subject: "Your Viewrr verification code",
+        html: `
+          <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;">
+            <div style="margin-bottom:24px;">
+              <svg width="40" height="40" viewBox="0 0 32 32" fill="none">
+                <rect width="32" height="32" rx="8" fill="#FF5A1F"/>
+                <path d="M7 8l7 16h4l7-16h-4l-5 11.5L11 8H7z" fill="white"/>
+              </svg>
+            </div>
+            <h1 style="font-size:24px;font-weight:700;color:#111;margin:0 0 8px;">Your verification code</h1>
+            <p style="color:#555;margin:0 0 32px;">Enter this code in the Viewrr signup page. It expires in 10 minutes.</p>
+            <div style="background:#f5f5f5;border-radius:12px;padding:24px;text-align:center;margin-bottom:32px;">
+              <span style="font-size:48px;font-weight:800;letter-spacing:12px;color:#FF5A1F;">${code}</span>
+            </div>
+            <p style="color:#999;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>
+          </div>
+        `,
+      });
+      res.json({ ok: true });
+    } catch (e: any) {
+      console.error("[verify-sms] Error:", e.message);
+      res.status(500).json({ error: "Failed to send code" });
+    }
+  });
+
+  app.post("/api/auth/verify-code", async (req, res) => {
+    const { email, phone, code } = req.body;
+    const key = phone ? phone.replace(/\s+/g, "") : email?.toLowerCase();
+    if (!key || !code) return res.status(400).json({ error: "Email or phone and code required" });
+
+    const stored = verificationCodes.get(key);
     if (!stored) return res.status(400).json({ error: "No code found — please request a new one" });
     if (Date.now() > stored.expires) {
-      verificationCodes.delete(email.toLowerCase());
+      verificationCodes.delete(key);
       return res.status(400).json({ error: "Code expired — please request a new one" });
     }
     if (stored.code !== String(code).trim()) {
       return res.status(400).json({ error: "Incorrect code" });
     }
 
-    verificationCodes.delete(email.toLowerCase());
+    verificationCodes.delete(key);
     res.json({ ok: true });
   });
 

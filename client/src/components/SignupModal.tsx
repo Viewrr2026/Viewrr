@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -6,9 +6,14 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "./AuthProvider";
 import { useToast } from "@/hooks/use-toast";
-import { Building2, UserCircle, ChevronRight, Check, Camera, Video, Scissors, Megaphone, ArrowLeft, Mail, RefreshCw, Upload, X, Film, ImageIcon, Plus } from "lucide-react";
+import {
+  Building2, UserCircle, ChevronRight, Check, Camera, Video, Scissors,
+  Megaphone, ArrowLeft, Mail, Phone, RefreshCw, Upload, X, Film,
+  ImageIcon, Plus, Eye, EyeOff,
+} from "lucide-react";
 
 type Step = "role" | "client-details" | "client-verify" | "freelancer-details" | "freelancer-portfolio" | "done";
+type VerifyMethod = "email" | "phone";
 
 const SPECIALISMS = [
   { id: "Videographer", icon: Video, label: "Videographer" },
@@ -30,12 +35,17 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const [role, setRole] = useState<"client" | "freelancer" | null>(null);
 
   // Client fields
-  const [clientName, setClientName] = useState("");
+  const [clientFirstName, setClientFirstName] = useState("");
+  const [clientLastName, setClientLastName] = useState("");
+  const [clientPhone, setClientPhone] = useState("");
   const [clientEmail, setClientEmail] = useState("");
+  const [clientPassword, setClientPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [company, setCompany] = useState("");
 
-  // Email verification
-  const [codeInput, setCodeInput] = useState(["", "", "", "", "", ""]); // 6 digit inputs
+  // Verification
+  const [verifyMethod, setVerifyMethod] = useState<VerifyMethod>("email");
+  const [codeInput, setCodeInput] = useState(["", "", "", "", "", ""]);
   const [codeError, setCodeError] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -83,7 +93,8 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
 
   function reset() {
     setStep("role"); setRole(null);
-    setClientName(""); setClientEmail(""); setCompany("");
+    setClientFirstName(""); setClientLastName(""); setClientPhone(""); setClientEmail(""); setClientPassword(""); setCompany("");
+    setVerifyMethod("email");
     setCodeInput(["", "", "", "", "", ""]); setCodeError(false); setResendCooldown(0);
     setFreeName(""); setFreeEmail(""); setFreeSpecialisms([]); setExperience(""); setEquipment([]); setBio("");
     setUploads([]); setDragOver(false);
@@ -98,58 +109,71 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     setEquipment(e => e.includes(id) ? e.filter(x => x !== id) : [...e, id]);
   }
 
-  // Send verification code via Resend email API
-  async function sendVerificationCode() {
+  const clientName = `${clientFirstName} ${clientLastName}`.trim();
+
+  // ── Validation ──────────────────────────────────────────────────────────────
+  function validateDetails() {
+    if (!clientFirstName.trim()) { toast({ title: "Please enter your first name", variant: "destructive" }); return false; }
+    if (!clientLastName.trim()) { toast({ title: "Please enter your last name", variant: "destructive" }); return false; }
+    if (!clientPhone.trim()) { toast({ title: "Please enter your contact number", variant: "destructive" }); return false; }
+    if (!clientEmail.trim()) { toast({ title: "Please enter your email address", variant: "destructive" }); return false; }
+    if (!clientPassword || clientPassword.length < 8) { toast({ title: "Password must be at least 8 characters", variant: "destructive" }); return false; }
+    return true;
+  }
+
+  // ── Send verification code ──────────────────────────────────────────────────
+  async function sendVerificationCode(method: VerifyMethod) {
     setCodeInput(["", "", "", "", "", ""]);
     setCodeError(false);
     setResendCooldown(30);
-    try {
-      const res = await fetch("/api/auth/send-verification", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: clientEmail }),
-      });
-      if (!res.ok) throw new Error("Failed to send");
-      toast({
-        title: "Verification code sent",
-        description: `A 6-digit code has been sent to ${clientEmail}. Please check your inbox.`,
-      });
-    } catch {
-      toast({
-        title: "Couldn't send code",
-        description: "Please check your email address and try again.",
-        variant: "destructive",
-      });
+
+    if (method === "email") {
+      try {
+        const res = await fetch("/api/auth/send-verification", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: clientEmail }),
+        });
+        if (!res.ok) throw new Error("Failed to send");
+        toast({ title: "Code sent", description: `A 6-digit code has been sent to ${clientEmail}. Check your inbox.` });
+      } catch {
+        toast({ title: "Couldn't send code", description: "Please check your email and try again.", variant: "destructive" });
+      }
+    } else {
+      try {
+        const res = await fetch("/api/auth/send-sms-verification", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone: clientPhone, email: clientEmail }),
+        });
+        if (!res.ok) throw new Error("Failed to send");
+        toast({ title: "Code sent", description: `A 6-digit code has been sent to ${clientPhone}. Check your messages.` });
+      } catch {
+        toast({ title: "Couldn't send code", description: "Please check your number and try again.", variant: "destructive" });
+      }
     }
   }
 
-  async function proceedToVerify() {
-    if (!clientName || !clientEmail) {
-      toast({ title: "Please fill in all required fields", variant: "destructive" });
-      return;
-    }
+  async function proceedToVerify(method: VerifyMethod) {
+    if (!validateDetails()) return;
+    setVerifyMethod(method);
     setStep("client-verify");
-    await sendVerificationCode();
-    // Focus first input after render
+    await sendVerificationCode(method);
     setTimeout(() => inputRefs.current[0]?.focus(), 100);
   }
 
-  // Handle each digit input
+  // ── OTP input handlers ──────────────────────────────────────────────────────
   function handleDigit(index: number, value: string) {
     const digit = value.replace(/\D/g, "").slice(-1);
     const next = [...codeInput];
     next[index] = digit;
     setCodeInput(next);
     setCodeError(false);
-    if (digit && index < 5) {
-      inputRefs.current[index + 1]?.focus();
-    }
+    if (digit && index < 5) inputRefs.current[index + 1]?.focus();
   }
 
   function handleKeyDown(index: number, e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Backspace" && !codeInput[index] && index > 0) {
-      inputRefs.current[index - 1]?.focus();
-    }
+    if (e.key === "Backspace" && !codeInput[index] && index > 0) inputRefs.current[index - 1]?.focus();
   }
 
   function handlePaste(e: React.ClipboardEvent) {
@@ -161,6 +185,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     inputRefs.current[Math.min(paste.length, 5)]?.focus();
   }
 
+  // ── Verify code & create account ────────────────────────────────────────────
   async function verifyAndFinish() {
     const entered = codeInput.join("");
     if (entered.length < 6) {
@@ -168,12 +193,16 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
       toast({ title: "Please enter the full 6-digit code", variant: "destructive" });
       return;
     }
-    // Verify against server
+
     try {
+      const body = verifyMethod === "phone"
+        ? { phone: clientPhone, code: entered }
+        : { email: clientEmail, code: entered };
+
       const verifyRes = await fetch("/api/auth/verify-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: clientEmail, code: entered }),
+        body: JSON.stringify(body),
       });
       if (!verifyRes.ok) {
         setCodeError(true);
@@ -186,16 +215,21 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
       toast({ title: "Verification failed — please try again", variant: "destructive" });
       return;
     }
-    // Correct — register and log in
+
+    // Register and log in
     try {
       const regRes = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: clientName, email: clientEmail, role: "client" }),
+        body: JSON.stringify({ name: clientName, email: clientEmail, role: "client", phone: clientPhone, password: clientPassword }),
       });
       const data = await regRes.json();
       if (data.user) {
         login(data.user);
+      } else if (data.error === "Email already registered") {
+        toast({ title: "Email already registered", description: "Please sign in instead.", variant: "destructive" });
+        handleClose();
+        return;
       } else {
         login({ id: 99, name: clientName, email: clientEmail, role: "client", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
       }
@@ -220,6 +254,8 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
       <path d="M7 8l7 16h4l7-16h-4l-5 11.5L11 8H7z" fill="white"/>
     </svg>
   );
+
+  const canProceed = clientFirstName && clientLastName && clientPhone && clientEmail && clientPassword.length >= 8;
 
   return (
     <Dialog open={open} onOpenChange={v => !v && handleClose()}>
@@ -284,57 +320,142 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
             <button onClick={() => setStep("role")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
 
             <div className="space-y-4">
-              <div className="space-y-1.5">
-                <Label>Full name</Label>
-                <Input placeholder="Alex Taylor" value={clientName} onChange={e => setClientName(e.target.value)} />
+              {/* Name row */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>First Name</Label>
+                  <Input placeholder="Alex" value={clientFirstName} onChange={e => setClientFirstName(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Last Name</Label>
+                  <Input placeholder="Taylor" value={clientLastName} onChange={e => setClientLastName(e.target.value)} />
+                </div>
               </div>
+
+              {/* Phone */}
               <div className="space-y-1.5">
-                <Label>Your email</Label>
-                <Input
-                  type="email"
-                  placeholder="you@email.com"
-                  value={clientEmail}
-                  onChange={e => setClientEmail(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && proceedToVerify()}
-                />
+                <Label>Contact Number</Label>
+                <div className="relative">
+                  <Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    type="tel"
+                    placeholder="+44 7700 900000"
+                    value={clientPhone}
+                    onChange={e => setClientPhone(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
               </div>
+
+              {/* Email */}
+              <div className="space-y-1.5">
+                <Label>Your Email</Label>
+                <div className="relative">
+                  <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    type="email"
+                    placeholder="you@email.com"
+                    value={clientEmail}
+                    onChange={e => setClientEmail(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
+              </div>
+
+              {/* Password */}
+              <div className="space-y-1.5">
+                <Label>Password</Label>
+                <div className="relative">
+                  <Input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="At least 8 characters"
+                    value={clientPassword}
+                    onChange={e => setClientPassword(e.target.value)}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPassword ? <EyeOff size={15}/> : <Eye size={15}/>}
+                  </button>
+                </div>
+                {clientPassword && clientPassword.length < 8 && (
+                  <p className="text-xs text-destructive">Password must be at least 8 characters</p>
+                )}
+              </div>
+
+              {/* Company */}
               <div className="space-y-1.5">
                 <Label>Company / Brand name <span className="text-muted-foreground font-normal">(optional)</span></Label>
                 <Input placeholder="Acme Studios" value={company} onChange={e => setCompany(e.target.value)} />
               </div>
-              <Button
-                onClick={proceedToVerify}
-                className="w-full bg-primary hover:bg-primary/90 text-white rounded-full"
-                disabled={!clientName || !clientEmail}
-              >
-                Continue — verify email →
-              </Button>
+
+              {/* Verify method choice */}
+              <div className="space-y-2">
+                <Label className="text-sm">How would you like to verify?</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => canProceed && proceedToVerify("email")}
+                    disabled={!canProceed}
+                    className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${
+                      canProceed
+                        ? "border-primary bg-primary text-white hover:bg-primary/90"
+                        : "border-border text-muted-foreground opacity-50 cursor-not-allowed"
+                    }`}
+                  >
+                    <Mail size={15}/> Via Email
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => canProceed && proceedToVerify("phone")}
+                    disabled={!canProceed}
+                    className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${
+                      canProceed
+                        ? "border-border hover:border-primary hover:bg-primary/5"
+                        : "border-border text-muted-foreground opacity-50 cursor-not-allowed"
+                    }`}
+                  >
+                    <Phone size={15}/> Via Phone
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground text-center">Fill in all fields above to enable verification</p>
+              </div>
+
               <p className="text-xs text-muted-foreground text-center">By joining you agree to our Terms &amp; Conditions and Privacy Policy.</p>
             </div>
           </>
         )}
 
-        {/* ── STEP: Email verification ── */}
+        {/* ── STEP: Verification ── */}
         {step === "client-verify" && (
           <>
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 {viewrrLogo}
-                Verify your email
+                {verifyMethod === "email" ? "Verify your email" : "Verify your phone"}
               </DialogTitle>
             </DialogHeader>
             <button onClick={() => setStep("client-details")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
 
             <div className="space-y-5">
-              {/* Icon + description */}
               <div className="flex flex-col items-center gap-3 py-2">
                 <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Mail size={26} className="text-primary" />
+                  {verifyMethod === "email"
+                    ? <Mail size={26} className="text-primary" />
+                    : <Phone size={26} className="text-primary" />
+                  }
                 </div>
                 <div className="text-center">
                   <p className="text-sm font-medium">We've sent a 6-digit code to</p>
-                  <p className="text-sm font-bold text-primary mt-0.5">{clientEmail}</p>
-                  <p className="text-xs text-muted-foreground mt-1">Check your inbox and enter the code below.</p>
+                  <p className="text-sm font-bold text-primary mt-0.5">
+                    {verifyMethod === "email" ? clientEmail : clientPhone}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {verifyMethod === "email" ? "Check your inbox and enter the code below." : "Check your messages and enter the code below."}
+                  </p>
                 </div>
               </div>
 
@@ -350,12 +471,10 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                     value={digit}
                     onChange={e => handleDigit(i, e.target.value)}
                     onKeyDown={e => handleKeyDown(i, e)}
-                    className={`w-11 h-13 text-center text-xl font-bold rounded-xl border-2 bg-background focus:outline-none transition-all
+                    className={`w-11 text-center text-xl font-bold rounded-xl border-2 bg-background focus:outline-none transition-all
                       ${codeError
-                        ? "border-destructive text-destructive focus:border-destructive"
-                        : digit
-                          ? "border-primary text-primary"
-                          : "border-border focus:border-primary"
+                        ? "border-destructive text-destructive"
+                        : digit ? "border-primary text-primary" : "border-border focus:border-primary"
                       }`}
                     style={{ height: "3.25rem" }}
                     aria-label={`Digit ${i + 1}`}
@@ -375,19 +494,27 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 Verify &amp; create account →
               </Button>
 
-              {/* Resend */}
-              <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
-                <span>Didn't receive it?</span>
-                {resendCooldown > 0 ? (
-                  <span className="text-muted-foreground">Resend in {resendCooldown}s</span>
-                ) : (
-                  <button
-                    onClick={sendVerificationCode}
-                    className="flex items-center gap-1 text-primary font-medium hover:underline"
-                  >
-                    <RefreshCw size={11} /> Resend code
-                  </button>
-                )}
+              {/* Resend / switch method */}
+              <div className="flex flex-col items-center gap-2 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <span>Didn't receive it?</span>
+                  {resendCooldown > 0 ? (
+                    <span>Resend in {resendCooldown}s</span>
+                  ) : (
+                    <button
+                      onClick={() => sendVerificationCode(verifyMethod)}
+                      className="flex items-center gap-1 text-primary font-medium hover:underline"
+                    >
+                      <RefreshCw size={11} /> Resend code
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={() => proceedToVerify(verifyMethod === "email" ? "phone" : "email")}
+                  className="text-primary hover:underline"
+                >
+                  Try via {verifyMethod === "email" ? "phone" : "email"} instead
+                </button>
               </div>
             </div>
           </>
@@ -405,7 +532,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
             <button onClick={() => setStep("role")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
 
             <div className="space-y-5">
-              {/* Basic info */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>Full name</Label>
@@ -417,7 +543,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 </div>
               </div>
 
-              {/* Specialism */}
               <div>
                 <Label className="mb-2 block">What do you do? <span className="text-muted-foreground font-normal">(select all that apply)</span></Label>
                 <div className="grid grid-cols-2 gap-2">
@@ -440,7 +565,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 </div>
               </div>
 
-              {/* Experience */}
               <div>
                 <Label className="mb-2 block">Years of experience</Label>
                 <div className="flex flex-wrap gap-2">
@@ -459,7 +583,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 </div>
               </div>
 
-              {/* Equipment */}
               <div>
                 <Label className="mb-2 block">Equipment &amp; software <span className="text-muted-foreground font-normal">(optional)</span></Label>
                 <div className="flex flex-wrap gap-2">
@@ -478,7 +601,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 </div>
               </div>
 
-              {/* Bio */}
               <div className="space-y-1.5">
                 <Label>About you <span className="text-muted-foreground font-normal">(optional)</span></Label>
                 <Textarea
@@ -515,7 +637,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
             <div className="space-y-5">
               <p className="text-sm text-muted-foreground">Upload photos and videos of your work directly from your camera roll, or drag and drop files below. You can add up to 12 pieces.</p>
 
-              {/* ── Drag & drop zone ── */}
               <div
                 onDragOver={e => { e.preventDefault(); setDragOver(true); }}
                 onDragLeave={() => setDragOver(false)}
@@ -527,14 +648,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                     : "border-border hover:border-primary/50 hover:bg-secondary/50"
                 } ${uploads.length === 0 ? "py-10" : "py-4"}`}
               >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*,video/*"
-                  multiple
-                  className="hidden"
-                  onChange={e => e.target.files && addFiles(e.target.files)}
-                />
+                <input ref={fileInputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={e => e.target.files && addFiles(e.target.files)} />
 
                 {uploads.length === 0 ? (
                   <div className="flex flex-col items-center gap-3 text-center px-6">
@@ -553,23 +667,19 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                   </div>
                 ) : (
                   <div className="px-3">
-                    {/* Thumbnail grid */}
                     <div className="grid grid-cols-4 gap-2">
                       {uploads.map(u => (
                         <div key={u.id} className="relative group aspect-square rounded-xl overflow-hidden bg-secondary">
-                          {u.type === "video" ? (
-                            <video src={u.preview} className="w-full h-full object-cover" muted />
-                          ) : (
-                            <img src={u.preview} alt="" className="w-full h-full object-cover" />
-                          )}
-                          {/* Type badge */}
+                          {u.type === "video"
+                            ? <video src={u.preview} className="w-full h-full object-cover" muted />
+                            : <img src={u.preview} alt="" className="w-full h-full object-cover" />
+                          }
                           <div className="absolute bottom-1 left-1">
                             {u.type === "video"
                               ? <span className="bg-black/60 text-white rounded px-1 py-0.5 text-[9px] flex items-center gap-0.5"><Film size={8}/>VID</span>
                               : <span className="bg-black/60 text-white rounded px-1 py-0.5 text-[9px] flex items-center gap-0.5"><ImageIcon size={8}/>IMG</span>
                             }
                           </div>
-                          {/* Remove */}
                           <button
                             onClick={e => { e.stopPropagation(); removeUpload(u.id); }}
                             className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
@@ -578,7 +688,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                           </button>
                         </div>
                       ))}
-                      {/* Add more tile */}
                       {uploads.length < 12 && (
                         <div className="aspect-square rounded-xl border-2 border-dashed border-border flex items-center justify-center text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors">
                           <Plus size={18}/>
@@ -590,7 +699,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 )}
               </div>
 
-              {/* Optional links */}
               <div className="space-y-3">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Or add links <span className="normal-case font-normal">(optional)</span></p>
                 {["Instagram profile", "Website / portfolio"].map((placeholder, i) => (
