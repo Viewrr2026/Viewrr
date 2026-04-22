@@ -6,6 +6,8 @@ import { Link } from "wouter";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import LoginModal from "@/components/LoginModal";
+import SignupModal from "@/components/SignupModal";
 import {
   CheckCircle2, Circle, Clock, Briefcase, MessageSquare,
   ArrowRight, ChevronDown, ChevronUp, X, Expand,
@@ -549,25 +551,39 @@ export default function YourWork() {
     }
   }, [projects]);
 
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [signupOpen, setSignupOpen] = useState(false);
+
   if (!user) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center py-28 px-6 text-center">
-        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6">
-          <Briefcase size={28} className="text-primary" />
+      <>
+        <div className="min-h-screen bg-background flex flex-col items-center justify-center py-28 px-6 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-6">
+            <Briefcase size={28} className="text-primary" />
+          </div>
+          <h2 className="text-2xl font-bold mb-2">Sign in to view your work</h2>
+          <p className="text-muted-foreground mb-6 max-w-sm">
+            Track project progress, share updates, and stay aligned with your clients or freelancers.
+          </p>
+          <div className="flex gap-3">
+            <Button
+              onClick={() => setLoginOpen(true)}
+              className="bg-primary hover:bg-primary/90 text-white rounded-full px-6"
+            >
+              Sign in
+            </Button>
+            <Button
+              onClick={() => setSignupOpen(true)}
+              variant="outline"
+              className="rounded-full px-6"
+            >
+              Sign up
+            </Button>
+          </div>
         </div>
-        <h2 className="text-2xl font-bold mb-2">Sign in to view your work</h2>
-        <p className="text-muted-foreground mb-6 max-w-sm">
-          Track project progress, share updates, and stay aligned with your clients or freelancers.
-        </p>
-        <div className="flex gap-3">
-          <Button asChild className="bg-primary hover:bg-primary/90 text-white rounded-full px-6">
-            <Link href="/?signin=1">Sign in</Link>
-          </Button>
-          <Button asChild variant="outline" className="rounded-full px-6">
-            <Link href="/?signup=1">Sign up</Link>
-          </Button>
-        </div>
-      </div>
+        <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
+        <SignupModal open={signupOpen} onClose={() => setSignupOpen(false)} />
+      </>
     );
   }
 
