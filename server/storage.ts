@@ -190,6 +190,7 @@ export interface IStorage {
   getFeedPosts(limit?: number, offset?: number, viewerUserId?: number): Promise<PostWithUser[]>;
   getPost(id: number): Promise<PostWithUser | undefined>;
   createPost(data: schema.InsertPost): Promise<schema.Post>;
+  updatePost(id: number, userId: number, caption: string, tags: string): Promise<schema.Post | undefined>;
   deletePost(id: number, userId: number): Promise<boolean>;
   toggleLike(postId: number, userId: number): Promise<boolean>;
   isLiked(postId: number, userId: number): Promise<boolean>;
@@ -472,6 +473,17 @@ class Storage implements IStorage {
   async createPost(data: schema.InsertPost): Promise<schema.Post> {
     const r = await db.insert(schema.posts).values(data).returning();
     return r[0];
+  }
+
+  async updatePost(id: number, userId: number, caption: string, tags: string): Promise<schema.Post | undefined> {
+    const r = await db.select().from(schema.posts).where(eq(schema.posts.id, id));
+    const post = r[0];
+    if (!post || post.userId !== userId) return undefined;
+    const updated = await db.update(schema.posts)
+      .set({ caption, tags })
+      .where(eq(schema.posts.id, id))
+      .returning();
+    return updated[0];
   }
 
   async deletePost(id: number, userId: number): Promise<boolean> {

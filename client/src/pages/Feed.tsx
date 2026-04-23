@@ -5,7 +5,7 @@ import { DEMO_USER_IDS, getMockPosts } from "@/lib/mockData";
 import {
   Heart, MessageCircle, Send, ImagePlus, X, Hash,
   MoreHorizontal, Trash2, MapPin, Sparkles, TrendingUp,
-  Share2, Repeat2, Mail, Upload, Film, Link as LinkIcon,
+  Share2, Repeat2, Mail, Upload, Film, Link as LinkIcon, Pencil,
 } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -183,7 +183,14 @@ function PostCard({ pw }: { pw: PostWithUser }) {
   const [likeCount, setLikeCount] = useState(pw.post.likeCount);
   const [dmOpen, setDmOpen] = useState(false);
   const [reposted, setReposted] = useState(false);
-  const tags: string[] = JSON.parse(pw.post.tags || "[]");
+  const [editOpen, setEditOpen] = useState(false);
+  const [editCaption, setEditCaption] = useState(pw.post.caption || "");
+  const [editTagInput, setEditTagInput] = useState("");
+  const [editTags, setEditTags] = useState<string[]>(JSON.parse(pw.post.tags || "[]"));
+  // Local caption/tags so edits reflect immediately without refetch flicker
+  const [displayCaption, setDisplayCaption] = useState(pw.post.caption || "");
+  const [displayTags, setDisplayTags] = useState<string[]>(JSON.parse(pw.post.tags || "[]"));
+  const tags: string[] = displayTags;
 
   const likeMutation = useMutation({
     mutationFn: async () => {
@@ -199,6 +206,41 @@ function PostCard({ pw }: { pw: PostWithUser }) {
     mutationFn: async () => { await apiRequest("DELETE", `/api/feed/${pw.post.id}`, { userId: user!.id }); },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/feed"] }); toast({ title: "Post deleted" }); },
   });
+
+  const editMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PATCH", `/api/feed/${pw.post.id}`, {
+        userId: user!.id,
+        caption: editCaption,
+        tags: JSON.stringify(editTags),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setDisplayCaption(editCaption);
+      setDisplayTags([...editTags]);
+      queryClient.invalidateQueries({ queryKey: ["/api/feed"] });
+      toast({ title: "Post updated" });
+      setEditOpen(false);
+    },
+    onError: () => toast({ title: "Failed to update post", variant: "destructive" }),
+  });
+
+  function openEdit() {
+    setEditCaption(displayCaption);
+    setEditTags([...displayTags]);
+    setEditTagInput("");
+    setEditOpen(true);
+  }
+
+  function handleEditTag(e: React.KeyboardEvent<HTMLInputElement>) {
+    if ((e.key === "Enter" || e.key === ",") && editTagInput.trim()) {
+      e.preventDefault();
+      const clean = editTagInput.trim().replace(/^#/, "").replace(/\s+/g, "");
+      if (clean && !editTags.includes(clean)) setEditTags(t => [...t, clean]);
+      setEditTagInput("");
+    }
+  }
 
   const isOwner = user?.id === pw.user.id;
 
@@ -275,6 +317,9 @@ function PostCard({ pw }: { pw: PostWithUser }) {
             {isOwner && (
               <>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem className="flex items-center gap-2" onClick={openEdit}>
+                  <Pencil size={13} /> Edit post
+                </DropdownMenuItem>
                 <DropdownMenuItem className="text-destructive flex items-center gap-2" onClick={() => deleteMutation.mutate()}>
                   <Trash2 size={13} /> Delete post
                 </DropdownMenuItem>
@@ -285,8 +330,8 @@ function PostCard({ pw }: { pw: PostWithUser }) {
       </div>
 
       {/* Caption */}
-      {pw.post.caption && (
-        <p className="px-5 pb-3 text-sm leading-relaxed whitespace-pre-line">{pw.post.caption}</p>
+      {displayCaption && (
+        <p className="px-5 pb-3 text-sm leading-relaxed whitespace-pre-line">{displayCaption}</p>
       )}
 
       {/* Tags */}
@@ -297,6 +342,61 @@ function PostCard({ pw }: { pw: PostWithUser }) {
           ))}
         </div>
       )}
+
+      {/* Edit post dialog */}
+      <Dialog open={editOpen} onOpenChange={v => !v && setEditOpen(false)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil size={16} className="text-primary" /> Edit post
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-1">
+            <Textarea
+              placeholder="Update your caption..."
+              value={editCaption}
+              onChange={e => setEditCaption(e.target.value)}
+              rows={4}
+              className="resize-none"
+            />
+            {/* Tags editor */}
+            <div className="space-y-2">
+              {editTags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {editTags.map(t => (
+                    <span key={t} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary/10 text-primary text-xs font-medium">
+                      #{t}
+                      <button onClick={() => setEditTags(tags => tags.filter(x => x !== t))} className="hover:text-destructive transition-colors">
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2 border border-border rounded-xl px-3 py-2">
+                <Hash size={14} className="text-muted-foreground flex-shrink-0" />
+                <Input
+                  className="border-0 p-0 h-auto focus-visible:ring-0 text-sm"
+                  placeholder="Add tag, press Enter"
+                  value={editTagInput}
+                  onChange={e => setEditTagInput(e.target.value)}
+                  onKeyDown={handleEditTag}
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1 rounded-full" onClick={() => setEditOpen(false)}>Cancel</Button>
+              <Button
+                className="flex-1 bg-primary hover:bg-primary/90 text-white rounded-full"
+                onClick={() => editMutation.mutate()}
+                disabled={editMutation.isPending}
+              >
+                {editMutation.isPending ? "Saving..." : "Save changes"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Media */}
       {pw.post.mediaUrl && (
@@ -548,7 +648,8 @@ export default function Feed() {
   const { user } = useAuth();
   const [postModalOpen, setPostModalOpen] = useState(false);
 
-  const isDemo = !user || DEMO_USER_IDS.has(user?.id ?? -1);
+  // Only show mock data for the 3 built-in demo accounts — any real registered user hits the real API
+  const isDemo = DEMO_USER_IDS.has(user?.id ?? -1);
 
   const { data: posts = [], isLoading } = useQuery<PostWithUser[]>({
     queryKey: ["/api/feed", user?.id],

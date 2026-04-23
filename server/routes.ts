@@ -303,6 +303,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  app.patch("/api/feed/:id", async (req, res) => {
+    const { userId, caption, tags } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    const post = await storage.updatePost(Number(req.params.id), Number(userId), caption ?? "", tags ?? "[]");
+    if (!post) return res.status(403).json({ error: "Not allowed" });
+    const pw = await storage.getPost(post.id);
+    res.json(pw);
+  });
+
   app.delete("/api/feed/:id", async (req, res) => {
     const { userId } = req.body;
     const ok = await storage.deletePost(Number(req.params.id), Number(userId));
