@@ -12,7 +12,7 @@ import {
   ImageIcon, Plus, Eye, EyeOff,
 } from "lucide-react";
 
-type Step = "role" | "client-details" | "client-verify" | "freelancer-details" | "freelancer-portfolio" | "done";
+type Step = "role" | "client-details" | "client-verify" | "freelancer-details" | "freelancer-verify" | "freelancer-portfolio" | "done";
 type VerifyMethod = "email" | "phone";
 
 const SPECIALISMS = [
@@ -43,20 +43,25 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const [showPassword, setShowPassword] = useState(false);
   const [company, setCompany] = useState("");
 
-  // Verification
+  // Freelancer fields
+  const [freeFirstName, setFreeFirstName] = useState("");
+  const [freeLastName, setFreeLastName] = useState("");
+  const [freePhone, setFreePhone] = useState("");
+  const [freeEmail, setFreeEmail] = useState("");
+  const [freePassword, setFreePassword] = useState("");
+  const [showFreePassword, setShowFreePassword] = useState(false);
+  const [freeCompany, setFreeCompany] = useState("");
+  const [freeSpecialisms, setFreeSpecialisms] = useState<string[]>([]);
+  const [experience, setExperience] = useState("");
+  const [equipment, setEquipment] = useState<string[]>([]);
+  const [bio, setBio] = useState("");
+
+  // Verification (shared for both client and freelancer)
   const [verifyMethod, setVerifyMethod] = useState<VerifyMethod>("email");
   const [codeInput, setCodeInput] = useState(["", "", "", "", "", ""]);
   const [codeError, setCodeError] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
-
-  // Freelancer fields
-  const [freeName, setFreeName] = useState("");
-  const [freeEmail, setFreeEmail] = useState("");
-  const [freeSpecialisms, setFreeSpecialisms] = useState<string[]>([]);
-  const [experience, setExperience] = useState("");
-  const [equipment, setEquipment] = useState<string[]>([]);
-  const [bio, setBio] = useState("");
 
   // Portfolio uploads
   type UploadedFile = { id: string; file: File; preview: string; type: "image" | "video" };
@@ -94,10 +99,12 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   function reset() {
     setStep("role"); setRole(null);
     setClientFirstName(""); setClientLastName(""); setClientPhone(""); setClientEmail(""); setClientPassword(""); setCompany("");
+    setFreeFirstName(""); setFreeLastName(""); setFreePhone(""); setFreeEmail(""); setFreePassword(""); setFreeCompany("");
     setVerifyMethod("email");
     setCodeInput(["", "", "", "", "", ""]); setCodeError(false); setResendCooldown(0);
-    setFreeName(""); setFreeEmail(""); setFreeSpecialisms([]); setExperience(""); setEquipment([]); setBio("");
+    setFreeSpecialisms([]); setExperience(""); setEquipment([]); setBio("");
     setUploads([]); setDragOver(false);
+    setShowPassword(false); setShowFreePassword(false);
   }
 
   function handleClose() { reset(); onClose(); }
@@ -110,8 +117,9 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   }
 
   const clientName = `${clientFirstName} ${clientLastName}`.trim();
+  const freeName = `${freeFirstName} ${freeLastName}`.trim();
 
-  // ── Validation ──────────────────────────────────────────────────────────────
+  // ── Validation — client ──────────────────────────────────────────────────────
   function validateDetails() {
     if (!clientFirstName.trim()) { toast({ title: "Please enter your first name", variant: "destructive" }); return false; }
     if (!clientLastName.trim()) { toast({ title: "Please enter your last name", variant: "destructive" }); return false; }
@@ -121,8 +129,22 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     return true;
   }
 
+  // ── Validation — freelancer ──────────────────────────────────────────────────
+  function validateFreeDetails() {
+    if (!freeFirstName.trim()) { toast({ title: "Please enter your first name", variant: "destructive" }); return false; }
+    if (!freeLastName.trim()) { toast({ title: "Please enter your last name", variant: "destructive" }); return false; }
+    if (!freePhone.trim()) { toast({ title: "Please enter your contact number", variant: "destructive" }); return false; }
+    if (!freeEmail.trim()) { toast({ title: "Please enter your email address", variant: "destructive" }); return false; }
+    if (!freePassword || freePassword.length < 8) { toast({ title: "Password must be at least 8 characters", variant: "destructive" }); return false; }
+    if (freeSpecialisms.length === 0) { toast({ title: "Please select at least one specialism", variant: "destructive" }); return false; }
+    return true;
+  }
+
   // ── Send verification code ──────────────────────────────────────────────────
-  async function sendVerificationCode(method: VerifyMethod) {
+  async function sendVerificationCode(method: VerifyMethod, emailVal?: string, phoneVal?: string) {
+    const email = emailVal ?? (role === "freelancer" ? freeEmail : clientEmail);
+    const phone = phoneVal ?? (role === "freelancer" ? freePhone : clientPhone);
+
     setCodeInput(["", "", "", "", "", ""]);
     setCodeError(false);
     setResendCooldown(30);
@@ -132,10 +154,10 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
         const res = await fetch("/api/auth/send-verification", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: clientEmail }),
+          body: JSON.stringify({ email }),
         });
         if (!res.ok) throw new Error("Failed to send");
-        toast({ title: "Code sent", description: `A 6-digit code has been sent to ${clientEmail}. Check your inbox.` });
+        toast({ title: "Code sent", description: `A 6-digit code has been sent to ${email}. Check your inbox.` });
       } catch {
         toast({ title: "Couldn't send code", description: "Please check your email and try again.", variant: "destructive" });
       }
@@ -144,10 +166,10 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
         const res = await fetch("/api/auth/send-sms-verification", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone: clientPhone, email: clientEmail }),
+          body: JSON.stringify({ phone, email }),
         });
         if (!res.ok) throw new Error("Failed to send");
-        toast({ title: "Code sent", description: `A 6-digit code has been sent to ${clientPhone}. Check your messages.` });
+        toast({ title: "Code sent", description: `A 6-digit code has been sent to ${phone}. Check your messages.` });
       } catch {
         toast({ title: "Couldn't send code", description: "Please check your number and try again.", variant: "destructive" });
       }
@@ -158,7 +180,15 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     if (!validateDetails()) return;
     setVerifyMethod(method);
     setStep("client-verify");
-    await sendVerificationCode(method);
+    await sendVerificationCode(method, clientEmail, clientPhone);
+    setTimeout(() => inputRefs.current[0]?.focus(), 100);
+  }
+
+  async function proceedToFreeVerify(method: VerifyMethod) {
+    if (!validateFreeDetails()) return;
+    setVerifyMethod(method);
+    setStep("freelancer-verify");
+    await sendVerificationCode(method, freeEmail, freePhone);
     setTimeout(() => inputRefs.current[0]?.focus(), 100);
   }
 
@@ -185,7 +215,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     inputRefs.current[Math.min(paste.length, 5)]?.focus();
   }
 
-  // ── Verify code & create account ────────────────────────────────────────────
+  // ── Verify code & create CLIENT account ─────────────────────────────────────
   async function verifyAndFinish() {
     const entered = codeInput.join("");
     if (entered.length < 6) {
@@ -240,11 +270,65 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     setTimeout(() => { handleClose(); }, 1800);
   }
 
+  // ── Verify code & create FREELANCER account ──────────────────────────────────
+  async function verifyAndFinishFreelancer() {
+    const entered = codeInput.join("");
+    if (entered.length < 6) {
+      setCodeError(true);
+      toast({ title: "Please enter the full 6-digit code", variant: "destructive" });
+      return;
+    }
+
+    try {
+      const body = verifyMethod === "phone"
+        ? { phone: freePhone, code: entered }
+        : { email: freeEmail, code: entered };
+
+      const verifyRes = await fetch("/api/auth/verify-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!verifyRes.ok) {
+        setCodeError(true);
+        toast({ title: "Incorrect code — please try again", variant: "destructive" });
+        setCodeInput(["", "", "", "", "", ""]);
+        inputRefs.current[0]?.focus();
+        return;
+      }
+    } catch {
+      toast({ title: "Verification failed — please try again", variant: "destructive" });
+      return;
+    }
+
+    // Register freelancer account
+    try {
+      const regRes = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: freeName, email: freeEmail, role: "freelancer", phone: freePhone, password: freePassword }),
+      });
+      const data = await regRes.json();
+      if (data.user) {
+        login(data.user);
+      } else if (data.error === "Email already registered") {
+        toast({ title: "Email already registered", description: "Please sign in instead.", variant: "destructive" });
+        handleClose();
+        return;
+      } else {
+        login({ id: 98, name: freeName, email: freeEmail, role: "freelancer", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+      }
+    } catch {
+      login({ id: 98, name: freeName, email: freeEmail, role: "freelancer", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+    }
+    // Move on to portfolio step
+    setCodeInput(["", "", "", "", "", ""]);
+    setStep("freelancer-portfolio");
+  }
+
   function finishFreelancer() {
-    if (!freeName || !freeEmail) { toast({ title: "Please fill in all fields", variant: "destructive" }); return; }
-    login({ id: 98, name: freeName, email: freeEmail, role: "freelancer", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
     setStep("done");
-    toast({ title: `Welcome to Viewrr, ${freeName}!` });
+    toast({ title: `Welcome to Viewrr, ${freeFirstName}!` });
     setTimeout(() => { handleClose(); }, 1800);
   }
 
@@ -256,6 +340,11 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   );
 
   const canProceed = clientFirstName && clientLastName && clientPhone && clientEmail && clientPassword.length >= 8;
+  const canFreeProceed = freeFirstName && freeLastName && freePhone && freeEmail && freePassword.length >= 8 && freeSpecialisms.length > 0;
+
+  // Active email/phone for the verify step (depends on role)
+  const activeEmail = role === "freelancer" ? freeEmail : clientEmail;
+  const activePhone = role === "freelancer" ? freePhone : clientPhone;
 
   return (
     <Dialog open={open} onOpenChange={v => !v && handleClose()}>
@@ -323,18 +412,18 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
               {/* Name row */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label>First Name</Label>
+                  <Label>First Name <span className="text-destructive">*</span></Label>
                   <Input placeholder="Alex" value={clientFirstName} onChange={e => setClientFirstName(e.target.value)} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Last Name</Label>
+                  <Label>Last Name <span className="text-destructive">*</span></Label>
                   <Input placeholder="Taylor" value={clientLastName} onChange={e => setClientLastName(e.target.value)} />
                 </div>
               </div>
 
               {/* Phone */}
               <div className="space-y-1.5">
-                <Label>Contact Number</Label>
+                <Label>Contact Number <span className="text-destructive">*</span></Label>
                 <div className="relative">
                   <Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
@@ -349,7 +438,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
 
               {/* Email */}
               <div className="space-y-1.5">
-                <Label>Your Email</Label>
+                <Label>Your Email <span className="text-destructive">*</span></Label>
                 <div className="relative">
                   <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
@@ -364,7 +453,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
 
               {/* Password */}
               <div className="space-y-1.5">
-                <Label>Password</Label>
+                <Label>Password <span className="text-destructive">*</span></Label>
                 <div className="relative">
                   <Input
                     type={showPassword ? "text" : "password"}
@@ -429,7 +518,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
           </>
         )}
 
-        {/* ── STEP: Verification ── */}
+        {/* ── STEP: Client Verification ── */}
         {step === "client-verify" && (
           <>
             <DialogHeader>
@@ -502,7 +591,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                     <span>Resend in {resendCooldown}s</span>
                   ) : (
                     <button
-                      onClick={() => sendVerificationCode(verifyMethod)}
+                      onClick={() => sendVerificationCode(verifyMethod, clientEmail, clientPhone)}
                       className="flex items-center gap-1 text-primary font-medium hover:underline"
                     >
                       <RefreshCw size={11} /> Resend code
@@ -526,25 +615,87 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 {viewrrLogo}
-                Build your freelancer profile
+                Create your freelancer account
               </DialogTitle>
             </DialogHeader>
             <button onClick={() => setStep("role")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
 
-            <div className="space-y-5">
+            <div className="space-y-4">
+              {/* Name row */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label>Full name</Label>
-                  <Input placeholder="Marcus Reid" value={freeName} onChange={e => setFreeName(e.target.value)} />
+                  <Label>First Name <span className="text-destructive">*</span></Label>
+                  <Input placeholder="Marcus" value={freeFirstName} onChange={e => setFreeFirstName(e.target.value)} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Email</Label>
-                  <Input type="email" placeholder="you@email.com" value={freeEmail} onChange={e => setFreeEmail(e.target.value)} />
+                  <Label>Last Name <span className="text-destructive">*</span></Label>
+                  <Input placeholder="Reid" value={freeLastName} onChange={e => setFreeLastName(e.target.value)} />
                 </div>
               </div>
 
+              {/* Phone */}
+              <div className="space-y-1.5">
+                <Label>Contact Number <span className="text-destructive">*</span></Label>
+                <div className="relative">
+                  <Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    type="tel"
+                    placeholder="+44 7700 900000"
+                    value={freePhone}
+                    onChange={e => setFreePhone(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
+              </div>
+
+              {/* Email */}
+              <div className="space-y-1.5">
+                <Label>Your Email <span className="text-destructive">*</span></Label>
+                <div className="relative">
+                  <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    type="email"
+                    placeholder="you@email.com"
+                    value={freeEmail}
+                    onChange={e => setFreeEmail(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
+              </div>
+
+              {/* Password */}
+              <div className="space-y-1.5">
+                <Label>Password <span className="text-destructive">*</span></Label>
+                <div className="relative">
+                  <Input
+                    type={showFreePassword ? "text" : "password"}
+                    placeholder="At least 8 characters"
+                    value={freePassword}
+                    onChange={e => setFreePassword(e.target.value)}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowFreePassword(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showFreePassword ? <EyeOff size={15}/> : <Eye size={15}/>}
+                  </button>
+                </div>
+                {freePassword && freePassword.length < 8 && (
+                  <p className="text-xs text-destructive">Password must be at least 8 characters</p>
+                )}
+              </div>
+
+              {/* Company / Brand (optional) */}
+              <div className="space-y-1.5">
+                <Label>Company / Brand name <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input placeholder="My Studio" value={freeCompany} onChange={e => setFreeCompany(e.target.value)} />
+              </div>
+
+              {/* Specialisms */}
               <div>
-                <Label className="mb-2 block">What do you do? <span className="text-muted-foreground font-normal">(select all that apply)</span></Label>
+                <Label className="mb-2 block">What do you do? <span className="text-destructive">*</span> <span className="text-muted-foreground font-normal">(select all that apply)</span></Label>
                 <div className="grid grid-cols-2 gap-2">
                   {SPECIALISMS.map(({ id, icon: Icon, label }) => (
                     <button
@@ -565,6 +716,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 </div>
               </div>
 
+              {/* Experience */}
               <div>
                 <Label className="mb-2 block">Years of experience</Label>
                 <div className="flex flex-wrap gap-2">
@@ -583,6 +735,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 </div>
               </div>
 
+              {/* Equipment */}
               <div>
                 <Label className="mb-2 block">Equipment &amp; software <span className="text-muted-foreground font-normal">(optional)</span></Label>
                 <div className="flex flex-wrap gap-2">
@@ -601,6 +754,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 </div>
               </div>
 
+              {/* Bio */}
               <div className="space-y-1.5">
                 <Label>About you <span className="text-muted-foreground font-normal">(optional)</span></Label>
                 <Textarea
@@ -612,13 +766,130 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 />
               </div>
 
+              {/* Verify method choice */}
+              <div className="space-y-2">
+                <Label className="text-sm">How would you like to verify?</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => canFreeProceed && proceedToFreeVerify("email")}
+                    disabled={!canFreeProceed}
+                    className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${
+                      canFreeProceed
+                        ? "border-primary bg-primary text-white hover:bg-primary/90"
+                        : "border-border text-muted-foreground opacity-50 cursor-not-allowed"
+                    }`}
+                  >
+                    <Mail size={15}/> Via Email
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => canFreeProceed && proceedToFreeVerify("phone")}
+                    disabled={!canFreeProceed}
+                    className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${
+                      canFreeProceed
+                        ? "border-border hover:border-primary hover:bg-primary/5"
+                        : "border-border text-muted-foreground opacity-50 cursor-not-allowed"
+                    }`}
+                  >
+                    <Phone size={15}/> Via Phone
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground text-center">Fill in all required fields above to enable verification</p>
+              </div>
+
+              <p className="text-xs text-muted-foreground text-center">By joining you agree to our Terms &amp; Conditions and Privacy Policy.</p>
+            </div>
+          </>
+        )}
+
+        {/* ── STEP: Freelancer Verification ── */}
+        {step === "freelancer-verify" && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {viewrrLogo}
+                {verifyMethod === "email" ? "Verify your email" : "Verify your phone"}
+              </DialogTitle>
+            </DialogHeader>
+            <button onClick={() => setStep("freelancer-details")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
+
+            <div className="space-y-5">
+              <div className="flex flex-col items-center gap-3 py-2">
+                <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">
+                  {verifyMethod === "email"
+                    ? <Mail size={26} className="text-primary" />
+                    : <Phone size={26} className="text-primary" />
+                  }
+                </div>
+                <div className="text-center">
+                  <p className="text-sm font-medium">We've sent a 6-digit code to</p>
+                  <p className="text-sm font-bold text-primary mt-0.5">
+                    {verifyMethod === "email" ? freeEmail : freePhone}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {verifyMethod === "email" ? "Check your inbox and enter the code below." : "Check your messages and enter the code below."}
+                  </p>
+                </div>
+              </div>
+
+              {/* 6-digit input boxes */}
+              <div className="flex justify-center gap-2" onPaste={handlePaste}>
+                {codeInput.map((digit, i) => (
+                  <input
+                    key={i}
+                    ref={el => { inputRefs.current[i] = el; }}
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={1}
+                    value={digit}
+                    onChange={e => handleDigit(i, e.target.value)}
+                    onKeyDown={e => handleKeyDown(i, e)}
+                    className={`w-11 text-center text-xl font-bold rounded-xl border-2 bg-background focus:outline-none transition-all
+                      ${codeError
+                        ? "border-destructive text-destructive"
+                        : digit ? "border-primary text-primary" : "border-border focus:border-primary"
+                      }`}
+                    style={{ height: "3.25rem" }}
+                    aria-label={`Digit ${i + 1}`}
+                  />
+                ))}
+              </div>
+
+              {codeError && (
+                <p className="text-xs text-destructive text-center -mt-2">Incorrect code. Please try again.</p>
+              )}
+
               <Button
-                onClick={() => setStep("freelancer-portfolio")}
+                onClick={verifyAndFinishFreelancer}
                 className="w-full bg-primary hover:bg-primary/90 text-white rounded-full"
-                disabled={!freeName || !freeEmail || freeSpecialisms.length === 0}
+                disabled={codeInput.join("").length < 6}
               >
-                Next: Portfolio →
+                Verify &amp; continue →
               </Button>
+
+              {/* Resend / switch method */}
+              <div className="flex flex-col items-center gap-2 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <span>Didn't receive it?</span>
+                  {resendCooldown > 0 ? (
+                    <span>Resend in {resendCooldown}s</span>
+                  ) : (
+                    <button
+                      onClick={() => sendVerificationCode(verifyMethod, freeEmail, freePhone)}
+                      className="flex items-center gap-1 text-primary font-medium hover:underline"
+                    >
+                      <RefreshCw size={11} /> Resend code
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={() => proceedToFreeVerify(verifyMethod === "email" ? "phone" : "email")}
+                  className="text-primary hover:underline"
+                >
+                  Try via {verifyMethod === "email" ? "phone" : "email"} instead
+                </button>
+              </div>
             </div>
           </>
         )}
@@ -632,7 +903,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 Add your portfolio
               </DialogTitle>
             </DialogHeader>
-            <button onClick={() => setStep("freelancer-details")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
+            <button onClick={() => setStep("freelancer-verify")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
 
             <div className="space-y-5">
               <p className="text-sm text-muted-foreground">Upload photos and videos of your work directly from your camera roll, or drag and drop files below. You can add up to 12 pieces.</p>
@@ -710,7 +981,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
               </div>
 
               <Button onClick={finishFreelancer} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full">
-                Create my profile →
+                Complete my profile →
               </Button>
               <button onClick={finishFreelancer} className="w-full text-xs text-muted-foreground hover:text-foreground text-center">Skip for now</button>
             </div>
