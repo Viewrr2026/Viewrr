@@ -179,7 +179,7 @@ export default function Dashboard() {
 
         {/* Stats strip */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          {isFreelancer ? [
+          {(isFreelancer ? [
             { label: "Profile views", value: "—", icon: TrendingUp },
             { label: "Messages", value: String(conversations.length), icon: MessageSquare },
             { label: "Saved by clients", value: "—", icon: Bookmark },
@@ -189,7 +189,7 @@ export default function Dashboard() {
             { label: "Messages", value: String(conversations.length), icon: MessageSquare },
             { label: "Projects posted", value: "0", icon: Briefcase },
             { label: "Avg response time", value: "<1h", icon: Star },
-          ].map(({ label, value, icon: Icon }) => (
+          ]).map(({ label, value, icon: Icon }) => (
             <div key={label} className="bg-card border border-border rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm text-muted-foreground">{label}</span>
