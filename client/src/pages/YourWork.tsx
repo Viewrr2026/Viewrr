@@ -11,7 +11,7 @@ import SignupModal from "@/components/SignupModal";
 import {
   CheckCircle2, Circle, Clock, Briefcase, MessageSquare,
   ArrowRight, ChevronDown, ChevronUp, X, Expand,
-  Eye, EyeOff, Globe, Lock,
+  Eye, EyeOff, Globe, Lock, AlertTriangle, RefreshCw,
 } from "lucide-react";
 import { safeGet, safeSet } from "@/lib/storage";
 import { DEMO_USER_IDS, getMockProjects } from "@/lib/mockData";
@@ -533,14 +533,29 @@ export default function YourWork() {
 
   const isDemo = !!user && DEMO_USER_IDS.has(user.id);
 
-  const { data: projects = [], isLoading } = useQuery<ProjectWithDetails[]>({
+  const { data: projects = [], isLoading, isError, refetch, error } = useQuery<ProjectWithDetails[]>({
     queryKey: ["/api/projects", user?.id],
-    queryFn: () => {
-      if (isDemo) return Promise.resolve(getMockProjects(user!.id) as any);
-      return apiRequest("GET", `/api/projects?userId=${user!.id}`).then(r => r.json());
+    queryFn: async () => {
+      if (isDemo) return getMockProjects(user!.id) as any;
+      try {
+        const res = await apiRequest("GET", `/api/projects?userId=${user!.id}`);
+        if (!res.ok) {
+          // Server returned an error — return empty array rather than crashing
+          console.warn("[YourWork] Projects API returned", res.status);
+          return [];
+        }
+        const data = await res.json();
+        // Handle both array response and error object with empty projects
+        return Array.isArray(data) ? data : [];
+      } catch (e) {
+        console.warn("[YourWork] Failed to load projects:", e);
+        return [];
+      }
     },
     enabled: !!user,
-    refetchInterval: isDemo ? false : 5000,
+    refetchInterval: isDemo ? false : 10000,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10000),
   });
 
   // Keep open project in sync with refetched data
@@ -642,20 +657,63 @@ export default function YourWork() {
 
         {isLoading ? (
           <div className="space-y-4">
-            {[1, 2].map(i => <div key={i} className="h-36 rounded-2xl bg-muted animate-pulse" />)}
+            {[1, 2, 3].map(i => (
+              <div key={i} className="h-36 rounded-2xl bg-muted animate-pulse" />
+            ))}
+            <p className="text-xs text-muted-foreground text-center pt-2">Loading your projects...</p>
+          </div>
+        ) : isError ? (
+          /* ── Network / server error ── */
+          <div className="text-center py-20">
+            <div className="w-14 h-14 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mx-auto mb-4">
+              <AlertTriangle size={26} className="text-amber-600 dark:text-amber-400" />
+            </div>
+            <h3 className="font-semibold text-foreground mb-2">Couldn't load your projects</h3>
+            <p className="text-sm text-muted-foreground mb-6 max-w-xs mx-auto">
+              There was a problem connecting to the server. Your projects are safe — please try refreshing.
+            </p>
+            <Button
+              onClick={() => refetch()}
+              className="bg-primary hover:bg-primary/90 text-white rounded-full px-6"
+            >
+              <RefreshCw size={14} className="mr-2" /> Try again
+            </Button>
           </div>
         ) : projects.length === 0 ? (
+          /* ── Empty state — role-aware ── */
           <div className="text-center py-20 text-muted-foreground">
-            <Briefcase size={40} className="mx-auto mb-4 opacity-30" />
-            <h3 className="font-semibold text-foreground mb-2">No projects yet</h3>
-            <p className="text-sm mb-6">
+            <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
+              <Briefcase size={28} className="text-primary" />
+            </div>
+            <h3 className="font-semibold text-foreground mb-2 text-lg">
+              {user.role === "freelancer" ? "Your dashboard is ready" : "No projects yet"}
+            </h3>
+            <p className="text-sm mb-2 max-w-sm mx-auto leading-relaxed">
               {user.role === "freelancer"
-                ? "Projects appear here once a client hires you through Viewrr."
+                ? "Once a client starts a project with you, it will appear here. Your profile is live — make sure your portfolio looks great so clients can find you."
                 : "Find a creative on Browse Talent and start a project together."}
             </p>
-            <Button asChild className="bg-primary hover:bg-primary/90 text-white">
-              <Link href="/marketplace">Browse Talent</Link>
-            </Button>
+            {user.role === "freelancer" && (
+              <p className="text-xs text-muted-foreground mb-6">
+                In the meantime, post to the Feed to get noticed.
+              </p>
+            )}
+            <div className="flex gap-3 justify-center">
+              {user.role === "freelancer" ? (
+                <>
+                  <Button asChild className="bg-primary hover:bg-primary/90 text-white rounded-full px-6">
+                    <Link href="/feed">Go to Feed</Link>
+                  </Button>
+                  <Button asChild variant="outline" className="rounded-full px-6">
+                    <Link href="/marketplace">View my profile</Link>
+                  </Button>
+                </>
+              ) : (
+                <Button asChild className="bg-primary hover:bg-primary/90 text-white rounded-full px-6">
+                  <Link href="/marketplace">Browse Talent</Link>
+                </Button>
+              )}
+            </div>
           </div>
         ) : (
           <div className="space-y-8">

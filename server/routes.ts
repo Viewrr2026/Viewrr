@@ -437,7 +437,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.get("/api/projects", async (req, res) => {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ error: "userId required" });
-    res.json(await storage.getProjectsForUser(Number(userId)));
+    try {
+      const projects = await storage.getProjectsForUser(Number(userId));
+      res.json(projects);
+    } catch (e: any) {
+      console.error("[projects] Error fetching projects for user", userId, e.message);
+      res.status(500).json({ error: "Could not load projects", projects: [] });
+    }
   });
 
   app.get("/api/projects/:id", async (req, res) => {
