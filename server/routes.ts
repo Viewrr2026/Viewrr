@@ -47,6 +47,31 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (phone) userData.phone = phone;
       if (password) userData.passwordHash = hashPassword(password);
       const user = await storage.createUser(userData);
+
+      // Auto-create a profile row for freelancers so their dashboard loads correctly
+      if (role === "freelancer") {
+        try {
+          await storage.createProfile({
+            userId: user.id,
+            specialisms: "[]",
+            skills: "[]",
+            availability: "available",
+            yearsExperience: 0,
+            portfolioItems: "[]",
+            socialLinks: "{}",
+            rating: 0,
+            reviewCount: 0,
+            projectCount: 0,
+            featured: 0,
+            badges: "[]",
+            isPro: 0,
+          });
+        } catch (profileErr: any) {
+          // Non-fatal — user is still created
+          console.warn("[register] Could not auto-create profile:", profileErr.message);
+        }
+      }
+
       res.json({ user });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
