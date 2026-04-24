@@ -69,9 +69,21 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+
   function addFiles(files: FileList | File[]) {
     const arr = Array.from(files);
-    const valid = arr.filter(f => f.type.startsWith("image/") || f.type.startsWith("video/")).slice(0, 12 - uploads.length);
+    const tooBig = arr.filter(f => f.size > MAX_FILE_SIZE);
+    if (tooBig.length > 0) {
+      toast({
+        title: `${tooBig.length > 1 ? `${tooBig.length} files are` : `"${tooBig[0].name}" is`} too large`,
+        description: "Maximum file size is 50 MB. Please compress your video before uploading.",
+        variant: "destructive",
+      });
+    }
+    const valid = arr
+      .filter(f => (f.type.startsWith("image/") || f.type.startsWith("video/")) && f.size <= MAX_FILE_SIZE)
+      .slice(0, 12 - uploads.length);
     const newUploads: UploadedFile[] = valid.map(f => ({
       id: Math.random().toString(36).slice(2),
       file: f,
@@ -326,7 +338,33 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     setStep("freelancer-portfolio");
   }
 
-  function finishFreelancer() {
+  const [portfolioUploading, setPortfolioUploading] = useState(false);
+
+  async function finishFreelancer() {
+    if (uploads.length > 0) {
+      setPortfolioUploading(true);
+      try {
+        const formData = new FormData();
+        uploads.forEach(u => formData.append("files", u.file));
+        const res = await fetch("/api/upload/portfolio", {
+          method: "POST",
+          body: formData,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast({
+            title: "Upload issue",
+            description: err.error || "Some files couldn't be uploaded — your profile has been created anyway.",
+            variant: "destructive",
+          });
+        }
+      } catch {
+        // Non-fatal — account already created, just log
+        console.warn("Portfolio upload failed — account still created");
+      } finally {
+        setPortfolioUploading(false);
+      }
+    }
     setStep("done");
     toast({ title: `Welcome to Viewrr, ${freeFirstName}!` });
     setTimeout(() => { handleClose(); }, 1800);
@@ -980,10 +1018,19 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 ))}
               </div>
 
-              <Button onClick={finishFreelancer} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full">
-                Complete my profile →
+              <Button
+                onClick={finishFreelancer}
+                disabled={portfolioUploading}
+                className="w-full bg-primary hover:bg-primary/90 text-white rounded-full"
+              >
+                {portfolioUploading ? "Uploading..." : "Complete my profile →"}
               </Button>
-              <button onClick={finishFreelancer} className="w-full text-xs text-muted-foreground hover:text-foreground text-center">Skip for now</button>
+              {!portfolioUploading && (
+                <button onClick={finishFreelancer} className="w-full text-xs text-muted-foreground hover:text-foreground text-center">Skip for now</button>
+              )}
+              <p className="text-xs text-muted-foreground text-center">
+                Videos up to 50 MB · Images up to 50 MB
+              </p>
             </div>
           </>
         )}

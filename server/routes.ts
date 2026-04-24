@@ -2,6 +2,10 @@ import type { Express } from "express";
 import { Server } from "http";
 import { storage } from "./storage";
 import crypto from "crypto";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import os from "os";
 
 // Simple password hashing using SHA-256 + salt (no bcrypt needed for this use case)
 function hashPassword(password: string): string {
@@ -170,6 +174,61 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
     await storage.updateUserPassword(user.id, hashPassword(newPassword));
     res.json({ ok: true });
+  });
+
+  // ─── File uploads ──────────────────────────────────────────────────────
+  // Max 50 MB per file, images and videos only
+  const upload = multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, cb) => {
+        const dir = path.join(os.tmpdir(), "viewrr-uploads");
+        fs.mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+      },
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname);
+        cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+      },
+    }),
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype.startsWith("image/") || file.mimetype.startsWith("video/")) {
+        cb(null, true);
+      } else {
+        cb(new Error("Only images and videos are allowed"));
+      }
+    },
+  });
+
+  // Portfolio upload — accepts up to 12 files, returns their server paths/URLs
+  app.post("/api/upload/portfolio",
+    upload.array("files", 12),
+    (req: any, res: any) => {
+      try {
+        const files: Express.Multer.File[] = req.files as Express.Multer.File[];
+        if (!files || files.length === 0) return res.status(400).json({ error: "No files received" });
+        const result = files.map(f => ({
+          filename: f.filename,
+          originalName: f.originalname,
+          mimetype: f.mimetype,
+          size: f.size,
+          // On Render, /tmp is ephemeral — stored temporarily during the session
+          path: f.path,
+        }));
+        res.json({ ok: true, files: result, count: result.length });
+      } catch (e: any) {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  );
+
+  // Error handler specifically for multer (file too large, wrong type, etc.)
+  app.use("/api/upload", (err: any, _req: any, res: any, next: any) => {
+    if (err?.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "File too large. Maximum size is 50 MB per file." });
+    }
+    if (err?.message) return res.status(400).json({ error: err.message });
+    next(err);
   });
 
     // ─── Profiles ──────────────────────────────────────────────────────────────
