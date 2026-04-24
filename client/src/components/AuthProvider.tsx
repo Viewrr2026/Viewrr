@@ -9,11 +9,20 @@ interface AuthCtx {
 }
 
 const AUTH_KEY = "viewrr_session_user";
+const SESSION_VERSION = "v4"; // bump this to force-clear all stored sessions
+const VERSION_KEY = "viewrr_session_version";
 
 const AuthContext = createContext<AuthCtx>({ user: null, login: () => {}, logout: () => {} });
 
 function loadStoredUser(): User | null {
   try {
+    // If the stored version doesn't match, wipe everything and start fresh
+    const storedVersion = safeGet(VERSION_KEY);
+    if (storedVersion !== SESSION_VERSION) {
+      safeRemove(AUTH_KEY);
+      safeSet(VERSION_KEY, SESSION_VERSION);
+      return null;
+    }
     const raw = safeGet(AUTH_KEY);
     if (!raw || raw === "" || raw === "null") return null;
     const parsed = JSON.parse(raw);
@@ -25,6 +34,7 @@ function loadStoredUser(): User | null {
   } catch {
     // Corrupted — wipe it
     safeRemove(AUTH_KEY);
+    safeRemove(VERSION_KEY);
     return null;
   }
 }
