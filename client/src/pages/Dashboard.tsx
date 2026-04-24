@@ -38,8 +38,13 @@ function MessageThread({ userId, otherId, otherName, otherAvatar }: { userId: nu
   const { data: messages = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/messages", userId, otherId],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/messages/${otherId}/${userId}`);
-      return res.json();
+      try {
+        const res = await fetch(`/api/messages/${otherId}/${userId}`);
+        if (!res.ok) return [];
+        return res.json();
+      } catch {
+        return [];
+      }
     },
     refetchInterval: 5000,
   });
@@ -119,8 +124,13 @@ export default function Dashboard() {
   const { data: savedProfiles = [] } = useQuery<ProfileWithUser[]>({
     queryKey: ["/api/saved", user?.id],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/saved/${user!.id}`);
-      return res.json();
+      try {
+        const res = await fetch(`/api/saved/${user!.id}`);
+        if (!res.ok) return [];
+        return res.json();
+      } catch {
+        return [];
+      }
     },
     enabled: !!user,
   });
@@ -128,8 +138,13 @@ export default function Dashboard() {
   const { data: conversations = [] } = useQuery<any[]>({
     queryKey: ["/api/messages/conversations", user?.id],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/messages/${user!.id}/conversations`);
-      return res.json();
+      try {
+        const res = await fetch(`/api/messages/${user!.id}/conversations`);
+        if (!res.ok) return [];
+        return res.json();
+      } catch {
+        return [];
+      }
     },
     enabled: !!user,
     refetchInterval: 8000,
@@ -149,11 +164,11 @@ export default function Dashboard() {
             <Avatar className="w-14 h-14">
               <AvatarImage src={user.avatar || undefined} />
               <AvatarFallback className="bg-primary text-white text-lg">
-                {user.name.slice(0, 2).toUpperCase()}
+                {(user.name || '?').slice(0, 2).toUpperCase()}
               </AvatarFallback>
             </Avatar>
             <div>
-              <h1 className="text-2xl font-bold">Welcome back, {user.name.split(" ")[0]}</h1>
+              <h1 className="text-2xl font-bold">Welcome back, {(user.name || 'there').split(" ")[0]}</h1>
               <p className="text-muted-foreground text-sm capitalize">{user.role} account • {user.location || "Location not set"}</p>
             </div>
           </div>
