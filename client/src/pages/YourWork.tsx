@@ -533,29 +533,22 @@ export default function YourWork() {
 
   const isDemo = !!user && DEMO_USER_IDS.has(user.id);
 
-  const { data: projects = [], isLoading, isError, refetch, error } = useQuery<ProjectWithDetails[]>({
+  const { data: projects = [], isLoading, isError, refetch } = useQuery<ProjectWithDetails[]>({
     queryKey: ["/api/projects", user?.id],
     queryFn: async () => {
       if (isDemo) return getMockProjects(user!.id) as any;
       try {
-        const res = await apiRequest("GET", `/api/projects?userId=${user!.id}`);
-        if (!res.ok) {
-          // Server returned an error — return empty array rather than crashing
-          console.warn("[YourWork] Projects API returned", res.status);
-          return [];
-        }
+        const res = await fetch(`/api/projects?userId=${user!.id}`);
+        if (!res.ok) return []; // server error — return empty, never throw
         const data = await res.json();
-        // Handle both array response and error object with empty projects
         return Array.isArray(data) ? data : [];
-      } catch (e) {
-        console.warn("[YourWork] Failed to load projects:", e);
-        return [];
+      } catch {
+        return []; // network error — return empty, never throw
       }
     },
     enabled: !!user,
-    refetchInterval: isDemo ? false : 10000,
-    retry: 3,
-    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10000),
+    refetchInterval: false,
+    retry: false,
   });
 
   // Keep open project in sync with refetched data

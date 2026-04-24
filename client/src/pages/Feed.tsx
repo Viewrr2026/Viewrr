@@ -655,11 +655,17 @@ export default function Feed() {
     queryKey: ["/api/feed", user?.id],
     queryFn: async () => {
       if (isDemo) return getMockPosts(user?.id) as any;
-      const q = user ? `?viewerUserId=${user.id}` : "";
-      const res = await apiRequest("GET", `/api/feed${q}`);
-      return res.json();
+      try {
+        const q = user ? `?viewerUserId=${user.id}` : "";
+        const res = await fetch(`/api/feed${q}`);
+        if (!res.ok) return getMockPosts(undefined) as any; // fallback to mock if no backend
+        return res.json();
+      } catch {
+        return getMockPosts(undefined) as any; // network error — show mock feed
+      }
     },
     refetchInterval: false,
+    retry: false,
   });
 
   // ✅ Item 9 — Dynamic trending tags from actual post content
