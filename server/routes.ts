@@ -17,7 +17,7 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 
 // In-memory store for verification codes (email -> { code, expires })
 const verificationCodes = new Map<string, { code: string; expires: number }>();
-import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema } from "@shared/schema";
+import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema, insertBriefInterestSchema } from "@shared/schema";
 
 export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Auth (simple demo auth by email) ─────────────────────────────────────
@@ -531,6 +531,52 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.json(brief);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
+    }
+  });
+
+  // ─── Brief Interests ───────────────────────────────────────────────────────
+  // Freelancer expresses interest in a brief
+  app.post("/api/interests", async (req, res) => {
+    try {
+      const data = insertBriefInterestSchema.parse(req.body);
+      const interest = await storage.createBriefInterest(data);
+      res.json(interest);
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // Get interests expressed BY a freelancer (their own applications)
+  app.get("/api/interests/freelancer/:id", async (req, res) => {
+    try {
+      const interests = await storage.getBriefInterestsForFreelancer(Number(req.params.id));
+      res.json(interests);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Get interests received BY a client (applicants to their briefs)
+  app.get("/api/interests/client/:id", async (req, res) => {
+    try {
+      const interests = await storage.getBriefInterestsForClient(Number(req.params.id));
+      res.json(interests);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Client updates status of an interest (viewed / accepted / declined)
+  app.patch("/api/interests/:id/status", async (req, res) => {
+    try {
+      const { status } = req.body;
+      if (!["pending", "viewed", "accepted", "declined"].includes(status)) {
+        return res.status(400).json({ error: "Invalid status" });
+      }
+      await storage.updateBriefInterestStatus(Number(req.params.id), status);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 }

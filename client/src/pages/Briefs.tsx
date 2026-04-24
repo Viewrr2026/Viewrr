@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 
 type Brief = {
   id: number;
+  clientId?: number;
   clientName: string;
   clientAvatar?: string;
   title: string;
@@ -320,19 +321,51 @@ function BriefDetail({ brief, onClose, onApply, onCloseBrief, isOwned }: { brief
 
 // ── Express Interest modal ────────────────────────────────────────────────────
 function ExpressInterestModal({ brief, open, onClose }: { brief: Brief | null; open: boolean; onClose: () => void }) {
+  const { user } = useAuth();
+  const { toast } = useToast();
   const [step, setStep] = useState<"form" | "done">("form");
   const [coverNote, setCoverNote] = useState("");
   const [rate, setRate] = useState("");
   const [availability, setAvailability] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!coverNote.trim()) return;
-    setStep("done");
+    if (!user) {
+      toast({ title: "Please sign in to express interest", variant: "destructive" });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/interests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          briefId: brief!.id,
+          briefTitle: brief!.title,
+          briefClientId: (brief as any).clientId ?? 0,
+          briefClientName: brief!.clientName,
+          freelancerId: user.id,
+          freelancerName: user.name || "Freelancer",
+          freelancerAvatar: user.avatar || null,
+          coverNote: coverNote.trim(),
+          rate: rate.trim() || null,
+          availability: availability || null,
+          status: "pending",
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to submit");
+      setStep("done");
+    } catch {
+      toast({ title: "Couldn't submit your interest", description: "Please try again.", variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function handleClose() {
-    setStep("form"); setCoverNote(""); setRate(""); setAvailability("");
+    setStep("form"); setCoverNote(""); setRate(""); setAvailability(""); setSubmitting(false);
     onClose();
   }
 
@@ -389,8 +422,8 @@ function ExpressInterestModal({ brief, open, onClose }: { brief: Brief | null; o
                 <strong className="text-foreground">Your Viewrr profile</strong> will be shared with {brief.clientName} alongside this note, including your portfolio, ratings and skills.
               </div>
 
-              <Button type="submit" disabled={!coverNote.trim()} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full">
-                Submit application
+              <Button type="submit" disabled={!coverNote.trim() || submitting} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full">
+                {submitting ? "Submitting..." : "Submit application"}
               </Button>
             </form>
           </>

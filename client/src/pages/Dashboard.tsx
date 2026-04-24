@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase } from "lucide-react";
+import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -117,6 +117,103 @@ function MessageThread({ userId, otherId, otherName, otherAvatar }: { userId: nu
   );
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function timeAgo(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "Yesterday";
+  if (days < 7) return `${days} days ago`;
+  return `${Math.floor(days / 7)}w ago`;
+}
+
+function InterestStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; icon: React.ReactNode; cls: string }> = {
+    pending:  { label: "Pending",  icon: <Clock size={11} />,      cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
+    viewed:   { label: "Viewed",   icon: <CheckCircle2 size={11} />, cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" },
+    accepted: { label: "Accepted", icon: <CheckCircle2 size={11} />, cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
+    declined: { label: "Declined", icon: <XCircle size={11} />,    cls: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
+  };
+  const s = map[status] ?? map.pending;
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full ${s.cls}`}>
+      {s.icon}{s.label}
+    </span>
+  );
+}
+
+function ClientInterestCard({ interest, onStatusChange }: {
+  interest: any;
+  onStatusChange: (id: number, status: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="bg-card border border-border rounded-2xl p-5">
+      <div className="flex items-start gap-4">
+        <Avatar className="w-11 h-11 shrink-0">
+          <AvatarImage src={interest.freelancerAvatar} />
+          <AvatarFallback className="bg-primary text-white text-sm">
+            {(interest.freelancerName || "?").slice(0, 2).toUpperCase()}
+          </AvatarFallback>
+        </Avatar>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <p className="font-semibold text-sm">{interest.freelancerName}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Interested in: <span className="font-medium text-foreground">{interest.briefTitle}</span></p>
+            </div>
+            <InterestStatusBadge status={interest.status} />
+          </div>
+
+          <button
+            onClick={() => setExpanded(e => !e)}
+            className="mt-2 flex items-center gap-1 text-xs text-primary hover:underline font-medium"
+          >
+            <ChevronRight size={12} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
+            {expanded ? "Hide cover note" : "Read cover note"}
+          </button>
+
+          {expanded && (
+            <div className="mt-3 bg-muted/50 rounded-xl p-3">
+              <p className="text-sm leading-relaxed">{interest.coverNote}</p>
+              <div className="flex flex-wrap gap-4 text-xs text-muted-foreground mt-2">
+                {interest.rate && <span>Rate: <span className="font-medium text-foreground">{interest.rate}</span></span>}
+                {interest.availability && <span>Available from: <span className="font-medium text-foreground">{interest.availability}</span></span>}
+              </div>
+            </div>
+          )}
+
+          {/* Client actions */}
+          {interest.status !== "accepted" && interest.status !== "declined" && (
+            <div className="flex gap-2 mt-3">
+              <Button
+                size="sm"
+                className="bg-primary hover:bg-primary/90 text-white rounded-full text-xs px-4"
+                onClick={() => onStatusChange(interest.id, "accepted")}
+              >
+                <CheckCircle2 size={12} className="mr-1" /> Accept
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-full text-xs px-4 text-muted-foreground hover:text-destructive hover:border-destructive"
+                onClick={() => onStatusChange(interest.id, "declined")}
+              >
+                <XCircle size={12} className="mr-1" /> Decline
+              </Button>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground mt-2">{timeAgo(interest.createdAt)}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const { user, logout } = useAuth();
   const [activeConv, setActiveConv] = useState<{ id: number; name: string; avatar?: string } | null>(null);
@@ -148,6 +245,26 @@ export default function Dashboard() {
     },
     enabled: !!user,
     refetchInterval: 8000,
+  });
+
+  // Interests: freelancers see their own applications, clients see inbound interest on their briefs
+  const interestsEndpoint = user?.role === "freelancer"
+    ? `/api/interests/freelancer/${user?.id}`
+    : `/api/interests/client/${user?.id}`;
+
+  const { data: interests = [], refetch: refetchInterests } = useQuery<any[]>({
+    queryKey: ["/api/interests", user?.id, user?.role],
+    queryFn: async () => {
+      try {
+        const res = await fetch(interestsEndpoint);
+        if (!res.ok) return [];
+        return res.json();
+      } catch {
+        return [];
+      }
+    },
+    enabled: !!user,
+    refetchInterval: 15000,
   });
 
   if (!user) return <NotLoggedIn />;
@@ -182,13 +299,13 @@ export default function Dashboard() {
           {(isFreelancer ? [
             { label: "Profile views", value: "—", icon: TrendingUp },
             { label: "Messages", value: String(conversations.length), icon: MessageSquare },
-            { label: "Saved by clients", value: "—", icon: Bookmark },
+            { label: "Interests sent", value: String(interests.length), icon: FileText },
             { label: "Projects", value: "—", icon: Briefcase },
           ] : [
             { label: "Saved creatives", value: String(savedProfiles.length), icon: Bookmark },
             { label: "Messages", value: String(conversations.length), icon: MessageSquare },
-            { label: "Projects posted", value: "0", icon: Briefcase },
-            { label: "Avg response time", value: "<1h", icon: Star },
+            { label: "Interests received", value: String(interests.length), icon: FileText },
+            { label: "Projects posted", value: "—", icon: Briefcase },
           ]).map(({ label, value, icon: Icon }) => (
             <div key={label} className="bg-card border border-border rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
@@ -205,6 +322,14 @@ export default function Dashboard() {
           <TabsList>
             {!isFreelancer && <TabsTrigger value="saved" className="gap-2"><Bookmark size={14} /> Saved ({savedProfiles.length})</TabsTrigger>}
             <TabsTrigger value="messages" className="gap-2"><MessageSquare size={14} /> Messages ({conversations.length})</TabsTrigger>
+            <TabsTrigger value="interests" className="gap-2 relative">
+              <FileText size={14} /> Interests
+              {interests.filter((i: any) => i.status === "pending").length > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-primary text-white text-[10px] flex items-center justify-center font-bold">
+                  {interests.filter((i: any) => i.status === "pending").length}
+                </span>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="profile" className="gap-2"><User size={14} /> Profile</TabsTrigger>
           </TabsList>
 
@@ -277,6 +402,67 @@ export default function Dashboard() {
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Interests */}
+          <TabsContent value="interests" className="mt-6">
+            {interests.length === 0 ? (
+              <div className="text-center py-16 text-muted-foreground">
+                <FileText size={32} className="mx-auto mb-4 opacity-40" />
+                <h3 className="font-semibold text-foreground mb-2">
+                  {isFreelancer ? "No interests sent yet" : "No interests received yet"}
+                </h3>
+                <p className="text-sm mb-4">
+                  {isFreelancer
+                    ? "Browse the briefs board and express interest in projects that suit you."
+                    : "Once freelancers express interest in your briefs, they'll appear here."}
+                </p>
+                <Button asChild className="bg-primary hover:bg-primary/90 text-white">
+                  <Link href="/briefs">{isFreelancer ? "Browse briefs" : "View briefs board"}</Link>
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {isFreelancer ? (
+                  // ── FREELANCER VIEW: briefs they applied to ──────────────────
+                  interests.map((interest: any) => (
+                    <div key={interest.id} className="bg-card border border-border rounded-2xl p-5">
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-sm leading-snug">{interest.briefTitle}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">Brief by {interest.briefClientName}</p>
+                        </div>
+                        <InterestStatusBadge status={interest.status} />
+                      </div>
+                      <div className="bg-muted/50 rounded-xl p-3 mb-3">
+                        <p className="text-xs text-muted-foreground mb-1 font-semibold uppercase tracking-wide">Your cover note</p>
+                        <p className="text-sm leading-relaxed">{interest.coverNote}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                        {interest.rate && <span>Rate: <span className="font-medium text-foreground">{interest.rate}</span></span>}
+                        {interest.availability && <span>Available from: <span className="font-medium text-foreground">{interest.availability}</span></span>}
+                        <span className="ml-auto">{timeAgo(interest.createdAt)}</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  // ── CLIENT VIEW: freelancers who applied to their briefs ───────
+                  interests.map((interest: any) => (
+                    <ClientInterestCard
+                      key={interest.id}
+                      interest={interest}
+                      onStatusChange={(id, status) => {
+                        fetch(`/api/interests/${id}/status`, {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ status }),
+                        }).then(() => refetchInterests());
+                      }}
+                    />
+                  ))
+                )}
               </div>
             )}
           </TabsContent>

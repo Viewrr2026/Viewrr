@@ -174,6 +174,27 @@ export const insertBriefSchema = createInsertSchema(briefs).omit({ id: true, cre
 export type InsertBrief = z.infer<typeof insertBriefSchema>;
 export type Brief = typeof briefs.$inferSelect;
 
+// ─── Brief Interests (applications) ─────────────────────────────────────────
+export const briefInterests = pgTable("brief_interests", {
+  id: serial("id").primaryKey(),
+  briefId: integer("brief_id").notNull(),
+  briefTitle: text("brief_title").notNull(),
+  briefClientId: integer("brief_client_id").notNull(),
+  briefClientName: text("brief_client_name").notNull(),
+  freelancerId: integer("freelancer_id").notNull(),
+  freelancerName: text("freelancer_name").notNull(),
+  freelancerAvatar: text("freelancer_avatar"),
+  coverNote: text("cover_note").notNull(),
+  rate: text("rate"),
+  availability: text("availability"),
+  status: text("status").notNull().default("pending"), // "pending" | "viewed" | "accepted" | "declined"
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+
+export const insertBriefInterestSchema = createInsertSchema(briefInterests).omit({ id: true, createdAt: true });
+export type InsertBriefInterest = z.infer<typeof insertBriefInterestSchema>;
+export type BriefInterest = typeof briefInterests.$inferSelect;
+
 // ─── Saved Freelancers ────────────────────────────────────────────────────────
 export const saved = pgTable("saved", {
   id: serial("id").primaryKey(),

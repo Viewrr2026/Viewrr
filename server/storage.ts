@@ -76,6 +76,23 @@ await sql`
   )
 `;
 await sql`
+  CREATE TABLE IF NOT EXISTS brief_interests (
+    id SERIAL PRIMARY KEY,
+    brief_id INTEGER NOT NULL,
+    brief_title TEXT NOT NULL,
+    brief_client_id INTEGER NOT NULL,
+    brief_client_name TEXT NOT NULL,
+    freelancer_id INTEGER NOT NULL,
+    freelancer_name TEXT NOT NULL,
+    freelancer_avatar TEXT,
+    cover_note TEXT NOT NULL,
+    rate TEXT,
+    availability TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
   CREATE TABLE IF NOT EXISTS saved (
     id SERIAL PRIMARY KEY,
     client_id INTEGER NOT NULL,
@@ -214,6 +231,12 @@ export interface IStorage {
   getBriefs(): Promise<schema.Brief[]>;
   getBrief(id: number): Promise<schema.Brief | undefined>;
   createBrief(data: schema.InsertBrief): Promise<schema.Brief>;
+
+  // Brief Interests
+  createBriefInterest(data: schema.InsertBriefInterest): Promise<schema.BriefInterest>;
+  getBriefInterestsForFreelancer(freelancerId: number): Promise<schema.BriefInterest[]>;
+  getBriefInterestsForClient(clientId: number): Promise<schema.BriefInterest[]>;
+  updateBriefInterestStatus(id: number, status: string): Promise<void>;
 }
 
 export interface ProfileWithUser {
@@ -645,6 +668,32 @@ class Storage implements IStorage {
   async createBrief(data: schema.InsertBrief): Promise<schema.Brief> {
     const r = await db.insert(schema.briefs).values({ ...data, createdAt: new Date().toISOString() }).returning();
     return r[0];
+  }
+
+  // ─── Brief Interests ───────────────────────────────────────────────────────
+  async createBriefInterest(data: schema.InsertBriefInterest): Promise<schema.BriefInterest> {
+    const r = await db.insert(schema.briefInterests).values({ ...data, createdAt: new Date().toISOString() }).returning();
+    // bump applicationCount on the brief
+    await db.update(schema.briefs)
+      .set({ applicationCount: (await db.select().from(schema.briefs).where(eq(schema.briefs.id, data.briefId)))[0]?.applicationCount + 1 || 1 })
+      .where(eq(schema.briefs.id, data.briefId));
+    return r[0];
+  }
+
+  async getBriefInterestsForFreelancer(freelancerId: number): Promise<schema.BriefInterest[]> {
+    const r = await db.select().from(schema.briefInterests)
+      .where(eq(schema.briefInterests.freelancerId, freelancerId));
+    return r.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  async getBriefInterestsForClient(clientId: number): Promise<schema.BriefInterest[]> {
+    const r = await db.select().from(schema.briefInterests)
+      .where(eq(schema.briefInterests.briefClientId, clientId));
+    return r.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  async updateBriefInterestStatus(id: number, status: string): Promise<void> {
+    await db.update(schema.briefInterests).set({ status }).where(eq(schema.briefInterests.id, id));
   }
 }
 
