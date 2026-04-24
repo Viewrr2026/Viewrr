@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState } from "react";
 import type { User } from "@shared/schema";
-import { safeGet, safeSet } from "@/lib/storage";
+import { safeGet, safeSet, safeRemove } from "@/lib/storage";
 
 interface AuthCtx {
   user: User | null;
@@ -12,15 +12,25 @@ const AUTH_KEY = "viewrr_session_user";
 
 const AuthContext = createContext<AuthCtx>({ user: null, login: () => {}, logout: () => {} });
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // Restore session from localStorage on first load
-  const [user, setUser] = useState<User | null>(() => {
-    try {
-      const stored = safeGet(AUTH_KEY);
-      if (stored) return JSON.parse(stored) as User;
-    } catch {}
+function loadStoredUser(): User | null {
+  try {
+    const raw = safeGet(AUTH_KEY);
+    if (!raw || raw === "" || raw === "null") return null;
+    const parsed = JSON.parse(raw);
+    // Validate it looks like a real user object
+    if (parsed && typeof parsed === "object" && parsed.id && parsed.email && parsed.role) {
+      return parsed as User;
+    }
     return null;
-  });
+  } catch {
+    // Corrupted — wipe it
+    safeRemove(AUTH_KEY);
+    return null;
+  }
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(loadStoredUser);
 
   function login(u: User) {
     setUser(u);
@@ -29,7 +39,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   function logout() {
     setUser(null);
-    try { safeSet(AUTH_KEY, ""); } catch {}
+    safeRemove(AUTH_KEY);
   }
 
   return (
