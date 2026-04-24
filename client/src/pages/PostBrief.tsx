@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, CheckCircle } from "lucide-react";
+import { useAuth } from "@/components/AuthProvider";
+import { useToast } from "@/hooks/use-toast";
 
 const CATEGORIES = ["Videography", "Video Editing", "Photography", "Marketing", "Other"];
 const DURATIONS = ["Half day", "1 day", "2–3 days", "1 week", "2–4 weeks", "1–3 months", "Ongoing"];
@@ -13,7 +15,10 @@ const BUDGET_TYPES = [
 
 export default function PostBrief() {
   const [, navigate] = useLocation();
+  const { user } = useAuth();
+  const { toast } = useToast();
   const [submitted, setSubmitted] = useState(false);
+  const [isPending, setIsPending] = useState(false);
 
   const [form, setForm] = useState({
     title: "",
@@ -27,8 +32,6 @@ export default function PostBrief() {
     budgetMin: "",
     budgetMax: "",
     requirements: "",
-    clientName: "Your Company",
-    clientId: 1,
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -49,25 +52,52 @@ export default function PostBrief() {
     return Object.keys(e).length === 0;
   };
 
-  const [isPending, setIsPending] = useState(false);
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
+
+    if (!user) {
+      toast({ title: "Please sign in to post a brief", variant: "destructive" });
+      return;
+    }
+
     setIsPending(true);
-    // Broadcast to Briefs page via CustomEvent (works on static deploy)
-    const newBrief = {
-      ...form,
-      id: Date.now(),
-      remote: form.remote ? 1 : 0,
-      budgetMin: form.budgetMin ? parseFloat(form.budgetMin) : null,
-      budgetMax: form.budgetMax ? parseFloat(form.budgetMax) : null,
-      applicationCount: 0,
-      status: "open",
-      createdAt: new Date().toISOString(),
-    };
-    window.dispatchEvent(new CustomEvent("viewr:brief-posted", { detail: newBrief }));
-    setTimeout(() => { setIsPending(false); setSubmitted(true); }, 400);
+    try {
+      const payload = {
+        clientId: user.id,
+        clientName: user.name || "Anonymous",
+        clientAvatar: user.avatar || null,
+        title: form.title.trim(),
+        category: form.category,
+        description: form.description.trim(),
+        location: form.location.trim(),
+        remote: form.remote ? 1 : 0,
+        startDate: form.startDate || null,
+        duration: form.duration || null,
+        budgetType: form.budgetType,
+        budgetMin: form.budgetMin ? parseFloat(form.budgetMin) : null,
+        budgetMax: form.budgetMax ? parseFloat(form.budgetMax) : null,
+        requirements: form.requirements.trim(),
+        status: "open",
+      };
+
+      const res = await fetch("/api/briefs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to post brief");
+      }
+
+      setSubmitted(true);
+    } catch (err: any) {
+      toast({ title: "Couldn't post brief", description: err.message || "Please try again.", variant: "destructive" });
+    } finally {
+      setIsPending(false);
+    }
   };
 
   if (submitted) {
@@ -83,7 +113,10 @@ export default function PostBrief() {
             <Link href="/briefs">
               <Button className="rounded-full bg-primary text-white hover:bg-primary/90">View all briefs</Button>
             </Link>
-            <Button variant="outline" className="rounded-full" onClick={() => { setSubmitted(false); setForm({ title: "", category: "", description: "", location: "", remote: false, startDate: "", duration: "", budgetType: "project", budgetMin: "", budgetMax: "", requirements: "", clientName: "Your Company", clientId: 1 }); }}>
+            <Button variant="outline" className="rounded-full" onClick={() => {
+              setSubmitted(false);
+              setForm({ title: "", category: "", description: "", location: "", remote: false, startDate: "", duration: "", budgetType: "project", budgetMin: "", budgetMax: "", requirements: "" });
+            }}>
               Post another
             </Button>
           </div>
@@ -101,6 +134,12 @@ export default function PostBrief() {
 
         <h1 className="text-3xl font-bold mb-2">Post a Brief</h1>
         <p className="text-muted-foreground mb-8">Tell us what you need. Viewrr freelancers will be able to express interest in your project.</p>
+
+        {!user && (
+          <div className="mb-6 p-4 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 text-sm text-amber-800 dark:text-amber-300">
+            You need to be signed in to post a brief.
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
 
@@ -258,7 +297,7 @@ export default function PostBrief() {
 
           <Button
             type="submit"
-            disabled={isPending}
+            disabled={isPending || !user}
             className="w-full bg-primary hover:bg-primary/90 text-white rounded-full py-5 font-semibold text-base"
           >
             {isPending ? "Posting..." : "Post Brief"}

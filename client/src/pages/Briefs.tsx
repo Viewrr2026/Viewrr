@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "wouter";
-import { MapPin, Clock, Briefcase, PoundSterling, Plus, Calendar, Wifi, Users, ChevronRight, X, Search, Send, CheckCircle } from "lucide-react";
+import { MapPin, Clock, Briefcase, PoundSterling, Plus, Calendar, Wifi, Users, ChevronRight, X, Search, Send, CheckCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
-import { safeGet, safeSet } from "@/lib/storage";
 
 type Brief = {
   id: number;
@@ -417,35 +416,39 @@ function ExpressInterestModal({ brief, open, onClose }: { brief: Brief | null; o
 export default function Briefs() {
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Brief | null>(SEED_BRIEFS[0]);
+  const [selected, setSelected] = useState<Brief | null>(null);
   const [applyOpen, setApplyOpen] = useState(false);
+  const [apiBriefs, setApiBriefs] = useState<Brief[] | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // ✅ Item 12 — Persist user-posted briefs in localStorage
-  const [extraBriefs, setExtraBriefs] = useState<Brief[]>(() => {
-    try {
-      const stored = safeGet("viewrr_briefs");
-      return stored ? JSON.parse(stored) : [];
-    } catch { return []; }
-  });
-
+  // Load briefs from the real API on mount; fall back to seed data if unavailable
   useEffect(() => {
-    const handler = (e: Event) => {
-      const brief = (e as CustomEvent).detail as Brief;
-      setExtraBriefs(prev => {
-        const updated = [brief, ...prev];
-        safeSet("viewrr_briefs", JSON.stringify(updated));
-        return updated;
-      });
-      setSelected(brief);
-    };
-    window.addEventListener("viewr:brief-posted", handler);
-    return () => window.removeEventListener("viewr:brief-posted", handler);
+    async function load() {
+      try {
+        const res = await fetch("/api/briefs");
+        if (res.ok) {
+          const data: Brief[] = await res.json();
+          setApiBriefs(data.length > 0 ? data : null);
+          if (data.length > 0) setSelected(data[0]);
+          else setSelected(SEED_BRIEFS[0]);
+        } else {
+          setApiBriefs(null);
+          setSelected(SEED_BRIEFS[0]);
+        }
+      } catch {
+        setApiBriefs(null);
+        setSelected(SEED_BRIEFS[0]);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
   }, []);
 
-  const briefs = [
-    ...extraBriefs,
-    ...SEED_BRIEFS,
-  ].filter(b => {
+  // Use real API data when available, otherwise fall back to seeds
+  const allBriefs: Brief[] = apiBriefs ?? SEED_BRIEFS;
+
+  const briefs = allBriefs.filter(b => {
     if (category !== "All" && b.category !== category) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -458,20 +461,19 @@ export default function Briefs() {
     return true;
   });
 
-  function closeBrief(id: number) {
-    setExtraBriefs(prev => {
-      const updated = prev.filter(b => b.id !== id);
-      safeSet("viewrr_briefs", JSON.stringify(updated));
-      return updated;
-    });
-    setSelected(null);
-  }
-
   // Reset selection when filter/search changes
   useEffect(() => {
     setSelected(briefs[0] ?? null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, search]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 size={28} className="animate-spin text-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -558,8 +560,7 @@ export default function Briefs() {
                   brief={selected}
                   onClose={() => setSelected(null)}
                   onApply={() => setApplyOpen(true)}
-                  isOwned={extraBriefs.some(b => b.id === selected.id)}
-                  onCloseBrief={() => closeBrief(selected.id)}
+                  isOwned={false}
                 />
               </div>
             )}
@@ -573,8 +574,7 @@ export default function Briefs() {
               brief={selected}
               onClose={() => setSelected(null)}
               onApply={() => setApplyOpen(true)}
-              isOwned={extraBriefs.some(b => b.id === selected.id)}
-              onCloseBrief={() => closeBrief(selected.id)}
+              isOwned={false}
             />
           </div>
         )}
