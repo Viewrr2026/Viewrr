@@ -161,6 +161,7 @@ export interface IStorage {
   // Users
   getUser(id: number): Promise<schema.User | undefined>;
   getUserByEmail(email: string): Promise<schema.User | undefined>;
+  updateUserPassword(id: number, passwordHash: string): Promise<void>;
   createUser(data: schema.InsertUser): Promise<schema.User>;
 
   // Profiles
@@ -256,6 +257,10 @@ class Storage implements IStorage {
   async getUser(id: number): Promise<schema.User | undefined> {
     const r = await db.select().from(schema.users).where(eq(schema.users.id, id));
     return r[0];
+  }
+
+  async updateUserPassword(id: number, passwordHash: string): Promise<void> {
+    await db.update(schema.users).set({ passwordHash }).where(eq(schema.users.id, id));
   }
 
   async getUserByEmail(email: string): Promise<schema.User | undefined> {

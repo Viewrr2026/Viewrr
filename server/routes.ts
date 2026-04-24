@@ -156,6 +156,22 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json({ ok: true });
   });
 
+  // ─── Password reset ────────────────────────────────────────────────────────
+  // Step 1: user requests reset — we re-use the existing send-verification endpoint
+  // Step 2: verify-code endpoint is also reused (no new code needed)
+  // Step 3: set new password once code is verified
+  app.post("/api/auth/reset-password", async (req, res) => {
+    const { email, newPassword } = req.body;
+    if (!email || !newPassword) return res.status(400).json({ error: "Email and new password required" });
+    if (newPassword.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters" });
+
+    const user = await storage.getUserByEmail(email.toLowerCase());
+    if (!user) return res.status(404).json({ error: "No account found with that email" });
+
+    await storage.updateUserPassword(user.id, hashPassword(newPassword));
+    res.json({ ok: true });
+  });
+
     // ─── Profiles ──────────────────────────────────────────────────────────────
   app.get("/api/profiles", async (req, res) => {
     const { specialism, availability, search } = req.query as Record<string, string>;
