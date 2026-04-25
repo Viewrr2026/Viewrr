@@ -78,7 +78,7 @@ function MessageThread({ userId, otherId, otherName, otherAvatar }: { userId: nu
         ) : (
           <div className="space-y-3">
             {messages.map((m: any) => (
-              <div key={m.id} className={`flex ${m.fromId === userId ? "justify-end" : "justify-start"}`}>
+              <div key={m.id} className={`flex flex-col ${m.fromId === userId ? "items-end" : "items-start"}`}>
                 <div className={`max-w-xs px-4 py-2.5 rounded-2xl text-sm leading-relaxed
                   ${m.fromId === userId
                     ? "bg-primary text-white rounded-tr-sm"
@@ -86,6 +86,11 @@ function MessageThread({ userId, otherId, otherName, otherAvatar }: { userId: nu
                   }`}>
                   {m.content}
                 </div>
+                {m.createdAt && (
+                  <span className="text-[10px] text-muted-foreground mt-0.5 px-1">
+                    {formatUK(m.createdAt)}
+                  </span>
+                )}
               </div>
             ))}
           </div>
@@ -118,17 +123,41 @@ function MessageThread({ userId, otherId, otherName, otherAvatar }: { userId: nu
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function timeAgo(iso: string) {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "Yesterday";
-  if (days < 7) return `${days} days ago`;
-  return `${Math.floor(days / 7)}w ago`;
+const ukDate = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+const ukTime = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatUK(iso: string) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  // Within the last minute
+  if (diffMins < 1) return "Just now";
+  // Today — show time only
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  if (d >= todayStart) return `Today at ${ukTime.format(d)}`;
+  // Yesterday
+  const yStart = new Date(todayStart);
+  yStart.setDate(yStart.getDate() - 1);
+  if (d >= yStart) return `Yesterday at ${ukTime.format(d)}`;
+  // Older — full date + time
+  return ukDate.format(d);
 }
 
 function InterestStatusBadge({ status }: { status: string }) {
@@ -207,7 +236,14 @@ function ClientInterestCard({ interest, onStatusChange }: {
               </Button>
             </div>
           )}
-          <p className="text-xs text-muted-foreground mt-2">{timeAgo(interest.createdAt)}</p>
+          <div className="flex flex-col gap-0.5 mt-2">
+            <p className="text-xs text-muted-foreground">Expressed interest: {formatUK(interest.createdAt)}</p>
+            {interest.respondedAt && (
+              <p className="text-xs text-muted-foreground">
+                {interest.status === "accepted" ? "Accepted" : "Declined"}: {formatUK(interest.respondedAt)}
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -519,7 +555,14 @@ export default function Dashboard() {
                       <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
                         {interest.rate && <span>Rate: <span className="font-medium text-foreground">{interest.rate}</span></span>}
                         {interest.availability && <span>Available from: <span className="font-medium text-foreground">{interest.availability}</span></span>}
-                        <span className="ml-auto">{timeAgo(interest.createdAt)}</span>
+                      </div>
+                      <div className="flex flex-col gap-0.5 mt-2 text-xs text-muted-foreground">
+                        <span>Sent: {formatUK(interest.createdAt)}</span>
+                        {interest.respondedAt && (
+                          <span>
+                            {interest.status === "accepted" ? "Accepted" : "Declined"} by client: {formatUK(interest.respondedAt)}
+                          </span>
+                        )}
                       </div>
                     </div>
                   ))

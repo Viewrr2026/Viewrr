@@ -199,6 +199,7 @@ export const briefInterests = pgTable("brief_interests", {
   availability: text("availability"),
   status: text("status").notNull().default("pending"), // "pending" | "viewed" | "accepted" | "declined"
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  respondedAt: text("responded_at"),
 });
 
 export const insertBriefInterestSchema = createInsertSchema(briefInterests).omit({ id: true, createdAt: true });

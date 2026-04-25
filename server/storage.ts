@@ -98,9 +98,12 @@ await sql`
     rate TEXT,
     availability TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL DEFAULT NOW()::text
+    created_at TEXT NOT NULL DEFAULT NOW()::text,
+    responded_at TEXT
   )
 `;
+// Add responded_at column if it doesn't exist (for existing deployments)
+await sql`ALTER TABLE brief_interests ADD COLUMN IF NOT EXISTS responded_at TEXT`.catch(() => {});
 await sql`
   CREATE TABLE IF NOT EXISTS saved (
     id SERIAL PRIMARY KEY,
@@ -447,7 +450,7 @@ class Storage implements IStorage {
   }
 
   async createMessage(data: schema.InsertMessage): Promise<schema.Message> {
-    const r = await db.insert(schema.messages).values(data).returning();
+    const r = await db.insert(schema.messages).values({ ...data, createdAt: new Date().toISOString() }).returning();
     return r[0];
   }
 
@@ -764,7 +767,12 @@ class Storage implements IStorage {
   }
 
   async updateBriefInterestStatus(id: number, status: string): Promise<void> {
-    await db.update(schema.briefInterests).set({ status }).where(eq(schema.briefInterests.id, id));
+    const respondedAt = ["accepted", "declined"].includes(status)
+      ? new Date().toISOString()
+      : undefined;
+    await db.update(schema.briefInterests)
+      .set(respondedAt ? { status, respondedAt } : { status })
+      .where(eq(schema.briefInterests.id, id));
   }
 }
 
