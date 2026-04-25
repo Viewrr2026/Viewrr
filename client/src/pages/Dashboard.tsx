@@ -247,6 +247,35 @@ export default function Dashboard() {
     refetchInterval: 8000,
   });
 
+  // Profile views — only relevant for freelancers
+  const { data: viewCountData } = useQuery<{ count: number }>({
+    queryKey: ["/api/profile-views/count", user?.id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/profile-views/${user!.id}/count`);
+        if (!res.ok) return { count: 0 };
+        return res.json();
+      } catch { return { count: 0 }; }
+    },
+    enabled: !!user && isFreelancer,
+    refetchInterval: 30000,
+  });
+
+  const { data: viewHistory = [] } = useQuery<{ date: string; count: number }[]>({
+    queryKey: ["/api/profile-views/history", user?.id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/profile-views/${user!.id}/history?days=30`);
+        if (!res.ok) return [];
+        return res.json();
+      } catch { return []; }
+    },
+    enabled: !!user && isFreelancer,
+    refetchInterval: 30000,
+  });
+
+  const profileViewCount = viewCountData?.count ?? 0;
+
   // Interests: freelancers see their own applications, clients see inbound interest on their briefs
   const interestsEndpoint = user?.role === "freelancer"
     ? `/api/interests/freelancer/${user?.id}`
@@ -297,7 +326,7 @@ export default function Dashboard() {
         {/* Stats strip */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
           {(isFreelancer ? [
-            { label: "Profile views", value: "—", icon: TrendingUp },
+            { label: "Profile views", value: String(profileViewCount), icon: TrendingUp },
             { label: "Messages", value: String(conversations.length), icon: MessageSquare },
             { label: "Interests sent", value: String(interests.length), icon: FileText },
             { label: "Projects", value: "—", icon: Briefcase },
@@ -317,7 +346,53 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* Tabs */}
+        {/* Profile views sparkline — freelancers only */}
+        {isFreelancer && (
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-semibold text-sm">Profile views</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Last 30 days</p>
+              </div>
+              <div className="text-right">
+                <p className="text-2xl font-bold">{profileViewCount}</p>
+                <p className="text-xs text-muted-foreground">total views</p>
+              </div>
+            </div>
+            {viewHistory.length > 0 && (
+              <div className="flex items-end gap-0.5 h-12">
+                {viewHistory.map((d, i) => {
+                  const max = Math.max(...viewHistory.map(x => x.count), 1);
+                  const pct = (d.count / max) * 100;
+                  return (
+                    <div
+                      key={i}
+                      title={`${d.date}: ${d.count} view${d.count !== 1 ? 's' : ''}`}
+                      className="flex-1 rounded-sm transition-all cursor-help"
+                      style={{
+                        height: `${Math.max(pct, d.count > 0 ? 8 : 2)}%`,
+                        backgroundColor: d.count > 0 ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                        opacity: d.count > 0 ? 0.7 + (pct / 100) * 0.3 : 1,
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+            {viewHistory.length > 0 && (
+              <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                <span>{viewHistory[0]?.date.slice(5)}</span>
+                <span>Today</span>
+              </div>
+            )}
+            {profileViewCount === 0 && (
+              <p className="text-xs text-muted-foreground text-center py-2">
+                Views will appear here once someone visits your profile
+              </p>
+            )}
+          </div>
+        )}
+
         <Tabs defaultValue={isFreelancer ? "messages" : "saved"}>
           <TabsList>
             {!isFreelancer && <TabsTrigger value="saved" className="gap-2"><Bookmark size={14} /> Saved ({savedProfiles.length})</TabsTrigger>}

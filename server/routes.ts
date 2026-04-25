@@ -267,6 +267,43 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(await storage.getFeaturedProfiles());
   });
 
+  // ─── Profile Views ───────────────────────────────────────────────────────
+  // Called by ProfilePage on load — records one view per viewer per 24h
+  app.post("/api/profile-views/:userId", async (req, res) => {
+    try {
+      const profileUserId = Number(req.params.userId);
+      const viewerId: number | null = req.body.viewerId ?? null;
+      const viewerIp: string = (req.headers["x-forwarded-for"] as string || req.socket.remoteAddress || "unknown").split(",")[0].trim();
+      // Don't count someone viewing their own profile
+      if (viewerId && viewerId === profileUserId) return res.json({ ok: true, self: true });
+      await storage.recordProfileView(profileUserId, viewerId, viewerIp);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Total view count for a freelancer's dashboard
+  app.get("/api/profile-views/:userId/count", async (req, res) => {
+    try {
+      const count = await storage.getProfileViewCount(Number(req.params.userId));
+      res.json({ count });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // 30-day history (for the sparkline chart)
+  app.get("/api/profile-views/:userId/history", async (req, res) => {
+    try {
+      const days = Math.min(Number(req.query.days) || 30, 90);
+      const history = await storage.getProfileViewHistory(Number(req.params.userId), days);
+      res.json(history);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.get("/api/profiles/:id", async (req, res) => {
     const idNum = Number(req.params.id);
     // Try by profile ID first, then fall back to user ID

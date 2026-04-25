@@ -174,6 +174,16 @@ export const insertBriefSchema = createInsertSchema(briefs).omit({ id: true, cre
 export type InsertBrief = z.infer<typeof insertBriefSchema>;
 export type Brief = typeof briefs.$inferSelect;
 
+// ─── Profile Views ──────────────────────────────────────────────────────────
+export const profileViews = pgTable("profile_views", {
+  id: serial("id").primaryKey(),
+  profileUserId: integer("profile_user_id").notNull(), // the freelancer being viewed
+  viewerIp: text("viewer_ip"),                         // deduplicate anonymous views
+  viewerId: integer("viewer_id"),                      // null if not logged in
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export type ProfileView = typeof profileViews.$inferSelect;
+
 // ─── Brief Interests (applications) ─────────────────────────────────────────
 export const briefInterests = pgTable("brief_interests", {
   id: serial("id").primaryKey(),

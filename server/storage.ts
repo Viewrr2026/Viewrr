@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
-import { eq, or, and, desc } from "drizzle-orm";
+import { eq, or, and, desc, sql } from "drizzle-orm";
 import * as schema from "@shared/schema";
 
 if (!process.env.DATABASE_URL) {
@@ -72,6 +72,15 @@ await sql`
     to_id INTEGER NOT NULL,
     content TEXT NOT NULL,
     read INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
+  CREATE TABLE IF NOT EXISTS profile_views (
+    id SERIAL PRIMARY KEY,
+    profile_user_id INTEGER NOT NULL,
+    viewer_ip TEXT,
+    viewer_id INTEGER,
     created_at TEXT NOT NULL DEFAULT NOW()::text
   )
 `;
@@ -231,6 +240,11 @@ export interface IStorage {
   getBriefs(): Promise<schema.Brief[]>;
   getBrief(id: number): Promise<schema.Brief | undefined>;
   createBrief(data: schema.InsertBrief): Promise<schema.Brief>;
+
+  // Profile Views
+  recordProfileView(profileUserId: number, viewerId: number | null, viewerIp: string): Promise<void>;
+  getProfileViewCount(profileUserId: number): Promise<number>;
+  getProfileViewHistory(profileUserId: number, days: number): Promise<{ date: string; count: number }[]>;
 
   // Brief Interests
   createBriefInterest(data: schema.InsertBriefInterest): Promise<schema.BriefInterest>;
@@ -668,6 +682,63 @@ class Storage implements IStorage {
   async createBrief(data: schema.InsertBrief): Promise<schema.Brief> {
     const r = await db.insert(schema.briefs).values({ ...data, createdAt: new Date().toISOString() }).returning();
     return r[0];
+  }
+
+  // ─── Profile Views ───────────────────────────────────────────────────────
+  async recordProfileView(profileUserId: number, viewerId: number | null, viewerIp: string): Promise<void> {
+    // Deduplicate: same viewer (by ID or IP) can only register one view per 24h
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    if (viewerId) {
+      const existing = await db.select().from(schema.profileViews)
+        .where(and(
+          eq(schema.profileViews.profileUserId, profileUserId),
+          eq(schema.profileViews.viewerId, viewerId),
+          sql`created_at > ${since}`
+        ));
+      if (existing.length > 0) return; // already counted today
+    } else {
+      const existing = await db.select().from(schema.profileViews)
+        .where(and(
+          eq(schema.profileViews.profileUserId, profileUserId),
+          eq(schema.profileViews.viewerIp, viewerIp),
+          sql`created_at > ${since}`
+        ));
+      if (existing.length > 0) return;
+    }
+    await db.insert(schema.profileViews).values({
+      profileUserId,
+      viewerId,
+      viewerIp,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async getProfileViewCount(profileUserId: number): Promise<number> {
+    const r = await db.select().from(schema.profileViews)
+      .where(eq(schema.profileViews.profileUserId, profileUserId));
+    return r.length;
+  }
+
+  async getProfileViewHistory(profileUserId: number, days: number): Promise<{ date: string; count: number }[]> {
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const r = await db.select().from(schema.profileViews)
+      .where(and(
+        eq(schema.profileViews.profileUserId, profileUserId),
+        sql`created_at > ${since}`
+      ));
+    // Group by date
+    const byDate: Record<string, number> = {};
+    for (const v of r) {
+      const date = v.createdAt.slice(0, 10);
+      byDate[date] = (byDate[date] || 0) + 1;
+    }
+    // Fill in all days including zeros
+    const result: { date: string; count: number }[] = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      result.push({ date: d, count: byDate[d] || 0 });
+    }
+    return result;
   }
 
   // ─── Brief Interests ───────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/components/AuthProvider";
 import { useToast } from "@/hooks/use-toast";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { apiRequest as api } from "@/lib/queryClient";
 import { isConnected, toggleConnection, connectionCount } from "@/lib/storage";
 
@@ -53,6 +53,16 @@ export default function ProfilePage() {
     setConnCount(connectionCount(profileIdNum));
     toast({ title: now ? `You're now connected with ${data?.user.name}` : `Disconnected from ${data?.user.name}` });
   }
+
+  // Fire a profile view as soon as the page loads (once per mount)
+  useEffect(() => {
+    if (!id) return;
+    fetch(`/api/profile-views/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ viewerId: user?.id ?? null }),
+    }).catch(() => {}); // silent — never block the page
+  }, [id]);
 
   const { data, isLoading, isError } = useQuery<ProfileData>({
     queryKey: ["/api/profiles", id],
