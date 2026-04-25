@@ -218,6 +218,9 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const [activeConv, setActiveConv] = useState<{ id: number; name: string; avatar?: string } | null>(null);
 
+  // Must be defined before any query that references it
+  const isFreelancer = user?.role === "freelancer";
+
   const { data: savedProfiles = [] } = useQuery<ProfileWithUser[]>({
     queryKey: ["/api/saved", user?.id],
     queryFn: async () => {
@@ -297,8 +300,6 @@ export default function Dashboard() {
   });
 
   if (!user) return <NotLoggedIn />;
-
-  const isFreelancer = user.role === "freelancer";
 
   return (
     <div className="min-h-screen bg-background">
