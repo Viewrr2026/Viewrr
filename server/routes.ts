@@ -33,7 +33,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } else if (user.passwordHash && !password) {
       return res.status(401).json({ error: "Password required" });
     }
-    const profile = user.role === "freelancer" ? await storage.getProfileByUserId(user.id) : null;
+    let profile = user.role === "freelancer" ? await storage.getProfileByUserId(user.id) : null;
+    // Safety net: auto-create profile if a freelancer somehow has none
+    if (user.role === "freelancer" && !profile) {
+      try {
+        await storage.createProfile({
+          userId: user.id,
+          specialisms: "[]", skills: "[]", availability: "available",
+          yearsExperience: 0, portfolioItems: "[]", socialLinks: "{}",
+          rating: 0, reviewCount: 0, projectCount: 0, featured: 0, badges: "[]", isPro: 0,
+        });
+        profile = await storage.getProfileByUserId(user.id) ?? null;
+      } catch (e: any) {
+        console.warn("[login] Could not auto-create missing profile:", e.message);
+      }
+    }
     res.json({ user, profile });
   });
 
