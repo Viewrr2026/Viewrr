@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Bell, Heart, MessageCircle, Mail, Briefcase, CheckCircle, XCircle, Eye, UserCheck } from "lucide-react";
 import { useAuth } from "./AuthProvider";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import QuickMessageModal from "./QuickMessageModal";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface Notification {
@@ -55,6 +56,14 @@ export default function NotificationBell() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // Quick message modal state
+  const [msgModal, setMsgModal] = useState<{
+    open: boolean;
+    otherId: number;
+    otherName: string;
+    otherAvatar?: string | null;
+  }>({ open: false, otherId: 0, otherName: "" });
 
   const DEMO_IDS = new Set([1, 2, 3]);
   const isDemo = user && DEMO_IDS.has(user.id);
@@ -119,6 +128,21 @@ export default function NotificationBell() {
     await fetch(`/api/notifications/${id}/read`, { method: "PATCH" });
   }
 
+  function handleNotifClick(n: Notification) {
+    markRead(n.id);
+    if (n.type === "message") {
+      // Open quick reply modal instead of navigating
+      setOpen(false);
+      setMsgModal({
+        open: true,
+        otherId: n.actorId,
+        otherName: n.actorName,
+        otherAvatar: n.actorAvatar,
+      });
+    }
+    // For all other types, just mark as read (no navigation needed)
+  }
+
   async function markAllRead() {
     if (!user) return;
     setNotifications(prev => prev.map(n => ({ ...n, read: 1 })));
@@ -129,6 +153,7 @@ export default function NotificationBell() {
   if (!user) return null;
 
   return (
+    <>
     <div className="relative" ref={panelRef}>
       {/* Bell button */}
       <button
@@ -206,7 +231,7 @@ export default function NotificationBell() {
                 <li
                   key={n.id}
                   className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-colors hover:bg-secondary/60 ${n.read === 0 ? "bg-primary/5" : ""}`}
-                  onClick={() => markRead(n.id)}
+                  onClick={() => handleNotifClick(n)}
                 >
                   {/* Actor avatar */}
                   <div className="relative mt-0.5">
@@ -241,5 +266,16 @@ export default function NotificationBell() {
         </div>
       )}
     </div>
+
+      {/* Quick message modal — rendered outside the bell dropdown so it sits above everything */}
+      <QuickMessageModal
+        open={msgModal.open}
+        onClose={() => setMsgModal(m => ({ ...m, open: false }))}
+        userId={user.id}
+        otherId={msgModal.otherId}
+        otherName={msgModal.otherName}
+        otherAvatar={msgModal.otherAvatar}
+      />
+    </>
   );
 }
