@@ -268,7 +268,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   app.get("/api/profiles/:id", async (req, res) => {
-    const pw = await storage.getProfile(Number(req.params.id));
+    const idNum = Number(req.params.id);
+    // Try by profile ID first, then fall back to user ID
+    let pw = await storage.getProfile(idNum);
+    if (!pw) {
+      const profileByUser = await storage.getProfileByUserId(idNum);
+      if (profileByUser) pw = await storage.getProfile(profileByUser.id);
+    }
     if (!pw) return res.status(404).json({ error: "Profile not found" });
     const reviews = await storage.getReviewsByProfile(pw.profile.id);
     res.json({ ...pw, reviews });
