@@ -54,11 +54,16 @@ export default function ProfilePage() {
     toast({ title: now ? `You're now connected with ${data?.user.name}` : `Disconnected from ${data?.user.name}` });
   }
 
-  const { data, isLoading } = useQuery<ProfileData>({
+  const { data, isLoading, isError } = useQuery<ProfileData>({
     queryKey: ["/api/profiles", id],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/profiles/${id}`);
-      return res.json();
+      try {
+        const res = await fetch(`/api/profiles/${id}`);
+        if (!res.ok) return null;
+        return res.json();
+      } catch {
+        return null;
+      }
     },
   });
 
@@ -117,7 +122,14 @@ export default function ProfilePage() {
     );
   }
 
-  if (!data) return <div className="min-h-screen bg-background"><Navbar /><div className="p-20 text-center text-muted-foreground">Profile not found</div></div>;
+  if (!data || isError) return (
+    <div className="min-h-screen bg-background">
+      <div className="p-20 text-center text-muted-foreground">
+        <p className="text-lg font-semibold mb-2">Profile not found</p>
+        <Link href="/marketplace" className="text-primary underline text-sm">Back to marketplace</Link>
+      </div>
+    </div>
+  );
 
   const { profile, user: freelancer, reviews } = data;
 
@@ -139,7 +151,7 @@ export default function ProfilePage() {
                 <Avatar className="w-20 h-20 flex-shrink-0 ring-4 ring-background shadow-lg">
                   <AvatarImage src={freelancer.avatar || undefined} />
                   <AvatarFallback className="bg-primary text-white text-2xl">
-                    {freelancer.name.slice(0, 2).toUpperCase()}
+                    {(freelancer.name || '?').slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
 
