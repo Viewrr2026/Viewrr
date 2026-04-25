@@ -206,6 +206,24 @@ export const insertBriefInterestSchema = createInsertSchema(briefInterests).omit
 export type InsertBriefInterest = z.infer<typeof insertBriefInterestSchema>;
 export type BriefInterest = typeof briefInterests.$inferSelect;
 
+// ─── Notifications ──────────────────────────────────────────────────────────
+export const notifications = pgTable("notifications", {
+  id: serial("id").primaryKey(),
+  recipientId: integer("recipient_id").notNull(),  // who receives this
+  actorId: integer("actor_id").notNull(),           // who triggered it
+  actorName: text("actor_name").notNull(),
+  actorAvatar: text("actor_avatar"),
+  type: text("type").notNull(), // "like" | "comment" | "message" | "interest" | "interest_accepted" | "interest_declined" | "profile_view" | "connection"
+  message: text("message").notNull(),
+  link: text("link"),          // optional route to navigate to
+  read: integer("read").notNull().default(0),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+
+export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true, createdAt: true });
+export type InsertNotification = z.infer<typeof insertNotificationSchema>;
+export type Notification = typeof notifications.$inferSelect;
+
 // ─── Saved Freelancers ────────────────────────────────────────────────────────
 export const saved = pgTable("saved", {
   id: serial("id").primaryKey(),

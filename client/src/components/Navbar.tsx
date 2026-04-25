@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import LoginModal from "./LoginModal";
 import SignupModal from "./SignupModal";
+import NotificationBell from "./NotificationBell";
 
 export default function Navbar() {
   const { theme, toggle } = useTheme();
@@ -86,6 +87,8 @@ export default function Navbar() {
               >
                 {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
               </button>
+
+              <NotificationBell />
 
               {user ? (
                 <DropdownMenu>

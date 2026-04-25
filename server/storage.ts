@@ -184,6 +184,20 @@ await sql`
     created_at TEXT NOT NULL DEFAULT NOW()::text
   )
 `;
+await sql`
+  CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
+    recipient_id INTEGER NOT NULL,
+    actor_id INTEGER NOT NULL,
+    actor_name TEXT NOT NULL,
+    actor_avatar TEXT,
+    type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    link TEXT,
+    read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
 }
 
 export interface IStorage {
@@ -254,6 +268,14 @@ export interface IStorage {
   getBriefInterestsForFreelancer(freelancerId: number): Promise<schema.BriefInterest[]>;
   getBriefInterestsForClient(clientId: number): Promise<schema.BriefInterest[]>;
   updateBriefInterestStatus(id: number, status: string): Promise<void>;
+  getBriefInterest(id: number): Promise<schema.BriefInterest | undefined>;
+
+  // Notifications
+  createNotification(data: schema.InsertNotification): Promise<schema.Notification>;
+  getNotifications(recipientId: number, limit?: number): Promise<schema.Notification[]>;
+  markNotificationRead(id: number): Promise<void>;
+  markAllNotificationsRead(recipientId: number): Promise<void>;
+  getUnreadNotificationCount(recipientId: number): Promise<number>;
 }
 
 export interface ProfileWithUser {
@@ -773,6 +795,44 @@ class Storage implements IStorage {
     await db.update(schema.briefInterests)
       .set(respondedAt ? { status, respondedAt } : { status })
       .where(eq(schema.briefInterests.id, id));
+  }
+
+  async getBriefInterest(id: number): Promise<schema.BriefInterest | undefined> {
+    const r = await db.select().from(schema.briefInterests).where(eq(schema.briefInterests.id, id));
+    return r[0];
+  }
+
+  // ─── Notifications ────────────────────────────────────────────────────────
+  async createNotification(data: schema.InsertNotification): Promise<schema.Notification> {
+    const r = await db.insert(schema.notifications).values({
+      ...data,
+      createdAt: new Date().toISOString(),
+    }).returning();
+    return r[0];
+  }
+
+  async getNotifications(recipientId: number, limit = 50): Promise<schema.Notification[]> {
+    const r = await db.select().from(schema.notifications)
+      .where(eq(schema.notifications.recipientId, recipientId))
+      .orderBy(desc(schema.notifications.createdAt))
+      .limit(limit);
+    return r;
+  }
+
+  async markNotificationRead(id: number): Promise<void> {
+    await db.update(schema.notifications).set({ read: 1 }).where(eq(schema.notifications.id, id));
+  }
+
+  async markAllNotificationsRead(recipientId: number): Promise<void> {
+    await db.update(schema.notifications)
+      .set({ read: 1 })
+      .where(eq(schema.notifications.recipientId, recipientId));
+  }
+
+  async getUnreadNotificationCount(recipientId: number): Promise<number> {
+    const r = await db.select().from(schema.notifications)
+      .where(and(eq(schema.notifications.recipientId, recipientId), eq(schema.notifications.read, 0)));
+    return r.length;
   }
 }
 

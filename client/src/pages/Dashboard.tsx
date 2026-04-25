@@ -681,7 +681,7 @@ export default function Dashboard() {
                         fetch(`/api/interests/${id}/status`, {
                           method: "PATCH",
                           headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ status }),
+                          body: JSON.stringify({ status, clientName: user?.name, clientAvatar: user?.avatar }),
                         }).then(() => refetchInterests());
                       }}
                     />

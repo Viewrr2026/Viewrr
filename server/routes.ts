@@ -19,6 +19,11 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 const verificationCodes = new Map<string, { code: string; expires: number }>();
 import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema, insertBriefInterestSchema } from "@shared/schema";
 
+// Helper: fire-and-forget notification (never throws)
+async function notify(data: Parameters<typeof storage.createNotification>[0]) {
+  try { await storage.createNotification(data); } catch { /* non-fatal */ }
+}
+
 export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Auth (simple demo auth by email) ─────────────────────────────────────
   app.post("/api/auth/login", async (req, res) => {
@@ -364,6 +369,20 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const data = insertMessageSchema.parse(req.body);
       const msg = await storage.createMessage(data);
+      // Notify recipient of new message
+      const actor = await storage.getUser(data.fromId);
+      if (actor) {
+        await notify({
+          recipientId: data.toId,
+          actorId: actor.id,
+          actorName: actor.name,
+          actorAvatar: actor.avatar ?? null,
+          type: "message",
+          message: `${actor.name} sent you a message`,
+          link: `/dashboard`,
+          read: 0,
+        });
+      }
       res.json(msg);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -481,6 +500,22 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     if (!userId) return res.status(400).json({ error: "userId required" });
     const liked = await storage.toggleLike(Number(req.params.id), Number(userId));
     const post = await storage.getPost(Number(req.params.id));
+    // Notify post owner when someone likes (not when unliking, not self-like)
+    if (liked && post && post.post.userId !== Number(userId)) {
+      const actor = await storage.getUser(Number(userId));
+      if (actor) {
+        await notify({
+          recipientId: post.post.userId,
+          actorId: actor.id,
+          actorName: actor.name,
+          actorAvatar: actor.avatar ?? null,
+          type: "like",
+          message: `${actor.name} liked your post`,
+          link: `/feed`,
+          read: 0,
+        });
+      }
+    }
     res.json({ liked, likeCount: post?.post.likeCount ?? 0 });
   });
 
@@ -492,6 +527,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const data = insertPostCommentSchema.parse({ ...req.body, postId: Number(req.params.id) });
       const comment = await storage.createComment(data);
+      // Notify post owner of new comment (not self-comment)
+      const post = await storage.getPost(Number(req.params.id));
+      if (post && post.post.userId !== data.userId) {
+        const actor = await storage.getUser(data.userId);
+        if (actor) {
+          await notify({
+            recipientId: post.post.userId,
+            actorId: actor.id,
+            actorName: actor.name,
+            actorAvatar: actor.avatar ?? null,
+            type: "comment",
+            message: `${actor.name} commented on your post`,
+            link: `/feed`,
+            read: 0,
+          });
+        }
+      }
       res.json(comment);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -597,6 +649,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const data = insertBriefInterestSchema.parse(req.body);
       const interest = await storage.createBriefInterest(data);
+      // Notify the client that a freelancer expressed interest in their brief
+      await notify({
+        recipientId: data.briefClientId,
+        actorId: data.freelancerId,
+        actorName: data.freelancerName,
+        actorAvatar: data.freelancerAvatar ?? null,
+        type: "interest",
+        message: `${data.freelancerName} expressed interest in your brief "${data.briefTitle}"`,
+        link: `/dashboard`,
+        read: 0,
+      });
       res.json(interest);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -626,11 +689,68 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Client updates status of an interest (viewed / accepted / declined)
   app.patch("/api/interests/:id/status", async (req, res) => {
     try {
-      const { status } = req.body;
+      const { status, clientName, clientAvatar } = req.body;
       if (!["pending", "viewed", "accepted", "declined"].includes(status)) {
         return res.status(400).json({ error: "Invalid status" });
       }
+      const interest = await storage.getBriefInterest(Number(req.params.id));
       await storage.updateBriefInterestStatus(Number(req.params.id), status);
+      // Notify the freelancer when client accepts or declines their interest
+      if (interest && (status === "accepted" || status === "declined") && clientName) {
+        const client = await storage.getUser(interest.briefClientId);
+        const label = status === "accepted" ? "accepted" : "declined";
+        await notify({
+          recipientId: interest.freelancerId,
+          actorId: interest.briefClientId,
+          actorName: clientName,
+          actorAvatar: clientAvatar ?? (client?.avatar ?? null),
+          type: status === "accepted" ? "interest_accepted" : "interest_declined",
+          message: `${clientName} ${label} your interest in "${interest.briefTitle}"`,
+          link: `/dashboard`,
+          read: 0,
+        });
+      }
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Notifications ───────────────────────────────────────────────────
+  // Get all notifications for a user
+  app.get("/api/notifications/:userId", async (req, res) => {
+    try {
+      const notifs = await storage.getNotifications(Number(req.params.userId));
+      res.json(notifs);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Get unread count only (for polling)
+  app.get("/api/notifications/:userId/unread-count", async (req, res) => {
+    try {
+      const count = await storage.getUnreadNotificationCount(Number(req.params.userId));
+      res.json({ count });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Mark a single notification as read
+  app.patch("/api/notifications/:id/read", async (req, res) => {
+    try {
+      await storage.markNotificationRead(Number(req.params.id));
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Mark ALL notifications as read for a user
+  app.patch("/api/notifications/user/:userId/read-all", async (req, res) => {
+    try {
+      await storage.markAllNotificationsRead(Number(req.params.userId));
       res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
