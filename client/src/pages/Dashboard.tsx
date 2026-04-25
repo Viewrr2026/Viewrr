@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight } from "lucide-react";
+import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,21 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import FreelancerCard from "@/components/FreelancerCard";
 import { useAuth } from "@/components/AuthProvider";
 import { Link } from "wouter";
+import { connectionCount } from "@/lib/storage";
 import type { ProfileWithUser } from "../../../server/storage";
+
+// ── Stars rating component ────────────────────────────────────────────────────
+function Stars({ rating }: { rating: number }) {
+  return (
+    <div className="flex gap-0.5">
+      {[1,2,3,4,5].map(i => (
+        <Star key={i} size={12}
+          className={i <= Math.round(rating) ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30"}
+        />
+      ))}
+    </div>
+  );
+}
 
 function NotLoggedIn() {
   return (
@@ -257,6 +271,35 @@ export default function Dashboard() {
   // Must be defined before any query that references it
   const isFreelancer = user?.role === "freelancer";
 
+  // Fetch the user's own profile (for freelancers — to display stats in the header)
+  const { data: ownProfileData } = useQuery<any>({
+    queryKey: ["/api/profiles/own", user?.id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/profiles/${user!.id}`);
+        if (!res.ok) return null;
+        return res.json();
+      } catch { return null; }
+    },
+    enabled: !!user && isFreelancer,
+  });
+
+  const ownProfile = ownProfileData?.profile ?? null;
+  const ownSpecialisms: string[] = ownProfile ? JSON.parse(ownProfile.specialisms || "[]") : [];
+  const ownBadges: string[] = ownProfile ? JSON.parse(ownProfile.badges || "[]") : [];
+  const ownConnCount = user ? connectionCount(user.id) : 0;
+
+  const availClass: Record<string, string> = {
+    available:   "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+    unavailable: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",
+    busy:        "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+  };
+  const availLabel: Record<string, string> = {
+    available:   "Available for work",
+    unavailable: "Not available",
+    busy:        "Busy",
+  };
+
   const { data: savedProfiles = [] } = useQuery<ProfileWithUser[]>({
     queryKey: ["/api/saved", user?.id],
     queryFn: async () => {
@@ -341,23 +384,85 @@ export default function Dashboard() {
     <div className="min-h-screen bg-background">
 
       <div className="mx-auto max-w-7xl px-6 py-8">
-        {/* Welcome header */}
-        <div className="flex items-start justify-between mb-8">
-          <div className="flex items-center gap-4">
-            <Avatar className="w-14 h-14">
+        {/* Profile header — mirrors the public profile page */}
+        <div className="bg-card border border-border rounded-2xl p-6 md:p-8 mb-6">
+          <div className="flex items-start gap-5">
+            {/* Avatar */}
+            <Avatar className="w-20 h-20 flex-shrink-0 ring-4 ring-background shadow-lg">
               <AvatarImage src={user.avatar || undefined} />
-              <AvatarFallback className="bg-primary text-white text-lg">
+              <AvatarFallback className="bg-primary text-white text-2xl">
                 {(user.name || '?').slice(0, 2).toUpperCase()}
               </AvatarFallback>
             </Avatar>
-            <div>
-              <h1 className="text-2xl font-bold">Welcome back, {(user.name || 'there').split(" ")[0]}</h1>
-              <p className="text-muted-foreground text-sm capitalize">{user.role} account • {user.location || "Location not set"}</p>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h1 className="text-2xl font-bold">{user.name}</h1>
+                  {/* Specialisms + location row */}
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {isFreelancer && ownSpecialisms.length > 0
+                      ? ownSpecialisms.map(s => (
+                          <span key={s} className="text-sm text-primary font-semibold">{s}</span>
+                        ))
+                      : <span className="text-sm text-muted-foreground capitalize">{user.role}</span>
+                    }
+                    {user.location && (
+                      <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                        <MapPin size={12} /> {user.location}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {/* Availability badge (freelancers only) */}
+                  {isFreelancer && ownProfile && (
+                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${availClass[ownProfile.availability] ?? availClass.available}`}>
+                      {availLabel[ownProfile.availability] ?? "Available for work"}
+                    </span>
+                  )}
+                  <Button variant="outline" size="sm" onClick={logout} className="gap-2 text-muted-foreground">
+                    <LogOut size={14} /> Sign out
+                  </Button>
+                </div>
+              </div>
+
+              {/* Stats row — same layout as public profile */}
+              <div className="flex flex-wrap gap-4 mt-4">
+                {isFreelancer && ownProfile ? (
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <Stars rating={ownProfile.rating || 0} />
+                      <span className="font-bold text-sm">{(ownProfile.rating || 0).toFixed(1)}</span>
+                      <span className="text-sm text-muted-foreground">({ownProfile.reviewCount ?? 0} reviews)</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                      <Briefcase size={13} /> {ownProfile.projectCount ?? 0} projects
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                      <Clock size={13} /> {ownProfile.yearsExperience ?? 0} yrs experience
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                      <Users size={13} /> {ownConnCount} connections
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                    <Users size={13} /> {ownConnCount} connections
+                  </div>
+                )}
+              </div>
+
+              {/* Badges */}
+              {isFreelancer && ownBadges.length > 0 && (
+                <div className="flex gap-2 mt-3">
+                  {ownBadges.map(b => (
+                    <span key={b} className="text-xs bg-primary/10 text-primary rounded-full px-2.5 py-0.5 font-medium">{b}</span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={logout} className="gap-2 text-muted-foreground">
-            <LogOut size={14} /> Sign out
-          </Button>
         </div>
 
         {/* Stats strip */}
