@@ -3,6 +3,7 @@ import { Bell, Heart, MessageCircle, Mail, Briefcase, CheckCircle, XCircle, Eye,
 import { useAuth } from "./AuthProvider";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import QuickMessageModal from "./QuickMessageModal";
+import NotificationActionModal from "./NotificationActionModal";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface Notification {
@@ -64,6 +65,12 @@ export default function NotificationBell() {
     otherName: string;
     otherAvatar?: string | null;
   }>({ open: false, otherId: 0, otherName: "" });
+
+  // Action modal state (like, comment, interest, profile_view, etc.)
+  const [actionModal, setActionModal] = useState<{
+    open: boolean;
+    notification: Notification | null;
+  }>({ open: false, notification: null });
 
   const DEMO_IDS = new Set([1, 2, 3]);
   const isDemo = user && DEMO_IDS.has(user.id);
@@ -130,17 +137,19 @@ export default function NotificationBell() {
 
   function handleNotifClick(n: Notification) {
     markRead(n.id);
+    setOpen(false);
     if (n.type === "message") {
-      // Open quick reply modal instead of navigating
-      setOpen(false);
+      // Quick reply modal
       setMsgModal({
         open: true,
         otherId: n.actorId,
         otherName: n.actorName,
         otherAvatar: n.actorAvatar,
       });
+    } else {
+      // Contextual action modal for all other types
+      setActionModal({ open: true, notification: n });
     }
-    // For all other types, just mark as read (no navigation needed)
   }
 
   async function markAllRead() {
@@ -267,7 +276,7 @@ export default function NotificationBell() {
       )}
     </div>
 
-      {/* Quick message modal — rendered outside the bell dropdown so it sits above everything */}
+      {/* Quick message modal */}
       <QuickMessageModal
         open={msgModal.open}
         onClose={() => setMsgModal(m => ({ ...m, open: false }))}
@@ -275,6 +284,13 @@ export default function NotificationBell() {
         otherId={msgModal.otherId}
         otherName={msgModal.otherName}
         otherAvatar={msgModal.otherAvatar}
+      />
+
+      {/* Contextual action modal for all other notification types */}
+      <NotificationActionModal
+        open={actionModal.open}
+        onClose={() => setActionModal(m => ({ ...m, open: false }))}
+        notification={actionModal.notification}
       />
     </>
   );

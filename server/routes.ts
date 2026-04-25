@@ -511,7 +511,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           actorAvatar: actor.avatar ?? null,
           type: "like",
           message: `${actor.name} liked your post`,
-          link: `/feed`,
+          link: `/feed/${post.post.id}`,
           read: 0,
         });
       }
@@ -539,7 +539,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             actorAvatar: actor.avatar ?? null,
             type: "comment",
             message: `${actor.name} commented on your post`,
-            link: `/feed`,
+            link: `/feed/${data.postId}`,
             read: 0,
           });
         }
