@@ -372,6 +372,7 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const [activeConv, setActiveConv] = useState<{ id: number; name: string; avatar?: string } | null>(null);
   const [reviewsOpen, setReviewsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<string | null>(null); // null = nothing selected yet
 
   // Must be defined before any query that references it
   const isFreelancer = user?.role === "freelancer";
@@ -587,266 +588,259 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Stats strip */}
+        {/* Stats strip — each card is clickable and opens the relevant tab */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
           {(isFreelancer ? [
-            { label: "Profile views", value: String(profileViewCount), icon: TrendingUp },
-            { label: "Messages", value: String(conversations.length), icon: MessageSquare },
-            { label: "Interests sent", value: String(interests.length), icon: FileText },
-            { label: "Projects", value: "—", icon: Briefcase },
+            { label: "Profile views",  value: String(profileViewCount),      icon: TrendingUp,   tab: "profile-views" },
+            { label: "Messages",       value: String(conversations.length),   icon: MessageSquare, tab: "messages" },
+            { label: "Interests sent", value: String(interests.length),       icon: FileText,     tab: "interests" },
+            { label: "Projects",       value: "—",                            icon: Briefcase,    tab: null },
           ] : [
-            { label: "Saved creatives", value: String(savedProfiles.length), icon: Bookmark },
-            { label: "Messages", value: String(conversations.length), icon: MessageSquare },
-            { label: "Interests received", value: String(interests.length), icon: FileText },
-            { label: "Projects posted", value: "—", icon: Briefcase },
-          ]).map(({ label, value, icon: Icon }) => (
-            <div key={label} className="bg-card border border-border rounded-xl p-4">
+            { label: "Saved creatives",    value: String(savedProfiles.length), icon: Bookmark,      tab: "saved" },
+            { label: "Messages",           value: String(conversations.length), icon: MessageSquare, tab: "messages" },
+            { label: "Interests received", value: String(interests.length),     icon: FileText,      tab: "interests" },
+            { label: "Projects posted",    value: "—",                          icon: Briefcase,     tab: null },
+          ]).map(({ label, value, icon: Icon, tab }) => (
+            <button
+              key={label}
+              onClick={() => tab && setActiveTab(prev => prev === tab ? null : tab)}
+              className={`bg-card border rounded-xl p-4 text-left transition-all ${
+                tab ? 'cursor-pointer hover:border-primary/50 hover:shadow-sm' : 'cursor-default'
+              } ${
+                activeTab === tab && tab ? 'border-primary ring-1 ring-primary/30' : 'border-border'
+              }`}
+            >
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm text-muted-foreground">{label}</span>
-                <Icon size={16} className="text-primary" />
+                <Icon size={16} className={activeTab === tab && tab ? 'text-primary' : 'text-primary'} />
               </div>
               <p className="text-2xl font-bold">{value}</p>
-            </div>
+              {tab && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {activeTab === tab ? 'Click to close ↑' : 'Click to view →'}
+                </p>
+              )}
+            </button>
           ))}
         </div>
 
-        {/* Profile views sparkline — freelancers only */}
-        {isFreelancer && (
-          <div className="bg-card border border-border rounded-2xl p-5 mb-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="font-semibold text-sm">Profile views</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">Last 30 days</p>
-              </div>
-              <div className="text-right">
-                <p className="text-2xl font-bold">{profileViewCount}</p>
-                <p className="text-xs text-muted-foreground">total views</p>
-              </div>
-            </div>
-            {viewHistory.length > 0 && (
-              <div className="flex items-end gap-0.5 h-12">
-                {viewHistory.map((d, i) => {
-                  const max = Math.max(...viewHistory.map(x => x.count), 1);
-                  const pct = (d.count / max) * 100;
-                  return (
-                    <div
-                      key={i}
-                      title={`${d.date}: ${d.count} view${d.count !== 1 ? 's' : ''}`}
-                      className="flex-1 rounded-sm transition-all cursor-help"
-                      style={{
-                        height: `${Math.max(pct, d.count > 0 ? 8 : 2)}%`,
-                        backgroundColor: d.count > 0 ? 'hsl(var(--primary))' : 'hsl(var(--border))',
-                        opacity: d.count > 0 ? 0.7 + (pct / 100) * 0.3 : 1,
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            )}
-            {viewHistory.length > 0 && (
-              <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                <span>{viewHistory[0]?.date.slice(5)}</span>
-                <span>Today</span>
-              </div>
-            )}
-            {profileViewCount === 0 && (
-              <p className="text-xs text-muted-foreground text-center py-2">
-                Views will appear here once someone visits your profile
-              </p>
-            )}
-          </div>
-        )}
+        {/* ── Panel area: shown below the stat cards when one is active ─── */}
+        {activeTab && (
+          <div className="bg-card border border-border rounded-2xl mt-2 mb-6 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
 
-        <Tabs defaultValue={isFreelancer ? "messages" : "saved"}>
-          <TabsList>
-            {!isFreelancer && <TabsTrigger value="saved" className="gap-2"><Bookmark size={14} /> Saved ({savedProfiles.length})</TabsTrigger>}
-            <TabsTrigger value="messages" className="gap-2"><MessageSquare size={14} /> Messages ({conversations.length})</TabsTrigger>
-            <TabsTrigger value="interests" className="gap-2 relative">
-              <FileText size={14} /> Interests
-              {interests.filter((i: any) => i.status === "pending").length > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-primary text-white text-[10px] flex items-center justify-center font-bold">
-                  {interests.filter((i: any) => i.status === "pending").length}
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="profile" className="gap-2"><User size={14} /> Profile</TabsTrigger>
-          </TabsList>
-
-          {/* Saved */}
-          {!isFreelancer && (
-            <TabsContent value="saved" className="mt-6">
-              {savedProfiles.length === 0 ? (
-                <div className="text-center py-16 text-muted-foreground">
-                  <Bookmark size={32} className="mx-auto mb-4 opacity-40" />
-                  <h3 className="font-semibold text-foreground mb-2">No saved creatives yet</h3>
-                  <p className="text-sm mb-4">Browse talent and save the ones you love.</p>
-                  <Button asChild className="bg-primary hover:bg-primary/90 text-white">
-                    <Link href="/marketplace">Browse marketplace</Link>
-                  </Button>
+            {/* Profile views sparkline */}
+            {activeTab === "profile-views" && isFreelancer && (
+              <div className="p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="font-semibold text-sm">Profile views</h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">Last 30 days</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-2xl font-bold">{profileViewCount}</p>
+                    <p className="text-xs text-muted-foreground">total views</p>
+                  </div>
                 </div>
-              ) : (
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-                  {savedProfiles.map(pw => (
-                    <FreelancerCard key={pw.profile.id} pw={pw} savedInit={true} />
-                  ))}
-                </div>
-              )}
-            </TabsContent>
-          )}
-
-          {/* Messages */}
-          <TabsContent value="messages" className="mt-6">
-            {conversations.length === 0 ? (
-              <div className="text-center py-16 text-muted-foreground">
-                <MessageSquare size={32} className="mx-auto mb-4 opacity-40" />
-                <h3 className="font-semibold text-foreground mb-2">No conversations yet</h3>
-                <p className="text-sm">Find a creative and start a conversation.</p>
-              </div>
-            ) : (
-              <div className="grid md:grid-cols-[280px,1fr] gap-4">
-                {/* Conversation list */}
-                <div className="bg-card border border-border rounded-xl overflow-hidden">
-                  {conversations.map((c: any) => (
-                    <button
-                      key={c.otherId}
-                      onClick={() => setActiveConv({ id: c.otherId, name: c.otherName, avatar: c.otherAvatar })}
-                      className={`w-full flex items-center gap-3 p-4 border-b border-border last:border-b-0 text-left transition-colors
-                        ${activeConv?.id === c.otherId ? "bg-primary/10" : "hover:bg-secondary/50"}`}
-                      data-testid={`conversation-${c.otherId}`}
-                    >
-                      <Avatar className="w-9 h-9 flex-shrink-0">
-                        <AvatarImage src={c.otherAvatar} />
-                        <AvatarFallback className="bg-primary text-white text-xs">{c.otherName.slice(0, 2).toUpperCase()}</AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-sm">{c.otherName}</span>
-                          {c.unread > 0 && (
-                            <Badge className="bg-primary text-white text-xs">{c.unread}</Badge>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground truncate">{c.lastMessage}</p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Thread */}
-                <div className="bg-card border border-border rounded-xl overflow-hidden">
-                  {activeConv ? (
-                    <MessageThread userId={user.id} otherId={activeConv.id} otherName={activeConv.name} otherAvatar={activeConv.avatar} />
-                  ) : (
-                    <div className="flex items-center justify-center h-full py-20 text-muted-foreground text-sm">
-                      Select a conversation to read
+                {viewHistory.length > 0 ? (
+                  <>
+                    <div className="flex items-end gap-0.5 h-16">
+                      {viewHistory.map((d: any, i: number) => {
+                        const max = Math.max(...viewHistory.map((x: any) => x.count), 1);
+                        const pct = (d.count / max) * 100;
+                        return (
+                          <div
+                            key={i}
+                            title={`${d.date}: ${d.count} view${d.count !== 1 ? 's' : ''}`}
+                            className="flex-1 rounded-sm transition-all cursor-help"
+                            style={{
+                              height: `${Math.max(pct, d.count > 0 ? 8 : 2)}%`,
+                              backgroundColor: d.count > 0 ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                              opacity: d.count > 0 ? 0.7 + (pct / 100) * 0.3 : 1,
+                            }}
+                          />
+                        );
+                      })}
                     </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </TabsContent>
-
-          {/* Interests */}
-          <TabsContent value="interests" className="mt-6">
-            {interests.length === 0 ? (
-              <div className="text-center py-16 text-muted-foreground">
-                <FileText size={32} className="mx-auto mb-4 opacity-40" />
-                <h3 className="font-semibold text-foreground mb-2">
-                  {isFreelancer ? "No interests sent yet" : "No interests received yet"}
-                </h3>
-                <p className="text-sm mb-4">
-                  {isFreelancer
-                    ? "Browse the briefs board and express interest in projects that suit you."
-                    : "Once freelancers express interest in your briefs, they'll appear here."}
-                </p>
-                <Button asChild className="bg-primary hover:bg-primary/90 text-white">
-                  <Link href="/briefs">{isFreelancer ? "Browse briefs" : "View briefs board"}</Link>
-                </Button>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {isFreelancer ? (
-                  // ── FREELANCER VIEW: briefs they applied to ──────────────────
-                  interests.map((interest: any) => (
-                    <div key={interest.id} className="bg-card border border-border rounded-2xl p-5">
-                      <div className="flex items-start justify-between gap-3 mb-3">
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-sm leading-snug">{interest.briefTitle}</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">Brief by {interest.briefClientName}</p>
-                        </div>
-                        <InterestStatusBadge status={interest.status} />
-                      </div>
-                      <div className="bg-muted/50 rounded-xl p-3 mb-3">
-                        <p className="text-xs text-muted-foreground mb-1 font-semibold uppercase tracking-wide">Your cover note</p>
-                        <p className="text-sm leading-relaxed">{interest.coverNote}</p>
-                      </div>
-                      <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-                        {interest.rate && <span>Rate: <span className="font-medium text-foreground">{interest.rate}</span></span>}
-                        {interest.availability && <span>Available from: <span className="font-medium text-foreground">{interest.availability}</span></span>}
-                      </div>
-                      <div className="flex flex-col gap-0.5 mt-2 text-xs text-muted-foreground">
-                        <span>Sent: {formatUK(interest.createdAt)}</span>
-                        {interest.respondedAt && (
-                          <span>
-                            {interest.status === "accepted" ? "Accepted" : "Declined"} by client: {formatUK(interest.respondedAt)}
-                          </span>
-                        )}
-                      </div>
+                    <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                      <span>{viewHistory[0]?.date.slice(5)}</span>
+                      <span>Today</span>
                     </div>
-                  ))
+                  </>
                 ) : (
-                  // ── CLIENT VIEW: freelancers who applied to their briefs ───────
-                  interests.map((interest: any) => (
-                    <ClientInterestCard
-                      key={interest.id}
-                      interest={interest}
-                      onStatusChange={(id, status) => {
-                        fetch(`/api/interests/${id}/status`, {
-                          method: "PATCH",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ status, clientName: user?.name, clientAvatar: user?.avatar }),
-                        }).then(() => refetchInterests());
-                      }}
-                    />
-                  ))
+                  <p className="text-xs text-muted-foreground text-center py-4">
+                    Views will appear here once someone visits your profile
+                  </p>
                 )}
               </div>
             )}
-          </TabsContent>
 
-          {/* Profile */}
-          <TabsContent value="profile" className="mt-6 space-y-6 max-w-lg">
-            {/* Account details */}
-            <div className="bg-card border border-border rounded-2xl p-6">
-              <h3 className="font-semibold mb-5">Account details</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Name</label>
-                  <p className="font-medium mt-0.5">{user.name}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Email</label>
-                  <p className="font-medium mt-0.5">{user.email}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Role</label>
-                  <p className="font-medium capitalize mt-0.5">{user.role}</p>
-                </div>
-                {user.bio && (
-                  <div>
-                    <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Bio</label>
-                    <p className="text-sm text-muted-foreground mt-0.5">{user.bio}</p>
+            {/* Saved creatives */}
+            {activeTab === "saved" && !isFreelancer && (
+              <div className="p-5">
+                <h3 className="font-semibold mb-4">Saved creatives</h3>
+                {savedProfiles.length === 0 ? (
+                  <div className="text-center py-10 text-muted-foreground">
+                    <Bookmark size={28} className="mx-auto mb-3 opacity-40" />
+                    <p className="font-semibold text-foreground mb-1">No saved creatives yet</p>
+                    <p className="text-sm mb-4">Browse talent and save the ones you love.</p>
+                    <Button asChild className="bg-primary hover:bg-primary/90 text-white">
+                      <Link href="/marketplace">Browse marketplace</Link>
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {savedProfiles.map((pw: any) => (
+                      <FreelancerCard key={pw.profile.id} pw={pw} savedInit={true} />
+                    ))}
                   </div>
                 )}
               </div>
-              <Button variant="outline" className="mt-6 gap-2">
-                <Settings size={14} /> Edit profile
-              </Button>
-            </div>
+            )}
 
-            {/* Showreel — freelancers only */}
-            {isFreelancer && <ShowreelEditor profileId={ownProfile?.id} currentUrl={ownProfile?.reelUrl ?? ""} />}
-          </TabsContent>
-        </Tabs>
+            {/* Messages */}
+            {activeTab === "messages" && (
+              <div className="p-5">
+                <h3 className="font-semibold mb-4">Messages</h3>
+                {conversations.length === 0 ? (
+                  <div className="text-center py-10 text-muted-foreground">
+                    <MessageSquare size={28} className="mx-auto mb-3 opacity-40" />
+                    <p className="font-semibold text-foreground mb-1">No conversations yet</p>
+                    <p className="text-sm">Find a creative and start a conversation.</p>
+                  </div>
+                ) : (
+                  <div className="grid md:grid-cols-[260px,1fr] gap-4">
+                    <div className="bg-background border border-border rounded-xl overflow-hidden">
+                      {conversations.map((c: any) => (
+                        <button
+                          key={c.otherId}
+                          onClick={() => setActiveConv({ id: c.otherId, name: c.otherName, avatar: c.otherAvatar })}
+                          className={`w-full flex items-center gap-3 p-4 border-b border-border last:border-b-0 text-left transition-colors
+                            ${activeConv?.id === c.otherId ? "bg-primary/10" : "hover:bg-secondary/50"}`}
+                        >
+                          <Avatar className="w-9 h-9 flex-shrink-0">
+                            <AvatarImage src={c.otherAvatar} />
+                            <AvatarFallback className="bg-primary text-white text-xs">{c.otherName.slice(0, 2).toUpperCase()}</AvatarFallback>
+                          </Avatar>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-sm">{c.otherName}</span>
+                              {c.unread > 0 && <Badge className="bg-primary text-white text-xs">{c.unread}</Badge>}
+                            </div>
+                            <p className="text-xs text-muted-foreground truncate">{c.lastMessage}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="bg-background border border-border rounded-xl overflow-hidden">
+                      {activeConv ? (
+                        <MessageThread userId={user.id} otherId={activeConv.id} otherName={activeConv.name} otherAvatar={activeConv.avatar} />
+                      ) : (
+                        <div className="flex items-center justify-center h-full py-16 text-muted-foreground text-sm">
+                          Select a conversation
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Interests */}
+            {activeTab === "interests" && (
+              <div className="p-5">
+                <h3 className="font-semibold mb-4">{isFreelancer ? "Interests sent" : "Interests received"}</h3>
+                {interests.length === 0 ? (
+                  <div className="text-center py-10 text-muted-foreground">
+                    <FileText size={28} className="mx-auto mb-3 opacity-40" />
+                    <p className="font-semibold text-foreground mb-1">{isFreelancer ? "No interests sent yet" : "No interests received yet"}</p>
+                    <p className="text-sm mb-4">
+                      {isFreelancer ? "Browse the briefs board and express interest in projects that suit you." : "Once freelancers express interest in your briefs, they'll appear here."}
+                    </p>
+                    <Button asChild className="bg-primary hover:bg-primary/90 text-white">
+                      <Link href="/briefs">{isFreelancer ? "Browse briefs" : "View briefs board"}</Link>
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {isFreelancer ? (
+                      interests.map((interest: any) => (
+                        <div key={interest.id} className="bg-background border border-border rounded-2xl p-5">
+                          <div className="flex items-start justify-between gap-3 mb-3">
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-sm leading-snug">{interest.briefTitle}</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">Brief by {interest.briefClientName}</p>
+                            </div>
+                            <InterestStatusBadge status={interest.status} />
+                          </div>
+                          <div className="bg-muted/50 rounded-xl p-3 mb-3">
+                            <p className="text-xs text-muted-foreground mb-1 font-semibold uppercase tracking-wide">Your cover note</p>
+                            <p className="text-sm leading-relaxed">{interest.coverNote}</p>
+                          </div>
+                          <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                            {interest.rate && <span>Rate: <span className="font-medium text-foreground">{interest.rate}</span></span>}
+                            {interest.availability && <span>Available from: <span className="font-medium text-foreground">{interest.availability}</span></span>}
+                          </div>
+                          <div className="flex flex-col gap-0.5 mt-2 text-xs text-muted-foreground">
+                            <span>Sent: {formatUK(interest.createdAt)}</span>
+                            {interest.respondedAt && (
+                              <span>{interest.status === "accepted" ? "Accepted" : "Declined"} by client: {formatUK(interest.respondedAt)}</span>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      interests.map((interest: any) => (
+                        <ClientInterestCard
+                          key={interest.id}
+                          interest={interest}
+                          onStatusChange={(id: number, status: string) => {
+                            fetch(`/api/interests/${id}/status`, {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ status, clientName: user?.name, clientAvatar: user?.avatar }),
+                            }).then(() => refetchInterests());
+                          }}
+                        />
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
+        )}
+
+        {/* Profile section — always visible at the bottom */}
+        <div className="space-y-6 max-w-lg">
+          <div className="bg-card border border-border rounded-2xl p-6">
+            <h3 className="font-semibold mb-5">Account details</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Name</label>
+                <p className="font-medium mt-0.5">{user.name}</p>
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Email</label>
+                <p className="font-medium mt-0.5">{user.email}</p>
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Role</label>
+                <p className="font-medium capitalize mt-0.5">{user.role}</p>
+              </div>
+              {user.bio && (
+                <div>
+                  <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Bio</label>
+                  <p className="text-sm text-muted-foreground mt-0.5">{user.bio}</p>
+                </div>
+              )}
+            </div>
+            <Button variant="outline" className="mt-6 gap-2">
+              <Settings size={14} /> Edit profile
+            </Button>
+          </div>
+          {isFreelancer && <ShowreelEditor profileId={ownProfile?.id} currentUrl={ownProfile?.reelUrl ?? ""} />}
+        </div>
       </div>
 
       {/* Reviews modal */}
