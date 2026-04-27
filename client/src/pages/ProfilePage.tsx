@@ -44,6 +44,7 @@ export default function ProfilePage() {
   const [msgText, setMsgText] = useState("");
   const [isSaved, setIsSaved] = useState(false);
   const [reelOpen, setReelOpen] = useState(false);
+  const [reviewsOpen, setReviewsOpen] = useState(false);
   const profileIdNum = Number(id);
   const [connected, setConnected] = useState(() => isConnected(profileIdNum));
   const [connCount, setConnCount] = useState(() => connectionCount(profileIdNum));
@@ -189,11 +190,14 @@ export default function ProfilePage() {
 
                   {/* Stats row */}
                   <div className="flex flex-wrap gap-4 mt-4">
-                    <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => reviews.length > 0 && setReviewsOpen(true)}
+                      className={`flex items-center gap-1.5 ${reviews.length > 0 ? 'cursor-pointer hover:opacity-75 transition-opacity' : 'cursor-default'}`}
+                    >
                       <Stars rating={profile.rating || 0} />
                       <span className="font-bold">{(profile.rating || 0).toFixed(1)}</span>
-                      <span className="text-sm text-muted-foreground">({profile.reviewCount} reviews)</span>
-                    </div>
+                      <span className="text-sm text-muted-foreground underline-offset-2 hover:underline">({profile.reviewCount} reviews)</span>
+                    </button>
                     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <Briefcase size={13} />
                       {profile.projectCount} projects
@@ -447,6 +451,40 @@ export default function ProfilePage() {
           </DialogContent>
         </Dialog>
       )}
+
+      {/* Reviews modal */}
+      <Dialog open={reviewsOpen} onOpenChange={setReviewsOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Stars rating={profile.rating || 0} />
+              <span>{(profile.rating || 0).toFixed(1)}</span>
+              <span className="text-muted-foreground font-normal text-sm">· {reviews.length} reviews</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="overflow-y-auto flex-1 space-y-4 pr-1 mt-2">
+            {reviews.map((r: any) => (
+              <div key={r.id} className="bg-secondary/50 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2.5">
+                    <img
+                      src={r.clientAvatar || `https://i.pravatar.cc/40?u=${r.clientName}`}
+                      alt={r.clientName}
+                      className="w-8 h-8 rounded-full"
+                    />
+                    <div>
+                      <p className="font-semibold text-sm">{r.clientName}</p>
+                      {r.projectType && <p className="text-xs text-muted-foreground">{r.projectType}</p>}
+                    </div>
+                  </div>
+                  <Stars rating={r.rating} />
+                </div>
+                <p className="text-sm text-muted-foreground leading-relaxed">"{r.comment}"</p>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

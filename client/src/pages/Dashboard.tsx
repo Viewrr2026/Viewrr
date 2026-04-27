@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import FreelancerCard from "@/components/FreelancerCard";
 import { useAuth } from "@/components/AuthProvider";
 import { useToast } from "@/hooks/use-toast";
@@ -370,6 +371,7 @@ function ShowreelEditor({ profileId, currentUrl }: { profileId?: number; current
 export default function Dashboard() {
   const { user, logout } = useAuth();
   const [activeConv, setActiveConv] = useState<{ id: number; name: string; avatar?: string } | null>(null);
+  const [reviewsOpen, setReviewsOpen] = useState(false);
 
   // Must be defined before any query that references it
   const isFreelancer = user?.role === "freelancer";
@@ -391,6 +393,20 @@ export default function Dashboard() {
   const ownSpecialisms: string[] = ownProfile ? JSON.parse(ownProfile.specialisms || "[]") : [];
   const ownBadges: string[] = ownProfile ? JSON.parse(ownProfile.badges || "[]") : [];
   const ownConnCount = user ? connectionCount(user.id) : 0;
+
+  // Fetch own reviews (lazy — only when modal opens)
+  const { data: ownReviews = [] } = useQuery<any[]>({
+    queryKey: ["/api/reviews/own", ownProfile?.id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/profiles/${ownProfile!.id}`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return data.reviews ?? [];
+      } catch { return []; }
+    },
+    enabled: !!ownProfile && reviewsOpen,
+  });
 
   const availClass: Record<string, string> = {
     available:   "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
@@ -534,11 +550,14 @@ export default function Dashboard() {
               <div className="flex flex-wrap gap-4 mt-4">
                 {isFreelancer && ownProfile ? (
                   <>
-                    <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => (ownProfile.reviewCount ?? 0) > 0 && setReviewsOpen(true)}
+                      className={`flex items-center gap-1.5 ${(ownProfile.reviewCount ?? 0) > 0 ? 'cursor-pointer hover:opacity-75 transition-opacity' : 'cursor-default'}`}
+                    >
                       <Stars rating={ownProfile.rating || 0} />
                       <span className="font-bold text-sm">{(ownProfile.rating || 0).toFixed(1)}</span>
-                      <span className="text-sm text-muted-foreground">({ownProfile.reviewCount ?? 0} reviews)</span>
-                    </div>
+                      <span className="text-sm text-muted-foreground underline-offset-2 hover:underline">({ownProfile.reviewCount ?? 0} reviews)</span>
+                    </button>
                     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <Briefcase size={13} /> {ownProfile.projectCount ?? 0} projects
                     </div>
@@ -829,6 +848,42 @@ export default function Dashboard() {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Reviews modal */}
+      <Dialog open={reviewsOpen} onOpenChange={setReviewsOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Stars rating={ownProfile?.rating || 0} />
+              <span>{(ownProfile?.rating || 0).toFixed(1)}</span>
+              <span className="text-muted-foreground font-normal text-sm">· {ownReviews.length} reviews</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="overflow-y-auto flex-1 space-y-4 pr-1 mt-2">
+            {ownReviews.length === 0 ? (
+              <p className="text-center text-sm text-muted-foreground py-8">No reviews yet</p>
+            ) : ownReviews.map((r: any) => (
+              <div key={r.id} className="bg-secondary/50 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2.5">
+                    <img
+                      src={r.clientAvatar || `https://i.pravatar.cc/40?u=${r.clientName}`}
+                      alt={r.clientName}
+                      className="w-8 h-8 rounded-full"
+                    />
+                    <div>
+                      <p className="font-semibold text-sm">{r.clientName}</p>
+                      {r.projectType && <p className="text-xs text-muted-foreground">{r.projectType}</p>}
+                    </div>
+                  </div>
+                  <Stars rating={r.rating} />
+                </div>
+                <p className="text-sm text-muted-foreground leading-relaxed">"{r.comment}"</p>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
