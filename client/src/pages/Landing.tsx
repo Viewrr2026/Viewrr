@@ -78,13 +78,14 @@ export default function Landing() {
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
         {/* Background video */}
-        <div className="absolute inset-0 z-0 overflow-hidden">
+        <div className="absolute inset-0 z-0 overflow-hidden bg-neutral-900">
           <video
             src="/videos/hero_showreel.mp4"
             autoPlay
             muted
             loop
             playsInline
+            poster="https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=1600&q=80"
             className="absolute inset-0 w-full h-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-background via-background/80 to-background/30" />
