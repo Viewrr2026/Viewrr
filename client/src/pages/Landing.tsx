@@ -85,6 +85,7 @@ export default function Landing() {
             muted
             loop
             playsInline
+            poster="/videos/hero_showreel_poster.jpg"
             className="absolute inset-0 w-full h-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-background via-background/80 to-background/30" />
