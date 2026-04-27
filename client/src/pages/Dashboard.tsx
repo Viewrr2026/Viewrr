@@ -12,9 +12,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import FreelancerCard from "@/components/FreelancerCard";
 import { useAuth } from "@/components/AuthProvider";
+import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import { connectionCount } from "@/lib/storage";
-import type { ProfileWithUser } from "../../../server/storage";
+
+type ProfileWithUser = { profile: any; user: any };
 
 // ── Stars rating component ────────────────────────────────────────────────────
 function Stars({ rating }: { rating: number }) {
