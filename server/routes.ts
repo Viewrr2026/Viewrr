@@ -288,14 +288,47 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ─── Profile Views ───────────────────────────────────────────────────────
   // Called by ProfilePage on load — records one view per viewer per 24h
-  app.post("/api/profile-views/:userId", async (req, res) => {
+  app.post("/api/profile-views/:id", async (req, res) => {
     try {
-      const profileUserId = Number(req.params.userId);
+      const rawId = Number(req.params.id);
       const viewerId: number | null = req.body.viewerId ?? null;
       const viewerIp: string = (req.headers["x-forwarded-for"] as string || req.socket.remoteAddress || "unknown").split(",")[0].trim();
+
+      // Resolve to a user ID — the URL may carry either a profile ID or a user ID.
+      // Try looking up as a profile ID first; if that gives us a user, use that user's ID.
+      // Otherwise treat the raw value as a user ID directly.
+      let profileOwnerId = rawId;
+      const profileRow = await storage.getProfile(rawId);
+      if (profileRow) {
+        profileOwnerId = profileRow.user.id;
+      } else {
+        // Might already be a user ID — verify the user exists
+        const userRow = await storage.getUser(rawId);
+        if (!userRow) return res.json({ ok: true, notFound: true });
+        profileOwnerId = userRow.id;
+      }
+
       // Don't count someone viewing their own profile
-      if (viewerId && viewerId === profileUserId) return res.json({ ok: true, self: true });
-      await storage.recordProfileView(profileUserId, viewerId, viewerIp);
+      if (viewerId && viewerId === profileOwnerId) return res.json({ ok: true, self: true });
+
+      await storage.recordProfileView(profileOwnerId, viewerId, viewerIp);
+
+      // Notify the profile owner (non-fatal)
+      if (viewerId && viewerId !== profileOwnerId) {
+        const viewer = await storage.getUser(viewerId);
+        if (viewer) {
+          await notify({
+            recipientId: profileOwnerId,
+            actorId: viewer.id,
+            actorName: viewer.name,
+            actorAvatar: viewer.avatar ?? "",
+            type: "profile_view",
+            message: `${viewer.name} viewed your profile`,
+            link: `/profile/${rawId}`,
+          });
+        }
+      }
+
       res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
