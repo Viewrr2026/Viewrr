@@ -1,7 +1,7 @@
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Star, MapPin, Briefcase, Clock, ExternalLink, MessageSquare, Bookmark, BookmarkCheck, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users } from "lucide-react";
+import { Star, MapPin, Briefcase, Clock, ExternalLink, MessageSquare, Bookmark, BookmarkCheck, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users, Play } from "lucide-react";
 import VideoEmbed from "@/components/VideoEmbed";
 import { parseVideoUrl } from "@/lib/videoEmbed";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,7 @@ export default function ProfilePage() {
   const [msgOpen, setMsgOpen] = useState(false);
   const [msgText, setMsgText] = useState("");
   const [isSaved, setIsSaved] = useState(false);
+  const [reelOpen, setReelOpen] = useState(false);
   const profileIdNum = Number(id);
   const [connected, setConnected] = useState(() => isConnected(profileIdNum));
   const [connCount, setConnCount] = useState(() => connectionCount(profileIdNum));
