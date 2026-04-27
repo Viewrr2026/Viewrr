@@ -63,47 +63,6 @@ const TESTIMONIALS = [
   },
 ];
 
-
-
-function VideoBackground() {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    // Restart on any accidental stop
-    const restart = () => { el.currentTime = 0; el.play().catch(() => {}); };
-    el.addEventListener("ended", restart);
-    el.addEventListener("pause", () => { if (!document.hidden) el.play().catch(() => {}); });
-    el.play().catch(() => {});
-    return () => el.removeEventListener("ended", restart);
-  }, []);
-
-  return (
-    <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
-      <video
-        ref={videoRef}
-        autoPlay
-        muted
-        loop
-        playsInline
-        style={{
-          position: "absolute",
-          top: "50%",
-          left: "50%",
-          width: "max(100%, 177.78vh)",
-          height: "max(100%, 56.25vw)",
-          transform: "translate(-50%, -50%)",
-          objectFit: "cover",
-          pointerEvents: "none",
-        }}
-      >
-        <source src="/videos/hero_showreel.mp4" type="video/mp4" />
-      </video>
-    </div>
-  );
-}
-
 export default function Landing() {
   const { data: featured = [] } = useQuery<ProfileWithUser[]>({
     queryKey: ["/api/profiles/featured"],
@@ -118,11 +77,14 @@ export default function Landing() {
 
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
-        {/* Background image */}
+        {/* Background video */}
         <div className="absolute inset-0 z-0 overflow-hidden">
-          <img
-            src="https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=1600&q=80"
-            alt=""
+          <video
+            src="/videos/hero_showreel.mp4"
+            autoPlay
+            muted
+            loop
+            playsInline
             className="absolute inset-0 w-full h-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-background via-background/80 to-background/30" />
