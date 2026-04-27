@@ -460,12 +460,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(user);
   });
 
+  // ── Feed cache (30-second TTL, keyed by viewerUserId|offset|limit) ───────────
+  const feedCache = new Map<string, { data: any; expiresAt: number }>();
+  function bustFeedCache() { feedCache.clear(); }
+
   // Feed
   app.get("/api/feed", async (req, res) => {
-    const limit = Number(req.query.limit) || 20;
+    const limit = Number(req.query.limit) || 10;
     const offset = Number(req.query.offset) || 0;
     const viewerUserId = req.query.viewerUserId ? Number(req.query.viewerUserId) : undefined;
-    res.json(await storage.getFeedPosts(limit, offset, viewerUserId));
+    const cacheKey = `${viewerUserId ?? "anon"}|${offset}|${limit}`;
+    const cached = feedCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json(cached.data);
+    }
+    const data = await storage.getFeedPosts(limit, offset, viewerUserId);
+    feedCache.set(cacheKey, { data, expiresAt: Date.now() + 30_000 });
+    res.json(data);
   });
 
   app.post("/api/feed", async (req, res) => {
@@ -473,6 +484,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const data = insertPostSchema.parse(req.body);
       const post = await storage.createPost(data);
       const pw = await storage.getPost(post.id);
+      bustFeedCache();
       res.json(pw);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -492,6 +504,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const { userId } = req.body;
     const ok = await storage.deletePost(Number(req.params.id), Number(userId));
     if (!ok) return res.status(403).json({ error: "Not allowed" });
+    bustFeedCache();
     res.json({ success: true });
   });
 

@@ -1,11 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { DEMO_USER_IDS, getMockPosts } from "@/lib/mockData";
 import {
   Heart, MessageCircle, Send, ImagePlus, X, Hash,
   MoreHorizontal, Trash2, MapPin, Sparkles, TrendingUp,
-  Share2, Repeat2, Mail, Film, Link as LinkIcon, Pencil, Upload,
+  Share2, Repeat2, Mail, Film, Link as LinkIcon, Pencil, Upload, Loader2,
 } from "lucide-react";
 import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
 import VideoEmbed from "@/components/VideoEmbed";
@@ -674,36 +674,103 @@ function NewPostModal({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
+const PAGE_SIZE = 10;
+
 // ── Main Feed page ─────────────────────────────────────────────────────────────
 export default function Feed() {
   const { user } = useAuth();
   const [postModalOpen, setPostModalOpen] = useState(false);
+  const [posts, setPosts] = useState<PostWithUser[]>([]);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
-  // Only show mock data for the 3 built-in demo accounts — any real registered user hits the real API
+  // Only show mock data for the 3 built-in demo accounts
   const isDemo = DEMO_USER_IDS.has(user?.id ?? -1);
 
-  const { data: posts = [], isLoading } = useQuery<PostWithUser[]>({
+  // Initial load
+  const { isLoading } = useQuery<PostWithUser[]>({
     queryKey: ["/api/feed", user?.id],
     queryFn: async () => {
-      if (isDemo) return getMockPosts(user?.id) as any;
+      if (isDemo) {
+        const mock = getMockPosts(user?.id) as any;
+        setPosts(mock);
+        setHasMore(false);
+        return mock;
+      }
       try {
-        const q = user ? `?viewerUserId=${user.id}` : "";
-        const res = await fetch(`/api/feed${q}`);
-        if (!res.ok) return getMockPosts(undefined) as any; // fallback to mock if no backend
-        return res.json();
+        const viewerQ = user ? `&viewerUserId=${user.id}` : "";
+        const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=0${viewerQ}`);
+        if (!res.ok) {
+          const mock = getMockPosts(undefined) as any;
+          setPosts(mock);
+          setHasMore(false);
+          return mock;
+        }
+        const data: PostWithUser[] = await res.json();
+        setPosts(data);
+        setOffset(PAGE_SIZE);
+        setHasMore(data.length === PAGE_SIZE);
+        return data;
       } catch {
-        return getMockPosts(undefined) as any; // network error — show mock feed
+        const mock = getMockPosts(undefined) as any;
+        setPosts(mock);
+        setHasMore(false);
+        return mock;
       }
     },
     refetchInterval: false,
     retry: false,
   });
 
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || isDemo) return;
+    setLoadingMore(true);
+    try {
+      const viewerQ = user ? `&viewerUserId=${user.id}` : "";
+      const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=${offset}${viewerQ}`);
+      if (!res.ok) { setHasMore(false); return; }
+      const data: PostWithUser[] = await res.json();
+      setPosts(prev => {
+        // deduplicate by post id
+        const existingIds = new Set(prev.map(p => p.post.id));
+        const fresh = data.filter(p => !existingIds.has(p.post.id));
+        return [...prev, ...fresh];
+      });
+      setOffset(o => o + PAGE_SIZE);
+      setHasMore(data.length === PAGE_SIZE);
+    } catch {
+      setHasMore(false);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, isDemo, offset, user]);
+
+  // When a new post is created, prepend it to the list and bust queries
+  const handleNewPost = useCallback(() => {
+    // Invalidate query so next full-reload picks up fresh data
+    queryClient.invalidateQueries({ queryKey: ["/api/feed"] });
+    // Re-fetch first page to get the newest post at the top
+    (async () => {
+      try {
+        const viewerQ = user ? `&viewerUserId=${user.id}` : "";
+        const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=0${viewerQ}`);
+        if (!res.ok) return;
+        const data: PostWithUser[] = await res.json();
+        setPosts(prev => {
+          const existingIds = new Set(prev.map(p => p.post.id));
+          const fresh = data.filter(p => !existingIds.has(p.post.id));
+          return [...fresh, ...prev];
+        });
+        setHasMore(data.length === PAGE_SIZE);
+      } catch { /* silent */ }
+    })();
+  }, [user]);
+
   // ✅ Item 9 — Dynamic trending tags from actual post content
   const trendingTags = useMemo(() => {
     const dynamic = extractNouns(posts);
     if (dynamic.length >= 5) return dynamic;
-    // Fallback seeds to fill gaps
     const seeds = ["BrandFilm", "ColourGrade", "Documentary", "FashionPhotography", "TikTok", "Drone", "MotionDesign", "Wedding", "Festival"];
     const merged = [...new Set([...dynamic, ...seeds])];
     return merged.slice(0, 9);
@@ -771,7 +838,29 @@ export default function Feed() {
                 <p className="text-sm">Be the first to share your work.</p>
               </div>
             ) : (
-              posts.map(pw => <PostCard key={pw.post.id} pw={pw} />)
+              <>
+                {posts.map(pw => <PostCard key={pw.post.id} pw={pw} />)}
+
+                {/* Load more */}
+                {hasMore && (
+                  <div className="pt-2 pb-4 flex justify-center">
+                    <Button
+                      variant="outline"
+                      className="rounded-full px-8"
+                      onClick={loadMore}
+                      disabled={loadingMore}
+                    >
+                      {loadingMore ? (
+                        <><Loader2 size={15} className="mr-2 animate-spin" /> Loading...</>
+                      ) : "Load more posts"}
+                    </Button>
+                  </div>
+                )}
+
+                {!hasMore && posts.length > 0 && (
+                  <p className="text-center text-xs text-muted-foreground py-4">You're all caught up</p>
+                )}
+              </>
             )}
           </div>
 
@@ -827,7 +916,7 @@ export default function Feed() {
         </div>
       </div>
 
-      <NewPostModal open={postModalOpen} onClose={() => setPostModalOpen(false)} />
+      <NewPostModal open={postModalOpen} onClose={() => { setPostModalOpen(false); handleNewPost(); }} />
     </div>
   );
 }
