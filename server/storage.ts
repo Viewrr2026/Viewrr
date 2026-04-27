@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
-import { eq, or, and, desc, sql } from "drizzle-orm";
+import { eq, or, and, desc, sql as drizzleSql } from "drizzle-orm";
 import * as schema from "@shared/schema";
 
 if (!process.env.DATABASE_URL) {
@@ -718,7 +718,7 @@ class Storage implements IStorage {
         .where(and(
           eq(schema.profileViews.profileUserId, profileUserId),
           eq(schema.profileViews.viewerId, viewerId),
-          sql`created_at > ${since}`
+          drizzleSql`created_at > ${since}`
         ));
       if (existing.length > 0) return; // already counted today
     } else {
@@ -726,7 +726,7 @@ class Storage implements IStorage {
         .where(and(
           eq(schema.profileViews.profileUserId, profileUserId),
           eq(schema.profileViews.viewerIp, viewerIp),
-          sql`created_at > ${since}`
+          drizzleSql`created_at > ${since}`
         ));
       if (existing.length > 0) return;
     }
@@ -749,7 +749,7 @@ class Storage implements IStorage {
     const r = await db.select().from(schema.profileViews)
       .where(and(
         eq(schema.profileViews.profileUserId, profileUserId),
-        sql`created_at > ${since}`
+        drizzleSql`created_at > ${since}`
       ));
     // Group by date
     const byDate: Record<string, number> = {};
