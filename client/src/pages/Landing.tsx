@@ -80,7 +80,7 @@ export default function Landing() {
         {/* Background video */}
         <div className="absolute inset-0 z-0 overflow-hidden bg-neutral-900">
           <video
-            src="/videos/hero_showreel.mp4"
+            src="/videos/hero_showreel_web.mp4"
             autoPlay
             muted
             loop
