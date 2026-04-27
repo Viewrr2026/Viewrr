@@ -1,7 +1,9 @@
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Star, MapPin, Briefcase, Clock, ExternalLink, MessageSquare, Bookmark, BookmarkCheck, Play, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users } from "lucide-react";
+import { Star, MapPin, Briefcase, Clock, ExternalLink, MessageSquare, Bookmark, BookmarkCheck, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users } from "lucide-react";
+import VideoEmbed from "@/components/VideoEmbed";
+import { parseVideoUrl } from "@/lib/videoEmbed";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -40,7 +42,6 @@ export default function ProfilePage() {
   const { toast } = useToast();
   const [msgOpen, setMsgOpen] = useState(false);
   const [msgText, setMsgText] = useState("");
-  const [reelOpen, setReelOpen] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const profileIdNum = Number(id);
   const [connected, setConnected] = useState(() => isConnected(profileIdNum));
@@ -252,18 +253,16 @@ export default function ProfilePage() {
               {/* Portfolio */}
               <TabsContent value="portfolio" className="mt-4 space-y-4">
                 {profile.reelUrl && (
-                  <button
-                    onClick={() => setReelOpen(true)}
-                    className="group w-full relative rounded-2xl overflow-hidden bg-foreground aspect-video flex items-center justify-center"
-                    data-testid="btn-play-reel"
-                  >
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                      <div className="w-16 h-16 rounded-full bg-primary flex items-center justify-center group-hover:scale-110 transition-transform">
-                        <Play size={24} className="text-white ml-1" />
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Showreel</p>
+                    {parseVideoUrl(profile.reelUrl) ? (
+                      <VideoEmbed url={profile.reelUrl} className="rounded-2xl" />
+                    ) : (
+                      <div className="rounded-2xl overflow-hidden aspect-video bg-muted flex items-center justify-center text-muted-foreground text-sm">
+                        <Video size={24} className="mr-2 opacity-40" /> Showreel unavailable
                       </div>
-                    </div>
-                    <span className="absolute bottom-4 left-4 text-white font-semibold">Watch showreel</span>
-                  </button>
+                    )}
+                  </div>
                 )}
 
                 {portfolio.length > 0 ? (

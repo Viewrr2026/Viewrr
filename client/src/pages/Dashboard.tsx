@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users } from "lucide-react";
+import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle } from "lucide-react";
+import VideoEmbed from "@/components/VideoEmbed";
+import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -260,6 +262,105 @@ function ClientInterestCard({ interest, onStatusChange }: {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── ShowreelEditor ─────────────────────────────────────────────────────
+function ShowreelEditor({ profileId, currentUrl }: { profileId?: number; currentUrl: string }) {
+  const { toast } = useToast();
+  const [url, setUrl] = useState(currentUrl);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  const parsed = parseVideoUrl(url);
+  const isValid = isValidVideoUrl(url);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!profileId) throw new Error("No profile found");
+      const res = await apiRequest("PATCH", `/api/profiles/${profileId}`, { reelUrl: url.trim() });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/profiles/own"] });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+      toast({ title: "Showreel saved!" });
+    },
+    onError: () => toast({ title: "Failed to save showreel", variant: "destructive" }),
+  });
+
+  function handleSave() {
+    if (url.trim() && !isValid) {
+      setError("Please paste a valid Vimeo or YouTube link.");
+      return;
+    }
+    setError("");
+    saveMutation.mutate();
+  }
+
+  return (
+    <div className="bg-card border border-border rounded-2xl p-6">
+      <div className="flex items-center gap-2 mb-4">
+        <Film size={16} className="text-primary" />
+        <h3 className="font-semibold">Showreel</h3>
+      </div>
+      <p className="text-sm text-muted-foreground mb-4">
+        Paste your Vimeo or YouTube showreel link below. It will display directly on your public profile — hosted by Vimeo/YouTube, zero upload needed.
+      </p>
+
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          <Input
+            placeholder="https://vimeo.com/123456789  or  https://youtu.be/..."
+            value={url}
+            onChange={e => { setUrl(e.target.value); setError(""); setSaved(false); }}
+            className={`flex-1 ${error ? "border-destructive" : ""}`}
+          />
+          <Button
+            onClick={handleSave}
+            disabled={saveMutation.isPending}
+            className="bg-primary hover:bg-primary/90 text-white px-4 rounded-xl flex-shrink-0"
+          >
+            {saveMutation.isPending ? "Saving..." : "Save"}
+          </Button>
+        </div>
+
+        {error && (
+          <p className="flex items-center gap-1.5 text-xs text-destructive">
+            <AlertCircle size={12} /> {error}
+          </p>
+        )}
+        {saved && (
+          <p className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
+            <CheckCircle size={12} /> Saved — visible on your public profile
+          </p>
+        )}
+        {url && !error && (
+          <p className="text-xs text-muted-foreground">
+            {parsed
+              ? `Detected: ${parsed.provider === "vimeo" ? "Vimeo" : "YouTube"} video`
+              : "Not a recognised Vimeo or YouTube link yet"}
+          </p>
+        )}
+      </div>
+
+      {/* Live preview */}
+      {isValid && url && (
+        <div className="mt-5 space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</p>
+          <VideoEmbed url={url} className="rounded-xl" />
+        </div>
+      )}
+
+      {!url && (
+        <div className="mt-5 flex flex-col items-center justify-center border-2 border-dashed border-border rounded-xl py-10 gap-2 text-muted-foreground">
+          <Film size={28} className="opacity-30" />
+          <p className="text-sm">No showreel added yet</p>
+          <p className="text-xs opacity-60">Paste a Vimeo or YouTube link above</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -692,8 +793,9 @@ export default function Dashboard() {
           </TabsContent>
 
           {/* Profile */}
-          <TabsContent value="profile" className="mt-6">
-            <div className="bg-card border border-border rounded-2xl p-6 max-w-lg">
+          <TabsContent value="profile" className="mt-6 space-y-6 max-w-lg">
+            {/* Account details */}
+            <div className="bg-card border border-border rounded-2xl p-6">
               <h3 className="font-semibold mb-5">Account details</h3>
               <div className="space-y-4">
                 <div>
@@ -719,6 +821,9 @@ export default function Dashboard() {
                 <Settings size={14} /> Edit profile
               </Button>
             </div>
+
+            {/* Showreel — freelancers only */}
+            {isFreelancer && <ShowreelEditor profileId={ownProfile?.id} currentUrl={ownProfile?.reelUrl ?? ""} />}
           </TabsContent>
         </Tabs>
       </div>

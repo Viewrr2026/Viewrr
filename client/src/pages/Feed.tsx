@@ -1,12 +1,14 @@
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { DEMO_USER_IDS, getMockPosts } from "@/lib/mockData";
 import {
   Heart, MessageCircle, Send, ImagePlus, X, Hash,
   MoreHorizontal, Trash2, MapPin, Sparkles, TrendingUp,
-  Share2, Repeat2, Mail, Upload, Film, Link as LinkIcon, Pencil,
+  Share2, Repeat2, Mail, Film, Link as LinkIcon, Pencil,
 } from "lucide-react";
+import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
+import VideoEmbed from "@/components/VideoEmbed";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -398,13 +400,15 @@ function PostCard({ pw }: { pw: PostWithUser }) {
         </DialogContent>
       </Dialog>
 
-      {/* Media */}
+      {/* Media — Vimeo/YouTube embed or image */}
       {pw.post.mediaUrl && (
-        <div className="mx-5 mb-4 rounded-xl overflow-hidden bg-muted aspect-video">
-          {pw.post.mediaType === "video" ? (
-            <video src={pw.post.mediaUrl} className="w-full h-full object-cover" controls muted />
+        <div className="mx-5 mb-4">
+          {parseVideoUrl(pw.post.mediaUrl) ? (
+            <VideoEmbed url={pw.post.mediaUrl} />
           ) : (
-            <img src={pw.post.mediaUrl} alt="Post media" className="w-full h-full object-cover" loading="lazy" />
+            <div className="rounded-xl overflow-hidden bg-muted aspect-video">
+              <img src={pw.post.mediaUrl} alt="Post media" className="w-full h-full object-cover" loading="lazy" />
+            </div>
           )}
         </div>
       )}
@@ -442,53 +446,92 @@ function PostCard({ pw }: { pw: PostWithUser }) {
   );
 }
 
-// ── Upload zone (drag-and-drop + file picker) ─────────────────────────────────
-function MediaUploadZone({ onFile }: { onFile: (dataUrl: string, type: "image" | "video") => void }) {
-  const [dragging, setDragging] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+// ── Media input (Vimeo/YouTube link OR image URL) ────────────────────────────
+function MediaInput({ onMedia }: { onMedia: (url: string, type: "image" | "video") => void }) {
+  const [videoUrl, setVideoUrl] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
+  const [tab, setTab] = useState<"video" | "image">("video");
+  const [videoError, setVideoError] = useState("");
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); setDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-    processFile(file);
-  }, []);
+  function handleVideoSubmit() {
+    if (!isValidVideoUrl(videoUrl)) {
+      setVideoError("Please paste a valid Vimeo or YouTube link.");
+      return;
+    }
+    setVideoError("");
+    onMedia(videoUrl.trim(), "video");
+  }
 
-  function processFile(file: File) {
-    const type = file.type.startsWith("video") ? "video" : "image";
-    const reader = new FileReader();
-    reader.onload = ev => { if (ev.target?.result) onFile(ev.target.result as string, type); };
-    reader.readAsDataURL(file);
+  function handleImageSubmit() {
+    if (!imageUrl.trim()) return;
+    onMedia(imageUrl.trim(), "image");
   }
 
   return (
-    <div>
-      <div
-        onDragOver={e => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={handleDrop}
-        onClick={() => inputRef.current?.click()}
-        className={`border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 py-7 cursor-pointer transition-all ${dragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/40 hover:bg-secondary/50"}`}
-      >
-        <div className="flex gap-3">
-          <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center">
-            <ImagePlus size={18} className="text-primary" />
-          </div>
-          <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Film size={18} className="text-primary" />
-          </div>
-        </div>
-        <p className="text-sm font-medium">Drag & drop or <span className="text-primary">browse</span></p>
-        <p className="text-xs text-muted-foreground">Images (JPG, PNG, WebP) or Video (MP4, MOV)</p>
+    <div className="space-y-3">
+      {/* Tab switcher */}
+      <div className="flex rounded-xl border border-border overflow-hidden">
+        <button
+          onClick={() => setTab("video")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium transition-colors ${
+            tab === "video" ? "bg-primary text-white" : "bg-background text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <Film size={14} /> Video (Vimeo / YouTube)
+        </button>
+        <button
+          onClick={() => setTab("image")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium transition-colors ${
+            tab === "image" ? "bg-primary text-white" : "bg-background text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <ImagePlus size={14} /> Image URL
+        </button>
       </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*,video/*"
-        className="hidden"
-        onChange={e => { const f = e.target.files?.[0]; if (f) processFile(f); }}
-        capture="environment"
-      />
+
+      {tab === "video" && (
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <Input
+              placeholder="Paste Vimeo or YouTube link..."
+              value={videoUrl}
+              onChange={e => { setVideoUrl(e.target.value); setVideoError(""); }}
+              className="flex-1"
+            />
+            <Button
+              type="button"
+              onClick={handleVideoSubmit}
+              className="bg-primary hover:bg-primary/90 text-white px-4 rounded-xl flex-shrink-0"
+              disabled={!videoUrl.trim()}
+            >
+              Add
+            </Button>
+          </div>
+          {videoError && <p className="text-xs text-destructive">{videoError}</p>}
+          <p className="text-xs text-muted-foreground">
+            e.g. <span className="font-mono">https://vimeo.com/123456789</span> or <span className="font-mono">https://youtu.be/abc123</span>
+          </p>
+        </div>
+      )}
+
+      {tab === "image" && (
+        <div className="flex gap-2">
+          <Input
+            placeholder="Paste image URL (JPG, PNG, WebP)..."
+            value={imageUrl}
+            onChange={e => setImageUrl(e.target.value)}
+            className="flex-1"
+          />
+          <Button
+            type="button"
+            onClick={handleImageSubmit}
+            className="bg-primary hover:bg-primary/90 text-white px-4 rounded-xl flex-shrink-0"
+            disabled={!imageUrl.trim()}
+          >
+            Add
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -571,32 +614,21 @@ function NewPostModal({ open, onClose }: { open: boolean; onClose: () => void })
               className="resize-none"
             />
 
-            {/* ✅ Item 7 — Media upload: drag-and-drop OR URL */}
+            {/* Media — Vimeo/YouTube or image URL */}
             {!mediaUrl ? (
-              <div className="space-y-2">
-                <MediaUploadZone onFile={(url, type) => { setMediaUrl(url); setMediaType(type); }} />
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 h-px bg-border" />
-                  <span className="text-xs text-muted-foreground">or paste a URL</span>
-                  <div className="flex-1 h-px bg-border" />
-                </div>
-                <Input
-                  placeholder="https://images.unsplash.com/..."
-                  onChange={e => { if (e.target.value) { setMediaUrl(e.target.value); setMediaType("image"); } }}
-                />
-              </div>
+              <MediaInput onMedia={(url, type) => { setMediaUrl(url); setMediaType(type); }} />
             ) : (
               <div className="relative">
-                {mediaType === "video" ? (
-                  <video src={mediaUrl} className="w-full rounded-xl aspect-video object-cover" controls muted />
+                {parseVideoUrl(mediaUrl) ? (
+                  <VideoEmbed url={mediaUrl} />
                 ) : (
                   <div className="rounded-xl overflow-hidden aspect-video bg-muted">
                     <img src={mediaUrl} alt="Preview" className="w-full h-full object-cover" />
                   </div>
                 )}
                 <button
-                  onClick={() => setMediaUrl("")}
-                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-background/80 flex items-center justify-center text-muted-foreground hover:text-foreground"
+                  onClick={() => { setMediaUrl(""); setMediaType("image"); }}
+                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-background/80 flex items-center justify-center text-muted-foreground hover:text-foreground z-10"
                 >
                   <X size={14} />
                 </button>
