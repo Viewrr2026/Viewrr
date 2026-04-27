@@ -5,7 +5,7 @@ import { DEMO_USER_IDS, getMockPosts } from "@/lib/mockData";
 import {
   Heart, MessageCircle, Send, ImagePlus, X, Hash,
   MoreHorizontal, Trash2, MapPin, Sparkles, TrendingUp,
-  Share2, Repeat2, Mail, Film, Link as LinkIcon, Pencil,
+  Share2, Repeat2, Mail, Film, Link as LinkIcon, Pencil, Upload,
 } from "lucide-react";
 import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
 import VideoEmbed from "@/components/VideoEmbed";
@@ -543,7 +543,6 @@ function NewPostModal({ open, onClose }: { open: boolean; onClose: () => void })
   const [caption, setCaption] = useState("");
   const [mediaUrl, setMediaUrl] = useState("");
   const [mediaType, setMediaType] = useState<"image" | "video">("image");
-  const [urlMode, setUrlMode] = useState(false);
   const [tagInput, setTagInput] = useState("");
   const [tags, setTags] = useState<string[]>([]);
 
@@ -571,7 +570,7 @@ function NewPostModal({ open, onClose }: { open: boolean; onClose: () => void })
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/feed"] });
       toast({ title: "Post published!" });
-      setCaption(""); setMediaUrl(""); setTags([]); setTagInput(""); setUrlMode(false);
+      setCaption(""); setMediaUrl(""); setMediaType("image"); setTags([]); setTagInput("");
       onClose();
     },
     onError: () => toast({ title: "Failed to post", variant: "destructive" }),
