@@ -311,10 +311,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // Don't count someone viewing their own profile
       if (viewerId && viewerId === profileOwnerId) return res.json({ ok: true, self: true });
 
+      // Check BEFORE inserting whether this viewer already has a recent view (for notification gating)
+      const alreadyNotified = await storage.hasRecentProfileView(profileOwnerId, viewerId, viewerIp);
+
+      // Always record the view (every visit counts)
       await storage.recordProfileView(profileOwnerId, viewerId, viewerIp);
 
-      // Notify the profile owner (non-fatal)
-      if (viewerId && viewerId !== profileOwnerId) {
+      // Only send a notification once per viewer per 24h
+      if (!alreadyNotified && viewerId && viewerId !== profileOwnerId) {
         const viewer = await storage.getUser(viewerId);
         if (viewer) {
           await notify({

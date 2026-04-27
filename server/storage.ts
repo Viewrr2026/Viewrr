@@ -260,6 +260,7 @@ export interface IStorage {
 
   // Profile Views
   recordProfileView(profileUserId: number, viewerId: number | null, viewerIp: string): Promise<void>;
+  hasRecentProfileView(profileUserId: number, viewerId: number | null, viewerIp: string): Promise<boolean>;
   getProfileViewCount(profileUserId: number): Promise<number>;
   getProfileViewHistory(profileUserId: number, days: number): Promise<{ date: string; count: number }[]>;
 
@@ -711,7 +712,18 @@ class Storage implements IStorage {
 
   // ─── Profile Views ───────────────────────────────────────────────────────
   async recordProfileView(profileUserId: number, viewerId: number | null, viewerIp: string): Promise<void> {
-    // Deduplicate: same viewer (by ID or IP) can only register one view per 24h
+    // Record every visit — no deduplication. Notification throttling is handled at the route layer.
+    await db.insert(schema.profileViews).values({
+      profileUserId,
+      viewerId,
+      viewerIp,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  // Returns true if a view from this viewer was already recorded in the last 24h
+  // Used by the route to decide whether to send a notification.
+  async hasRecentProfileView(profileUserId: number, viewerId: number | null, viewerIp: string): Promise<boolean> {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     if (viewerId) {
       const existing = await db.select().from(schema.profileViews)
@@ -720,7 +732,7 @@ class Storage implements IStorage {
           eq(schema.profileViews.viewerId, viewerId),
           drizzleSql`created_at > ${since}`
         ));
-      if (existing.length > 0) return; // already counted today
+      return existing.length > 0; // called before insert, so >0 means already notified today
     } else {
       const existing = await db.select().from(schema.profileViews)
         .where(and(
@@ -728,14 +740,8 @@ class Storage implements IStorage {
           eq(schema.profileViews.viewerIp, viewerIp),
           drizzleSql`created_at > ${since}`
         ));
-      if (existing.length > 0) return;
+      return existing.length > 0;
     }
-    await db.insert(schema.profileViews).values({
-      profileUserId,
-      viewerId,
-      viewerIp,
-      createdAt: new Date().toISOString(),
-    });
   }
 
   async getProfileViewCount(profileUserId: number): Promise<number> {
