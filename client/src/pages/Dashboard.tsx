@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import FreelancerCard from "@/components/FreelancerCard";
+import InterestsPanel from "@/components/InterestsPanel";
 import { useAuth } from "@/components/AuthProvider";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
@@ -815,65 +816,20 @@ export default function Dashboard() {
 
             {/* Interests */}
             {activeTab === "interests" && (
-              <div className="p-5">
-                <h3 className="font-semibold mb-4">{isFreelancer ? "Interests sent" : "Interests received"}</h3>
-                {interests.length === 0 ? (
-                  <div className="text-center py-10 text-muted-foreground">
-                    <FileText size={28} className="mx-auto mb-3 opacity-40" />
-                    <p className="font-semibold text-foreground mb-1">{isFreelancer ? "No interests sent yet" : "No interests received yet"}</p>
-                    <p className="text-sm mb-4">
-                      {isFreelancer ? "Browse the briefs board and express interest in projects that suit you." : "Once freelancers express interest in your briefs, they'll appear here."}
-                    </p>
-                    <Button asChild className="bg-primary hover:bg-primary/90 text-white">
-                      <Link href="/briefs">{isFreelancer ? "Browse briefs" : "View briefs board"}</Link>
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {isFreelancer ? (
-                      interests.map((interest: any) => (
-                        <div key={interest.id} className="bg-background border border-border rounded-2xl p-5">
-                          <div className="flex items-start justify-between gap-3 mb-3">
-                            <div className="flex-1 min-w-0">
-                              <p className="font-semibold text-sm leading-snug">{interest.briefTitle}</p>
-                              <p className="text-xs text-muted-foreground mt-0.5">Brief by {interest.briefClientName}</p>
-                            </div>
-                            <InterestStatusBadge status={interest.status} />
-                          </div>
-                          <div className="bg-muted/50 rounded-xl p-3 mb-3">
-                            <p className="text-xs text-muted-foreground mb-1 font-semibold uppercase tracking-wide">Your cover note</p>
-                            <p className="text-sm leading-relaxed">{interest.coverNote}</p>
-                          </div>
-                          <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-                            {interest.rate && <span>Rate: <span className="font-medium text-foreground">{interest.rate}</span></span>}
-                            {interest.availability && <span>Available from: <span className="font-medium text-foreground">{interest.availability}</span></span>}
-                          </div>
-                          <div className="flex flex-col gap-0.5 mt-2 text-xs text-muted-foreground">
-                            <span>Sent: {formatUK(interest.createdAt)}</span>
-                            {interest.respondedAt && (
-                              <span>{interest.status === "accepted" ? "Accepted" : "Declined"} by client: {formatUK(interest.respondedAt)}</span>
-                            )}
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      interests.map((interest: any) => (
-                        <ClientInterestCard
-                          key={interest.id}
-                          interest={interest}
-                          onStatusChange={(id: number, status: string) => {
-                            fetch(`/api/interests/${id}/status`, {
-                              method: "PATCH",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ status, clientName: user?.name, clientAvatar: user?.avatar }),
-                            }).then(() => refetchInterests());
-                          }}
-                        />
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
+              <InterestsPanel
+                interests={interests}
+                isFreelancer={isFreelancer}
+                userId={user.id}
+                userName={user.name}
+                userAvatar={user.avatar}
+                onStatusChange={(id, status) => {
+                  fetch(`/api/interests/${id}/status`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ status, clientName: user?.name, clientAvatar: user?.avatar }),
+                  }).then(() => refetchInterests());
+                }}
+              />
             )}
 
           </div>
