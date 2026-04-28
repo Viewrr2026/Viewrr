@@ -85,8 +85,11 @@ export default function Landing() {
             muted
             loop
             playsInline
+            disablePictureInPicture
+            disableRemotePlayback
             poster="/videos/hero_showreel_poster.jpg"
-            className="absolute inset-0 w-full h-full object-cover"
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
+            style={{ WebkitMediaControls: 'none' } as React.CSSProperties}
           />
           <div className="absolute inset-0 bg-gradient-to-r from-background via-background/80 to-background/30" />
         </div>

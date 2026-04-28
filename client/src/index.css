@@ -169,3 +169,13 @@
   90%  { transform: scale(1.35) translate( 6%,  -1%);    }   /* fly past, panning right */
   100% { transform: scale(1.0)  translate(0%,    0%);    }   /* reset smoothly */
 }
+
+/* ── Suppress browser play/pause overlay on background videos ─────────── */
+video::-webkit-media-controls,
+video::-webkit-media-controls-enclosure,
+video::-webkit-media-controls-panel,
+video::-webkit-media-controls-overlay-play-button,
+video::-webkit-media-controls-start-playback-button {
+  display: none !important;
+  -webkit-appearance: none;
+}
