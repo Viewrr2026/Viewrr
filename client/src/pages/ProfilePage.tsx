@@ -169,71 +169,82 @@ export default function ProfilePage() {
               ) : (
                 <div className="h-20 w-full bg-gradient-to-r from-primary/20 via-primary/10 to-background" />
               )}
-              <div className="p-6 md:p-8">
-              <div className="flex items-start gap-5 -mt-10">
+              <div className="p-6 md:p-8 pt-4">
+              {/* Avatar floats below banner with spacing — no overlap */}
+              <div className="flex items-end gap-4 -mt-14 mb-4">
                 <Avatar className="w-20 h-20 flex-shrink-0 ring-4 ring-card shadow-lg">
                   <AvatarImage src={freelancer.avatar || undefined} />
                   <AvatarFallback className="bg-primary text-white text-2xl">
                     {(freelancer.name || '?').slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
+                {/* Availability badge next to avatar at the bottom of the banner zone */}
+                <div className="ml-auto pb-1">
+                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${availClass[profile.availability]}`}>
+                    {availLabel[profile.availability]}
+                  </span>
+                </div>
+              </div>
 
+              <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-3 flex-wrap">
-                    <div>
-                      <h1 className="text-2xl font-bold">{freelancer.name}</h1>
-                      <div className="flex flex-wrap gap-2 mt-1">
-                        {specialisms.map(s => (
-                          <span key={s} className="text-sm text-primary font-semibold">{s}</span>
-                        ))}
-                        {freelancer.location && (
-                          <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                            <MapPin size={12} /> {freelancer.location}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${availClass[profile.availability]}`}>
-                      {availLabel[profile.availability]}
-                    </span>
-                  </div>
-
-                  {/* Stats row */}
-                  <div className="flex flex-wrap gap-4 mt-4">
-                    <button
-                      onClick={() => reviews.length > 0 && setReviewsOpen(true)}
-                      className={`flex items-center gap-1.5 ${reviews.length > 0 ? 'cursor-pointer hover:opacity-75 transition-opacity' : 'cursor-default'}`}
-                    >
-                      <Stars rating={profile.rating || 0} />
-                      <span className="font-bold">{(profile.rating || 0).toFixed(1)}</span>
-                      <span className="text-sm text-muted-foreground underline-offset-2 hover:underline">({profile.reviewCount} reviews)</span>
-                    </button>
-                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                      <Briefcase size={13} />
-                      {profile.projectCount} projects
-                    </div>
-                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                      <Clock size={13} />
-                      {profile.yearsExperience} yrs experience
-                    </div>
-                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                      <Users size={13} />
-                      {connCount} connections
-                    </div>
-                  </div>
-
-                  {/* Badges */}
-                  {badges.length > 0 && (
-                    <div className="flex gap-2 mt-3">
-                      {badges.map(b => (
-                        <span key={b} className="text-xs bg-primary/10 text-primary rounded-full px-2.5 py-0.5 font-medium">
-                          {b}
-                        </span>
+                  <h1 className="text-2xl font-bold leading-tight">{freelancer.name}</h1>
+                  {/* Headline — LinkedIn-style, normal weight */}
+                  {(freelancer as any).headline && (
+                    <p className="text-base text-foreground/80 font-normal mt-0.5 leading-snug">
+                      {(freelancer as any).headline}
+                    </p>
+                  )}
+                  {/* Location */}
+                  {freelancer.location && (
+                    <p className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
+                      <MapPin size={12} /> {freelancer.location}
+                    </p>
+                  )}
+                  {/* Specialisms */}
+                  {specialisms.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {specialisms.map(s => (
+                        <span key={s} className="text-xs bg-primary/10 text-primary font-semibold px-2.5 py-0.5 rounded-full">{s}</span>
                       ))}
                     </div>
                   )}
                 </div>
               </div>
+              {/* Stats row */}
+              <div className="flex flex-wrap gap-4 mt-5">
+                <button
+                  onClick={() => reviews.length > 0 && setReviewsOpen(true)}
+                  className={`flex items-center gap-1.5 ${reviews.length > 0 ? 'cursor-pointer hover:opacity-75 transition-opacity' : 'cursor-default'}`}
+                >
+                  <Stars rating={profile.rating || 0} />
+                  <span className="font-bold">{(profile.rating || 0).toFixed(1)}</span>
+                  <span className="text-sm text-muted-foreground underline-offset-2 hover:underline">({profile.reviewCount} reviews)</span>
+                </button>
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Briefcase size={13} />
+                  {profile.projectCount} projects
+                </div>
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Clock size={13} />
+                  {profile.yearsExperience} yrs experience
+                </div>
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Users size={13} />
+                  {connCount} connections
+                </div>
+              </div>
+
+              {/* Badges */}
+              {badges.length > 0 && (
+                <div className="flex gap-2 mt-3">
+                  {badges.map(b => (
+                    <span key={b} className="text-xs bg-primary/10 text-primary rounded-full px-2.5 py-0.5 font-medium">
+                      {b}
+                    </span>
+                  ))}
+                </div>
+              )}
 
               {/* Bio */}
               {freelancer.bio && (

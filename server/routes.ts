@@ -536,13 +536,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   app.patch("/api/users/:id", async (req, res) => {
     try {
-      const { name, email, bio, avatar, banner, location } = req.body;
+      const { name, email, bio, avatar, banner, headline, location } = req.body;
       const updated = await storage.updateUser(Number(req.params.id), {
         ...(name     !== undefined && { name }),
         ...(email    !== undefined && { email }),
         ...(bio      !== undefined && { bio }),
         ...(avatar   !== undefined && { avatar }),
         ...(banner   !== undefined && { banner }),
+        ...(headline !== undefined && { headline }),
         ...(location !== undefined && { location }),
       });
       res.json(updated);

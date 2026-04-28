@@ -588,22 +588,28 @@ export default function Dashboard() {
 
             <div className="flex-1 min-w-0">
               <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div>
-                  <h1 className="text-2xl font-bold">{user.name}</h1>
-                  {/* Specialisms + location row */}
-                  <div className="flex flex-wrap gap-2 mt-1">
-                    {isFreelancer && ownSpecialisms.length > 0
-                      ? ownSpecialisms.map(s => (
-                          <span key={s} className="text-sm text-primary font-semibold">{s}</span>
-                        ))
-                      : <span className="text-sm text-muted-foreground capitalize">{user.role}</span>
-                    }
-                    {user.location && (
-                      <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                        <MapPin size={12} /> {user.location}
-                      </span>
-                    )}
-                  </div>
+                <div className="flex-1 min-w-0">
+                  <h1 className="text-2xl font-bold leading-tight">{user.name}</h1>
+                  {/* Headline — LinkedIn-style, normal weight */}
+                  {(user as any).headline && (
+                    <p className="text-base text-foreground/80 font-normal mt-0.5 leading-snug">
+                      {(user as any).headline}
+                    </p>
+                  )}
+                  {/* Location */}
+                  {(user as any).location && (
+                    <p className="flex items-center gap-1 text-sm text-muted-foreground mt-0.5">
+                      <MapPin size={12} /> {(user as any).location}
+                    </p>
+                  )}
+                  {/* Specialisms */}
+                  {isFreelancer && ownSpecialisms.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {ownSpecialisms.map(s => (
+                        <span key={s} className="text-xs bg-primary/10 text-primary font-semibold px-2.5 py-0.5 rounded-full">{s}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   {/* Availability badge (freelancers only) */}
@@ -942,6 +948,7 @@ export default function Dashboard() {
             name: user.name,
             email: user.email,
             bio: user.bio ?? "",
+            headline: (user as any).headline ?? "",
             avatar: user.avatar ?? "",
             banner: (user as any).banner ?? "",
             location: (user as any).location ?? "",

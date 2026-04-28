@@ -12,6 +12,7 @@ export const users = pgTable("users", {
   role: text("role").notNull().default("freelancer"), // "freelancer" | "client"
   avatar: text("avatar"),
   banner: text("banner"),
+  headline: text("headline"),   // e.g. "Videographer & Director · London"
   bio: text("bio"),
   location: text("location"),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),

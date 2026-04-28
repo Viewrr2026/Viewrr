@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label"; // still used for name/email/bio 
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { User, MapPin, Mail, AlignLeft, Clock, CheckCircle } from "lucide-react";
+import { User, MapPin, Mail, AlignLeft, Clock, CheckCircle, Briefcase } from "lucide-react";
 import ImageUpload from "@/components/ImageUpload";
 
 // ── Availability options ─────────────────────────────────────────────────────
@@ -41,6 +41,7 @@ export default function EditProfileModal({
     bio?: string;
     avatar?: string;
     banner?: string;
+    headline?: string;
     location?: string;
     role: string;
   };
@@ -57,6 +58,7 @@ export default function EditProfileModal({
   const [name,     setName]     = useState(user.name ?? "");
   const [email,    setEmail]    = useState(user.email ?? "");
   const [bio,      setBio]      = useState(user.bio ?? "");
+  const [headline, setHeadline] = useState(user.headline ?? "");
   const [location, setLocation] = useState(user.location ?? "");
   const [avatar,   setAvatar]   = useState<string | undefined>(user.avatar ?? undefined);
   const [banner,   setBanner]   = useState<string | undefined>(user.banner ?? undefined);
@@ -76,7 +78,8 @@ export default function EditProfileModal({
           name:     name.trim()     || undefined,
           email:    email.trim()    || undefined,
           bio:      bio.trim()      || undefined,
-          location: location.trim() || undefined,
+          headline: headline.trim()  || undefined,
+          location: location.trim()  || undefined,
           avatar:   avatar || undefined,
           banner:   banner || undefined,
         }),
@@ -102,6 +105,7 @@ export default function EditProfileModal({
         name:     updatedUser.name,
         email:    updatedUser.email,
         bio:      updatedUser.bio,
+        headline: updatedUser.headline,
         avatar:   updatedUser.avatar,
         banner:   updatedUser.banner,
         location: updatedUser.location,
@@ -192,6 +196,21 @@ export default function EditProfileModal({
               className="text-sm"
               placeholder="you@example.com"
             />
+          </div>
+
+          {/* Headline */}
+          <div className="space-y-1.5">
+            <Label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <Briefcase size={11} /> Headline
+            </Label>
+            <Input
+              value={headline}
+              onChange={e => setHeadline(e.target.value)}
+              maxLength={100}
+              className="text-sm"
+              placeholder="e.g. Videographer & Director · London"
+            />
+            <p className="text-[11px] text-muted-foreground">Shown beneath your name on your profile — keep it short and punchy.</p>
           </div>
 
           {/* Bio */}
