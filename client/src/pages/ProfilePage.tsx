@@ -1,7 +1,7 @@
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Star, MapPin, Briefcase, Clock, ExternalLink, MessageSquare, Bookmark, BookmarkCheck, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users, Play } from "lucide-react";
+import { Star, MapPin, Briefcase, Clock, ExternalLink, MessageSquare, Bookmark, BookmarkCheck, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users } from "lucide-react";
 import VideoEmbed from "@/components/VideoEmbed";
 import { parseVideoUrl } from "@/lib/videoEmbed";
 import { Button } from "@/components/ui/button";
@@ -256,47 +256,45 @@ export default function ProfilePage() {
               </TabsList>
 
               {/* Portfolio */}
-              <TabsContent value="portfolio" className="mt-4 space-y-4">
-                {profile.reelUrl && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Showreel</p>
-                    {parseVideoUrl(profile.reelUrl) ? (
-                      <VideoEmbed url={profile.reelUrl} className="rounded-2xl" />
-                    ) : (
-                      <div className="rounded-2xl overflow-hidden aspect-video bg-muted flex items-center justify-center text-muted-foreground text-sm">
-                        <Video size={24} className="mr-2 opacity-40" /> Showreel unavailable
-                      </div>
-                    )}
-                  </div>
-                )}
+              <TabsContent value="portfolio" className="mt-4">
+                {(() => {
+                  // Build display list: portfolioItems (new multi-video format) or fallback to reelUrl
+                  type VideoItem = { url: string; title: string };
+                  let videoItems: VideoItem[] = [];
+                  try { videoItems = JSON.parse(profile.portfolioItems || "[]"); } catch {}
+                  // If no portfolioItems saved yet, fall back to legacy reelUrl
+                  if (videoItems.length === 0 && profile.reelUrl) {
+                    videoItems = [{ url: profile.reelUrl, title: "" }];
+                  }
+                  const validVideos = videoItems.filter(v => v.url && parseVideoUrl(v.url));
 
-                {portfolio.length > 0 ? (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    {portfolio.map((item, i) => (
-                      <div key={i} className="group relative aspect-video rounded-xl overflow-hidden bg-muted" data-testid={`portfolio-item-${i}`}>
-                        <img
-                          src={item.thumbnail}
-                          alt={item.title}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                          loading="lazy"
-                        />
-                        {item.type === "video" && (
-                          <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Play size={20} className="text-white" />
-                          </div>
-                        )}
-                        <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black/70 to-transparent">
-                          <p className="text-white text-xs font-medium">{item.title}</p>
-                        </div>
+                  if (validVideos.length === 0) {
+                    return (
+                      <div className="text-center py-12 text-muted-foreground">
+                        <Video size={32} className="mx-auto mb-3 opacity-40" />
+                        <p className="text-sm">No portfolio videos yet</p>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <Video size={32} className="mx-auto mb-3 opacity-40" />
-                    <p className="text-sm">No portfolio items yet</p>
-                  </div>
-                )}
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-6">
+                      {validVideos.map((v, i) => (
+                        <div key={i} className="space-y-2">
+                          {v.title && (
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                              {v.title}{i === 0 ? " · Featured" : ""}
+                            </p>
+                          )}
+                          {!v.title && i === 0 && (
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Featured</p>
+                          )}
+                          <VideoEmbed url={v.url} className="rounded-2xl" />
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </TabsContent>
 
               {/* Reviews */}
