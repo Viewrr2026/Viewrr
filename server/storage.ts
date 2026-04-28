@@ -277,6 +277,18 @@ export interface IStorage {
   markNotificationRead(id: number): Promise<void>;
   markAllNotificationsRead(recipientId: number): Promise<void>;
   getUnreadNotificationCount(recipientId: number): Promise<number>;
+
+  // Workspace — Tasks
+  getTasks(userId: number): Promise<schema.Task[]>;
+  createTask(data: schema.InsertTask): Promise<schema.Task>;
+  updateTask(id: number, userId: number, data: Partial<schema.InsertTask>): Promise<schema.Task | undefined>;
+  deleteTask(id: number, userId: number): Promise<boolean>;
+
+  // Workspace — Calendar Events
+  getCalendarEvents(userId: number, month: string): Promise<schema.CalendarEvent[]>;
+  createCalendarEvent(data: schema.InsertCalendarEvent): Promise<schema.CalendarEvent>;
+  updateCalendarEvent(id: number, userId: number, data: Partial<schema.InsertCalendarEvent>): Promise<schema.CalendarEvent | undefined>;
+  deleteCalendarEvent(id: number, userId: number): Promise<boolean>;
 }
 
 export interface ProfileWithUser {
@@ -839,6 +851,73 @@ class Storage implements IStorage {
     const r = await db.select().from(schema.notifications)
       .where(and(eq(schema.notifications.recipientId, recipientId), eq(schema.notifications.read, 0)));
     return r.length;
+  }
+
+  // ── Workspace: Tasks ────────────────────────────────────────────────────
+  async getTasks(userId: number): Promise<schema.Task[]> {
+    return db.select().from(schema.tasks)
+      .where(eq(schema.tasks.userId, userId))
+      .orderBy(desc(schema.tasks.createdAt));
+  }
+
+  async createTask(data: schema.InsertTask): Promise<schema.Task> {
+    const now = new Date().toISOString();
+    const [row] = await db.insert(schema.tasks).values({
+      ...data,
+      createdAt: now,
+      updatedAt: now,
+    }).returning();
+    return row;
+  }
+
+  async updateTask(id: number, userId: number, data: Partial<schema.InsertTask>): Promise<schema.Task | undefined> {
+    const [row] = await db.update(schema.tasks)
+      .set({ ...data, updatedAt: new Date().toISOString() })
+      .where(and(eq(schema.tasks.id, id), eq(schema.tasks.userId, userId)))
+      .returning();
+    return row;
+  }
+
+  async deleteTask(id: number, userId: number): Promise<boolean> {
+    const r = await db.delete(schema.tasks)
+      .where(and(eq(schema.tasks.id, id), eq(schema.tasks.userId, userId)))
+      .returning();
+    return r.length > 0;
+  }
+
+  // ── Workspace: Calendar Events ──────────────────────────────────────────
+  async getCalendarEvents(userId: number, month: string): Promise<schema.CalendarEvent[]> {
+    // month = "YYYY-MM" — filter by prefix match on the date column
+    const r = await db.select().from(schema.calendarEvents)
+      .where(and(
+        eq(schema.calendarEvents.userId, userId),
+        drizzleSql`date LIKE ${month + '%'}`
+      ))
+      .orderBy(schema.calendarEvents.date);
+    return r;
+  }
+
+  async createCalendarEvent(data: schema.InsertCalendarEvent): Promise<schema.CalendarEvent> {
+    const [row] = await db.insert(schema.calendarEvents).values({
+      ...data,
+      createdAt: new Date().toISOString(),
+    }).returning();
+    return row;
+  }
+
+  async updateCalendarEvent(id: number, userId: number, data: Partial<schema.InsertCalendarEvent>): Promise<schema.CalendarEvent | undefined> {
+    const [row] = await db.update(schema.calendarEvents)
+      .set(data)
+      .where(and(eq(schema.calendarEvents.id, id), eq(schema.calendarEvents.userId, userId)))
+      .returning();
+    return row;
+  }
+
+  async deleteCalendarEvent(id: number, userId: number): Promise<boolean> {
+    const r = await db.delete(schema.calendarEvents)
+      .where(and(eq(schema.calendarEvents.id, id), eq(schema.calendarEvents.userId, userId)))
+      .returning();
+    return r.length > 0;
   }
 }
 

@@ -234,3 +234,36 @@ export const saved = pgTable("saved", {
 export const insertSavedSchema = createInsertSchema(saved).omit({ id: true });
 export type InsertSaved = z.infer<typeof insertSavedSchema>;
 export type Saved = typeof saved.$inferSelect;
+
+// ── Workspace: Tasks ──────────────────────────────────────────────────
+export const tasks = pgTable("tasks", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  status: text("status").notNull().default("todo"),   // todo | in_progress | done
+  priority: text("priority").notNull().default("medium"), // low | medium | high
+  dueDate: text("due_date"),                           // ISO date string or null
+  tags: text("tags").notNull().default("[]"),          // JSON string[]
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  updatedAt: text("updated_at").notNull().default(new Date().toISOString()),
+});
+export const insertTaskSchema = createInsertSchema(tasks).omit({ id: true });
+export type InsertTask = z.infer<typeof insertTaskSchema>;
+export type Task = typeof tasks.$inferSelect;
+
+// ── Workspace: Calendar Events ─────────────────────────────────────────
+export const calendarEvents = pgTable("calendar_events", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  date: text("date").notNull(),     // ISO date YYYY-MM-DD
+  startTime: text("start_time"),   // HH:MM or null (all-day)
+  endTime: text("end_time"),
+  color: text("color").notNull().default("#FF5A1F"),  // Viewrr orange default
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export const insertCalendarEventSchema = createInsertSchema(calendarEvents).omit({ id: true });
+export type InsertCalendarEvent = z.infer<typeof insertCalendarEventSchema>;
+export type CalendarEvent = typeof calendarEvents.$inferSelect;

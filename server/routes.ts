@@ -806,4 +806,67 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // ── Workspace: Tasks ────────────────────────────────────────────────────
+  app.get("/api/workspace/tasks/:userId", async (req, res) => {
+    try {
+      res.json(await storage.getTasks(Number(req.params.userId)));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post("/api/workspace/tasks", async (req, res) => {
+    try {
+      const task = await storage.createTask(req.body);
+      res.json(task);
+    } catch (e: any) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.patch("/api/workspace/tasks/:id", async (req, res) => {
+    try {
+      const { userId, ...data } = req.body;
+      const task = await storage.updateTask(Number(req.params.id), Number(userId), data);
+      if (!task) return res.status(404).json({ error: "Not found" });
+      res.json(task);
+    } catch (e: any) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.delete("/api/workspace/tasks/:id", async (req, res) => {
+    try {
+      const ok = await storage.deleteTask(Number(req.params.id), Number(req.body.userId));
+      if (!ok) return res.status(403).json({ error: "Not allowed" });
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Workspace: Calendar Events ─────────────────────────────────────────
+  app.get("/api/workspace/events/:userId", async (req, res) => {
+    try {
+      const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+      res.json(await storage.getCalendarEvents(Number(req.params.userId), month));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post("/api/workspace/events", async (req, res) => {
+    try {
+      const event = await storage.createCalendarEvent(req.body);
+      res.json(event);
+    } catch (e: any) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.patch("/api/workspace/events/:id", async (req, res) => {
+    try {
+      const { userId, ...data } = req.body;
+      const event = await storage.updateCalendarEvent(Number(req.params.id), Number(userId), data);
+      if (!event) return res.status(404).json({ error: "Not found" });
+      res.json(event);
+    } catch (e: any) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.delete("/api/workspace/events/:id", async (req, res) => {
+    try {
+      const ok = await storage.deleteCalendarEvent(Number(req.params.id), Number(req.body.userId));
+      if (!ok) return res.status(403).json({ error: "Not allowed" });
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 }
