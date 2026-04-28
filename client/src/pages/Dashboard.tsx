@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import FreelancerCard from "@/components/FreelancerCard";
 import InterestsPanel from "@/components/InterestsPanel";
+import EditProfileModal from "@/components/EditProfileModal";
 import { useAuth } from "@/components/AuthProvider";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
@@ -441,6 +442,7 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const [activeConv, setActiveConv] = useState<{ id: number; name: string; avatar?: string } | null>(null);
   const [reviewsOpen, setReviewsOpen] = useState(false);
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string | null>(null); // null = nothing selected yet
 
   // Must be defined before any query that references it
@@ -887,7 +889,7 @@ export default function Dashboard() {
                 </div>
               )}
             </div>
-            <Button variant="outline" className="mt-6 gap-2">
+            <Button variant="outline" className="mt-6 gap-2" onClick={() => setEditProfileOpen(true)}>
               <Settings size={14} /> Edit profile
             </Button>
           </div>
@@ -929,6 +931,25 @@ export default function Dashboard() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Edit Profile modal */}
+      {editProfileOpen && user && (
+        <EditProfileModal
+          open={editProfileOpen}
+          onClose={() => setEditProfileOpen(false)}
+          user={{
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            bio: user.bio ?? "",
+            avatar: user.avatar ?? "",
+            banner: (user as any).banner ?? "",
+            location: (user as any).location ?? "",
+            role: user.role,
+          }}
+          profile={ownProfile ? { id: ownProfile.id, availability: ownProfile.availability } : undefined}
+        />
+      )}
     </div>
   );
 }

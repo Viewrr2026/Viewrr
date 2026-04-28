@@ -205,6 +205,7 @@ export interface IStorage {
   getUser(id: number): Promise<schema.User | undefined>;
   getUserByEmail(email: string): Promise<schema.User | undefined>;
   updateUserPassword(id: number, passwordHash: string): Promise<void>;
+  updateUser(id: number, data: Partial<Pick<schema.User, 'name' | 'email' | 'bio' | 'avatar' | 'banner' | 'location'>>): Promise<schema.User>;
   createUser(data: schema.InsertUser): Promise<schema.User>;
 
   // Profiles
@@ -334,6 +335,11 @@ class Storage implements IStorage {
   async getUser(id: number): Promise<schema.User | undefined> {
     const r = await db.select().from(schema.users).where(eq(schema.users.id, id));
     return r[0];
+  }
+
+  async updateUser(id: number, data: Partial<Pick<schema.User, 'name' | 'email' | 'bio' | 'avatar' | 'banner' | 'location'>>): Promise<schema.User> {
+    const [updated] = await db.update(schema.users).set(data).where(eq(schema.users.id, id)).returning();
+    return updated;
   }
 
   async updateUserPassword(id: number, passwordHash: string): Promise<void> {

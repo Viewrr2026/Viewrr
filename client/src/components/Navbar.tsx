@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown, Briefcase, ClipboardList } from "lucide-react";
+import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown, Briefcase, ClipboardList, Users } from "lucide-react";
 import { useState } from "react";
 import { useTheme } from "./ThemeProvider";
 import { useAuth } from "./AuthProvider";
@@ -23,7 +23,7 @@ export default function Navbar() {
 
   const navLinks = [
     { href: "/feed", label: "Feed", icon: Rss },
-    { href: "/marketplace", label: "Browse Talent" },
+    { href: "/marketplace", label: "Browse Talent", icon: Users },
     { href: "/ai-search", label: "AI Match", icon: Sparkles },
     { href: "/briefs", label: "Briefs", icon: ClipboardList },
     { href: "/your-work", label: "Your Work", icon: Briefcase },

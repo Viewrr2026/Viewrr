@@ -159,9 +159,19 @@ export default function ProfilePage() {
           {/* ── Main content ──────────────────────────────────────────── */}
           <div className="space-y-6">
             {/* Profile header card */}
-            <div className="bg-card border border-border rounded-2xl p-6 md:p-8">
-              <div className="flex items-start gap-5">
-                <Avatar className="w-20 h-20 flex-shrink-0 ring-4 ring-background shadow-lg">
+            <div className="bg-card border border-border rounded-2xl overflow-hidden">
+              {/* Banner */}
+              {freelancer.banner ? (
+                <div
+                  className="h-32 w-full bg-cover bg-center"
+                  style={{ backgroundImage: `url(${freelancer.banner})` }}
+                />
+              ) : (
+                <div className="h-20 w-full bg-gradient-to-r from-primary/20 via-primary/10 to-background" />
+              )}
+              <div className="p-6 md:p-8">
+              <div className="flex items-start gap-5 -mt-10">
+                <Avatar className="w-20 h-20 flex-shrink-0 ring-4 ring-card shadow-lg">
                   <AvatarImage src={freelancer.avatar || undefined} />
                   <AvatarFallback className="bg-primary text-white text-2xl">
                     {(freelancer.name || '?').slice(0, 2).toUpperCase()}
@@ -245,6 +255,7 @@ export default function ProfilePage() {
                   )}
                 </div>
               )}
+              </div>{/* /padding wrapper */}
             </div>
 
             {/* Tabs */}

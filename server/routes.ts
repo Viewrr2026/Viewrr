@@ -534,6 +534,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(user);
   });
 
+  app.patch("/api/users/:id", async (req, res) => {
+    try {
+      const { name, email, bio, avatar, banner, location } = req.body;
+      const updated = await storage.updateUser(Number(req.params.id), {
+        ...(name     !== undefined && { name }),
+        ...(email    !== undefined && { email }),
+        ...(bio      !== undefined && { bio }),
+        ...(avatar   !== undefined && { avatar }),
+        ...(banner   !== undefined && { banner }),
+        ...(location !== undefined && { location }),
+      });
+      res.json(updated);
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   // ── Feed cache (30-second TTL, keyed by viewerUserId|offset|limit) ───────────
   const feedCache = new Map<string, { data: any; expiresAt: number }>();
   function bustFeedCache() { feedCache.clear(); }

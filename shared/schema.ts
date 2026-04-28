@@ -11,6 +11,7 @@ export const users = pgTable("users", {
   phone: text("phone"),
   role: text("role").notNull().default("freelancer"), // "freelancer" | "client"
   avatar: text("avatar"),
+  banner: text("banner"),
   bio: text("bio"),
   location: text("location"),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
