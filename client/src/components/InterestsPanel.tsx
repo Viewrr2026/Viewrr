@@ -3,7 +3,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, CheckCircle2, XCircle, Clock, FileText,
   CalendarDays, Banknote, StickyNote, MessageSquare, ChevronRight,
@@ -52,18 +52,18 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-// ── MessageThread (scoped to interest) ───────────────────────────────────────
+// ── MessageThread (scoped strictly to one interest) ─────────────────────────
 function InterestMessageThread({
-  userId, otherId, otherName, otherAvatar,
-}: { userId: number; otherId: number; otherName: string; otherAvatar?: string }) {
+  userId, otherId, otherName, otherAvatar, interestId, briefTitle,
+}: { userId: number; otherId: number; otherName: string; otherAvatar?: string; interestId: number; briefTitle: string }) {
   const [text, setText] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const { data: messages = [], isLoading } = useQuery<any[]>({
-    queryKey: ["/api/messages", userId, otherId],
+    queryKey: ["/api/interest-messages", interestId],
     queryFn: async () => {
       try {
-        const res = await fetch(`/api/messages/${otherId}/${userId}`);
+        const res = await fetch(`/api/interest-messages/${interestId}?userId=${userId}`);
         if (!res.ok) return [];
         return res.json();
       } catch { return []; }
@@ -77,11 +77,16 @@ function InterestMessageThread({
 
   const sendMutation = useMutation({
     mutationFn: async (content: string) => {
-      const res = await apiRequest("POST", "/api/messages", { fromId: userId, toId: otherId, content });
+      const res = await fetch("/api/interest-messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fromId: userId, toId: otherId, content, interestId, briefTitle }),
+      });
+      if (!res.ok) throw new Error("Failed to send");
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/messages", userId, otherId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/interest-messages", interestId] });
       setText("");
     },
   });
@@ -292,6 +297,8 @@ function InterestDetail({
           otherId={otherId}
           otherName={otherName}
           otherAvatar={otherAvatar}
+          interestId={interest.id}
+          briefTitle={interest.briefTitle}
         />
       </div>
     </div>

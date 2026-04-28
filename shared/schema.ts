@@ -71,6 +71,7 @@ export const messages = pgTable("messages", {
   content: text("content").notNull(),
   read: integer("read").default(0),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  interestId: integer("interest_id"),  // null = general DM; set = scoped to a brief interest
 });
 
 export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true });

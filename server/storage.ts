@@ -221,9 +221,11 @@ export interface IStorage {
 
   // Messages
   getMessagesBetween(fromId: number, toId: number): Promise<schema.Message[]>;
+  getMessagesByInterest(interestId: number): Promise<schema.Message[]>;
   getConversations(userId: number): Promise<ConversationSummary[]>;
   createMessage(data: schema.InsertMessage): Promise<schema.Message>;
   markMessagesRead(fromId: number, toId: number): Promise<void>;
+  markInterestMessagesRead(interestId: number, userId: number): Promise<void>;
 
   // Saved
   getSaved(clientId: number): Promise<ProfileWithUser[]>;
@@ -444,13 +446,23 @@ class Storage implements IStorage {
   }
 
   async getMessagesBetween(fromId: number, toId: number): Promise<schema.Message[]> {
+    // Only return general DMs (not interest-scoped messages)
     const msgs = await db.select().from(schema.messages)
       .where(
-        or(
-          and(eq(schema.messages.fromId, fromId), eq(schema.messages.toId, toId)),
-          and(eq(schema.messages.fromId, toId), eq(schema.messages.toId, fromId))
+        and(
+          or(
+            and(eq(schema.messages.fromId, fromId), eq(schema.messages.toId, toId)),
+            and(eq(schema.messages.fromId, toId), eq(schema.messages.toId, fromId))
+          ),
+          drizzleSql`${schema.messages.interestId} IS NULL`
         )
       );
+    return msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async getMessagesByInterest(interestId: number): Promise<schema.Message[]> {
+    const msgs = await db.select().from(schema.messages)
+      .where(eq(schema.messages.interestId, interestId));
     return msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
@@ -493,6 +505,12 @@ class Storage implements IStorage {
     await db.update(schema.messages)
       .set({ read: 1 })
       .where(and(eq(schema.messages.fromId, fromId), eq(schema.messages.toId, toId)));
+  }
+
+  async markInterestMessagesRead(interestId: number, userId: number): Promise<void> {
+    await db.update(schema.messages)
+      .set({ read: 1 })
+      .where(and(eq(schema.messages.interestId, interestId), eq(schema.messages.toId, userId)));
   }
 
   async getSaved(clientId: number): Promise<ProfileWithUser[]> {

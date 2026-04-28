@@ -391,6 +391,43 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── Messages ─────────────────────────────────────────────────────────────
+  // ─── Interest-scoped messages ─────────────────────────────────────────────
+  app.get("/api/interest-messages/:interestId", async (req, res) => {
+    const interestId = Number(req.params.interestId);
+    const userId = Number(req.query.userId);
+    const msgs = await storage.getMessagesByInterest(interestId);
+    if (userId) await storage.markInterestMessagesRead(interestId, userId);
+    res.json(msgs);
+  });
+
+  app.post("/api/interest-messages", async (req, res) => {
+    try {
+      const { fromId, toId, content, interestId, briefTitle } = req.body;
+      if (!fromId || !toId || !content || !interestId) {
+        return res.status(400).json({ error: "Missing fields" });
+      }
+      const msg = await storage.createMessage({ fromId, toId, content, interestId });
+      // Notify recipient
+      const actor = await storage.getUser(fromId);
+      if (actor) {
+        await notify({
+          recipientId: toId,
+          actorId: actor.id,
+          actorName: actor.name,
+          actorAvatar: actor.avatar ?? null,
+          type: "message",
+          message: `${actor.name} replied on "${briefTitle || "your interest"}"`,
+          link: `/dashboard`,
+          read: 0,
+        });
+      }
+      res.json(msg);
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // ─── Direct messages (general) ────────────────────────────────────────────
   app.get("/api/messages/:userId/conversations", async (req, res) => {
     const convs = await storage.getConversations(Number(req.params.userId));
     res.json(convs);
