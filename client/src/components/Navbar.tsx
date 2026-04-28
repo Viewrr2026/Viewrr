@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown, Briefcase, ClipboardList, LayoutGrid } from "lucide-react";
+import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown, Briefcase, ClipboardList } from "lucide-react";
 import { useState } from "react";
 import { useTheme } from "./ThemeProvider";
 import { useAuth } from "./AuthProvider";
@@ -27,7 +27,6 @@ export default function Navbar() {
     { href: "/ai-search", label: "AI Match", icon: Sparkles },
     { href: "/briefs", label: "Briefs", icon: ClipboardList },
     { href: "/your-work", label: "Your Work", icon: Briefcase },
-    { href: "/workspace", label: "Workspace", icon: LayoutGrid },
   ];
 
   const isActive = (href: string) => location === href;

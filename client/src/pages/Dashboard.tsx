@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle } from "lucide-react";
+import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid } from "lucide-react";
 import VideoEmbed from "@/components/VideoEmbed";
 import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -810,6 +810,22 @@ export default function Dashboard() {
 
           </div>
         )}
+
+        {/* Workspace shortcut */}
+        <Link href="/workspace">
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6 flex items-center justify-between cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all group">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+                <LayoutGrid size={18} className="text-primary" />
+              </div>
+              <div>
+                <p className="font-semibold text-sm">My Workspace</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Tasks, calendar &amp; personal notes</p>
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-muted-foreground group-hover:text-primary transition-colors" />
+          </div>
+        </Link>
 
         {/* Profile section — always visible at the bottom */}
         <div className="space-y-6 max-w-lg">
