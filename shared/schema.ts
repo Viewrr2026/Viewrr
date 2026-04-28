@@ -130,6 +130,11 @@ export const projects = pgTable("projects", {
   description: text("description").notNull().default(""),
   status: text("status").notNull().default("active"),
   currentStage: integer("current_stage").notNull().default(0),
+  briefId: integer("brief_id"),           // source brief (if created from interest)
+  interestId: integer("interest_id"),     // source interest
+  freelancerName: text("freelancer_name"), // denormalised for easy display
+  clientName: text("client_name"),         // denormalised for easy display
+  briefCategory: text("brief_category"),   // e.g. "Videographer"
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 

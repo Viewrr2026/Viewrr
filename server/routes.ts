@@ -800,19 +800,54 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
       const interest = await storage.getBriefInterest(Number(req.params.id));
       await storage.updateBriefInterestStatus(Number(req.params.id), status);
-      // Notify the freelancer when client accepts or declines their interest
-      if (interest && (status === "accepted" || status === "declined") && clientName) {
+
+      if (interest && status === "accepted") {
+        // ── Auto-create a live project from the accepted interest ──
+        const existing = await storage.getProjectByInterestId(interest.id);
+        if (!existing) {
+          let briefDesc = "";
+          let briefCategory = "";
+          try {
+            const brief = await storage.getBrief(interest.briefId);
+            if (brief) { briefDesc = brief.description ?? ""; briefCategory = brief.category ?? ""; }
+          } catch {}
+          await storage.createProject({
+            clientId:       interest.briefClientId,
+            freelancerId:   interest.freelancerId,
+            title:          interest.briefTitle,
+            description:    briefDesc,
+            status:         "active",
+            currentStage:   0,
+            briefId:        interest.briefId ?? undefined,
+            interestId:     interest.id,
+            freelancerName: interest.freelancerName,
+            clientName:     interest.briefClientName,
+            briefCategory,
+          } as any);
+        }
+        // Notify freelancer
         const client = await storage.getUser(interest.briefClientId);
-        const label = status === "accepted" ? "accepted" : "declined";
         await notify({
           recipientId: interest.freelancerId,
-          actorId: interest.briefClientId,
-          actorName: clientName,
+          actorId:     interest.briefClientId,
+          actorName:   clientName ?? interest.briefClientName,
           actorAvatar: clientAvatar ?? (client?.avatar ?? null),
-          type: status === "accepted" ? "interest_accepted" : "interest_declined",
-          message: `${clientName} ${label} your interest in "${interest.briefTitle}"`,
-          link: `/dashboard`,
-          read: 0,
+          type:        "interest_accepted",
+          message:     `${clientName ?? interest.briefClientName} accepted your interest in "${interest.briefTitle}" — project is now live!`,
+          link:        `/dashboard`,
+          read:        0,
+        });
+      } else if (interest && status === "declined" && clientName) {
+        const client = await storage.getUser(interest.briefClientId);
+        await notify({
+          recipientId: interest.freelancerId,
+          actorId:     interest.briefClientId,
+          actorName:   clientName,
+          actorAvatar: clientAvatar ?? (client?.avatar ?? null),
+          type:        "interest_declined",
+          message:     `${clientName} declined your interest in "${interest.briefTitle}"`,
+          link:        `/dashboard`,
+          read:        0,
         });
       }
       res.json({ ok: true });

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid, Plus, Trash2, GripVertical } from "lucide-react";
+import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid, Plus, Trash2, GripVertical, FolderOpen } from "lucide-react";
 import VideoEmbed from "@/components/VideoEmbed";
 import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -569,6 +569,22 @@ export default function Dashboard() {
     refetchInterval: 15000,
   });
 
+  // Projects — live active projects for this user (both client + freelancer)
+  const { data: projects = [], refetch: refetchProjects } = useQuery<any[]>({
+    queryKey: ["/api/projects", user?.id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/projects?userId=${user!.id}`);
+        if (!res.ok) return [];
+        return res.json();
+      } catch {
+        return [];
+      }
+    },
+    enabled: !!user,
+    refetchInterval: 20000,
+  });
+
   if (!user) return <NotLoggedIn />;
 
   return (
@@ -671,12 +687,12 @@ export default function Dashboard() {
             { label: "Profile views",  value: String(profileViewCount),      icon: TrendingUp,   tab: "profile-views" },
             { label: "Messages",       value: String(conversations.length),   icon: MessageSquare, tab: "messages" },
             { label: "Interests sent", value: String(interests.length),       icon: FileText,     tab: "interests" },
-            { label: "Projects",       value: "—",                            icon: Briefcase,    tab: null },
+            { label: "Projects",       value: String(projects.length),        icon: Briefcase,    tab: "projects" },
           ] : [
             { label: "Saved creatives",    value: String(savedProfiles.length), icon: Bookmark,      tab: "saved" },
             { label: "Messages",           value: String(conversations.length), icon: MessageSquare, tab: "messages" },
             { label: "Interests received", value: String(interests.length),     icon: FileText,      tab: "interests" },
-            { label: "Projects posted",    value: "—",                          icon: Briefcase,     tab: null },
+            { label: "Projects posted",    value: String(projects.length),      icon: Briefcase,     tab: "projects" },
           ]).map(({ label, value, icon: Icon, tab }) => (
             <button
               key={label}
@@ -835,9 +851,125 @@ export default function Dashboard() {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ status, clientName: user?.name, clientAvatar: user?.avatar }),
-                  }).then(() => refetchInterests());
+                  }).then(() => { refetchInterests(); refetchProjects(); });
                 }}
               />
+            )}
+
+            {/* Active Projects */}
+            {activeTab === "projects" && (
+              <div className="p-5">
+                <div className="flex items-center justify-between mb-5">
+                  <div>
+                    <h3 className="font-semibold">Active projects</h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {isFreelancer
+                        ? "Live projects you\'re working on"
+                        : "Projects you\'ve kicked off with creatives"}
+                    </p>
+                  </div>
+                  <Badge variant="secondary" className="text-xs">{projects.length} live</Badge>
+                </div>
+
+                {projects.length === 0 ? (
+                  <div className="text-center py-12 text-muted-foreground">
+                    <FolderOpen size={32} className="mx-auto mb-3 opacity-30" />
+                    <p className="font-semibold text-foreground mb-1">No active projects yet</p>
+                    <p className="text-sm">
+                      {isFreelancer
+                        ? "When a client accepts your interest, the project will appear here."
+                        : "Accept a freelancer\'s interest to kick off a live project."}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {projects.map((pw: any) => {
+                      const p = pw.project ?? pw;
+                      const isClient = user.id === p.clientId;
+                      const otherName = isClient ? p.freelancerName : p.clientName;
+                      const stageLabels = ["Brief shared", "Pre-production", "In production", "Review", "Delivery", "Complete"];
+                      const stageLabel = stageLabels[Math.min(p.currentStage ?? 0, stageLabels.length - 1)];
+                      const pct = Math.round(((p.currentStage ?? 0) / (stageLabels.length - 1)) * 100);
+                      const createdDate = p.createdAt
+                        ? new Date(p.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
+                        : "";
+
+                      return (
+                        <div
+                          key={p.id}
+                          className="bg-background border border-border rounded-xl p-4 hover:border-primary/40 transition-colors"
+                        >
+                          <div className="flex items-start justify-between gap-3 mb-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-0.5">
+                                <p className="font-semibold text-sm truncate">{p.title}</p>
+                                {p.briefCategory && (
+                                  <Badge variant="secondary" className="text-xs shrink-0">{p.briefCategory}</Badge>
+                                )}
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                {isClient ? "With" : "For"}&nbsp;
+                                <span className="font-medium text-foreground">{otherName ?? "Unknown"}</span>
+                                {createdDate && <span> &middot; Started {createdDate}</span>}
+                              </p>
+                            </div>
+                            <Badge
+                              className={`shrink-0 text-xs ${
+                                p.status === "completed"
+                                  ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                  : "bg-primary/10 text-primary"
+                              }`}
+                              variant="secondary"
+                            >
+                              {p.status === "completed" ? "Complete" : "Active"}
+                            </Badge>
+                          </div>
+
+                          {/* Progress bar */}
+                          <div className="mb-2">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs text-muted-foreground">Stage: {stageLabel}</span>
+                              <span className="text-xs text-muted-foreground">{pct}%</span>
+                            </div>
+                            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-primary rounded-full transition-all"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Updates / activity summary */}
+                          {pw.updates && pw.updates.length > 0 && (
+                            <div className="mt-3 border-t border-border pt-3">
+                              <p className="text-xs font-semibold text-muted-foreground mb-1.5">Latest update</p>
+                              <div className="flex items-start gap-2">
+                                <CheckCircle2 size={12} className="text-primary mt-0.5 shrink-0" />
+                                <p className="text-xs text-muted-foreground leading-relaxed">
+                                  {pw.updates[pw.updates.length - 1]?.update?.note ?? pw.updates[pw.updates.length - 1]?.note ?? "—"}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Go to messages CTA */}
+                          <div className="mt-3">
+                            <button
+                              onClick={() => {
+                                setActiveConv({ id: isClient ? p.freelancerId : p.clientId, name: otherName ?? "Unknown" });
+                                setActiveTab("messages");
+                              }}
+                              className="text-xs font-medium text-primary hover:underline flex items-center gap-1"
+                            >
+                              <MessageSquare size={11} /> Open messages
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
 
           </div>

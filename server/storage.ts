@@ -251,6 +251,7 @@ export interface IStorage {
   // Projects
   getProjectsForUser(userId: number): Promise<ProjectWithDetails[]>;
   getProject(id: number): Promise<ProjectWithDetails | undefined>;
+  getProjectByInterestId(interestId: number): Promise<schema.Project | undefined>;
   createProject(data: schema.InsertProject): Promise<schema.Project>;
   advanceProjectStage(projectId: number, note: string, authorId: number): Promise<schema.Project | undefined>;
   addProjectUpdate(data: schema.InsertProjectUpdate): Promise<schema.ProjectUpdate>;
@@ -692,6 +693,11 @@ class Storage implements IStorage {
     const project = r[0];
     if (!project) return undefined;
     return this._buildProjectWithDetails(project);
+  }
+
+  async getProjectByInterestId(interestId: number): Promise<schema.Project | undefined> {
+    const r = await db.select().from(schema.projects).where(eq(schema.projects.interestId, interestId));
+    return r[0];
   }
 
   async createProject(data: schema.InsertProject): Promise<schema.Project> {
