@@ -9,11 +9,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { Label } from "@/components/ui/label";
+import { Label } from "@/components/ui/label"; // still used for name/email/bio fields
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { User, Image, MapPin, Mail, AlignLeft, Clock, Link2, CheckCircle } from "lucide-react";
+import { User, MapPin, Mail, AlignLeft, Clock, CheckCircle } from "lucide-react";
+import ImageUpload from "@/components/ImageUpload";
 
 // ── Availability options ─────────────────────────────────────────────────────
 const AVAILABILITY_OPTIONS = [
@@ -22,11 +23,6 @@ const AVAILABILITY_OPTIONS = [
   { value: "busy",           label: "Busy — not taking work" },
   { value: "open_to_offers", label: "Open to offers" },
 ];
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function isValidUrl(url: string) {
-  try { new URL(url); return true; } catch { return false; }
-}
 
 // ── EditProfileModal ──────────────────────────────────────────────────────────
 export default function EditProfileModal({
@@ -60,8 +56,8 @@ export default function EditProfileModal({
   const [email,    setEmail]    = useState(user.email ?? "");
   const [bio,      setBio]      = useState(user.bio ?? "");
   const [location, setLocation] = useState(user.location ?? "");
-  const [avatar,   setAvatar]   = useState(user.avatar ?? "");
-  const [banner,   setBanner]   = useState(user.banner ?? "");
+  const [avatar,   setAvatar]   = useState<string | undefined>(user.avatar ?? undefined);
+  const [banner,   setBanner]   = useState<string | undefined>(user.banner ?? undefined);
 
   // Freelancer-only
   const [availability, setAvailability] = useState(profile?.availability ?? "available");
@@ -79,8 +75,8 @@ export default function EditProfileModal({
           email:    email.trim()    || undefined,
           bio:      bio.trim()      || undefined,
           location: location.trim() || undefined,
-          avatar:   avatar.trim()   || undefined,
-          banner:   banner.trim()   || undefined,
+          avatar:   avatar || undefined,
+          banner:   banner || undefined,
         }),
       });
       if (!userRes.ok) throw new Error("Failed to update profile");
@@ -115,24 +111,19 @@ export default function EditProfileModal({
     onError: (e: any) => toast({ title: e.message ?? "Failed to save", variant: "destructive" }),
   });
 
-  const avatarValid = avatar.trim() ? isValidUrl(avatar.trim()) : true;
-  const bannerValid = banner.trim() ? isValidUrl(banner.trim()) : true;
-
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto p-0">
-        {/* Banner preview + avatar overlay */}
+        {/* Live banner + avatar preview strip */}
         <div className="relative">
-          {/* Banner */}
           <div
-            className="h-28 w-full rounded-t-xl bg-gradient-to-r from-primary/30 via-primary/10 to-background overflow-hidden"
-            style={banner.trim() && bannerValid ? { backgroundImage: `url(${banner.trim()})`, backgroundSize: "cover", backgroundPosition: "center" } : {}}
+            className="h-28 w-full rounded-t-xl bg-gradient-to-r from-primary/30 via-primary/10 to-background overflow-hidden bg-cover bg-center"
+            style={banner ? { backgroundImage: `url(${banner})` } : {}}
           />
-          {/* Avatar */}
           <div className="absolute -bottom-8 left-6">
             <Avatar className="w-16 h-16 border-4 border-background shadow-md">
-              {avatar.trim() && avatarValid
-                ? <AvatarImage src={avatar.trim()} />
+              {avatar
+                ? <AvatarImage src={avatar} />
                 : <AvatarFallback className="bg-primary text-white text-xl font-bold">{user.name.slice(0, 2).toUpperCase()}</AvatarFallback>
               }
             </Avatar>
@@ -146,43 +137,27 @@ export default function EditProfileModal({
 
         <div className="px-6 pb-6 pt-4 space-y-5">
 
-          {/* Avatar URL */}
-          <div className="space-y-1.5">
-            <Label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <User size={11} /> Profile picture URL
-            </Label>
-            <Input
-              placeholder="https://example.com/your-photo.jpg"
-              value={avatar}
-              onChange={e => setAvatar(e.target.value)}
-              className={`text-sm ${avatar.trim() && !avatarValid ? "border-destructive" : ""}`}
-            />
-            {avatar.trim() && !avatarValid && (
-              <p className="text-xs text-destructive">Please enter a valid URL</p>
-            )}
-            <p className="text-[11px] text-muted-foreground">
-              Paste a direct link to any image (Unsplash, Imgur, your own hosting, etc.)
-            </p>
-          </div>
+          {/* Avatar upload */}
+          <ImageUpload
+            value={avatar}
+            onChange={setAvatar}
+            label="Profile picture"
+            hint="Square photo works best · compressed to under 300KB automatically"
+            roundedFull
+            maxSizeKB={300}
+            maxWidthPx={500}
+          />
 
-          {/* Banner URL */}
-          <div className="space-y-1.5">
-            <Label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <Image size={11} /> Banner image URL
-            </Label>
-            <Input
-              placeholder="https://example.com/your-banner.jpg"
-              value={banner}
-              onChange={e => setBanner(e.target.value)}
-              className={`text-sm ${banner.trim() && !bannerValid ? "border-destructive" : ""}`}
-            />
-            {banner.trim() && !bannerValid && (
-              <p className="text-xs text-destructive">Please enter a valid URL</p>
-            )}
-            <p className="text-[11px] text-muted-foreground">
-              Displayed at the top of your public profile page. Recommended 1500×400px.
-            </p>
-          </div>
+          {/* Banner upload */}
+          <ImageUpload
+            value={banner}
+            onChange={setBanner}
+            label="Banner image"
+            hint="Wide image displayed at the top of your profile · compressed to under 500KB"
+            aspectRatio={4}
+            maxSizeKB={500}
+            maxWidthPx={1200}
+          />
 
           {/* Name */}
           <div className="space-y-1.5">
@@ -274,7 +249,7 @@ export default function EditProfileModal({
             </Button>
             <Button
               onClick={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending || !name.trim() || !email.trim() || !avatarValid || !bannerValid}
+              disabled={saveMutation.isPending || !name.trim() || !email.trim()}
               className="ml-auto bg-primary hover:bg-primary/90 text-white rounded-full px-6"
             >
               {saved
