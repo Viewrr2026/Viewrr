@@ -6,13 +6,14 @@ interface AuthCtx {
   user: User | null;
   login: (user: User) => void;
   logout: () => void;
+  updateUser: (partial: Partial<User>) => void;
 }
 
 const AUTH_KEY = "viewrr_session_user";
 const SESSION_VERSION = "v4"; // bump this to force-clear all stored sessions
 const VERSION_KEY = "viewrr_session_version";
 
-const AuthContext = createContext<AuthCtx>({ user: null, login: () => {}, logout: () => {} });
+const AuthContext = createContext<AuthCtx>({ user: null, login: () => {}, logout: () => {}, updateUser: () => {} });
 
 function loadStoredUser(): User | null {
   try {
@@ -52,8 +53,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     safeRemove(AUTH_KEY);
   }
 
+  function updateUser(partial: Partial<User>) {
+    setUser(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, ...partial };
+      try { safeSet(AUTH_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, login, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );

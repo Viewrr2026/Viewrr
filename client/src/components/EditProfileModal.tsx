@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/components/AuthProvider";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -49,6 +50,7 @@ export default function EditProfileModal({
   };
 }) {
   const { toast } = useToast();
+  const { updateUser } = useAuth();
   const isFreelancer = user.role === "freelancer";
 
   // Form state — user fields
@@ -94,17 +96,23 @@ export default function EditProfileModal({
 
       return updatedUser;
     },
-    onSuccess: () => {
-      // Invalidate everything that uses user / profile data
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+    onSuccess: (updatedUser) => {
+      // Push new user data into AuthProvider + localStorage immediately
+      updateUser({
+        name:     updatedUser.name,
+        email:    updatedUser.email,
+        bio:      updatedUser.bio,
+        avatar:   updatedUser.avatar,
+        banner:   updatedUser.banner,
+        location: updatedUser.location,
+      });
+      // Bust profile queries so availability + profile page refresh
       queryClient.invalidateQueries({ queryKey: ["/api/profiles/own"] });
       queryClient.invalidateQueries({ queryKey: ["/api/profiles"] });
       setSaved(true);
       setTimeout(() => {
         setSaved(false);
         onClose();
-        // Force page refresh so AuthProvider picks up new user data
-        window.location.reload();
       }, 1200);
       toast({ title: "Profile updated!" });
     },
