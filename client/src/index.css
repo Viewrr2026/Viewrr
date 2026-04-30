@@ -170,12 +170,25 @@
   100% { transform: scale(1.0)  translate(0%,    0%);    }   /* reset smoothly */
 }
 
-/* ── Suppress browser play/pause overlay on background videos ─────────── */
+/* ── Suppress ALL browser media controls on background videos ─────────── */
 video::-webkit-media-controls,
 video::-webkit-media-controls-enclosure,
+video::-webkit-media-controls-container,
 video::-webkit-media-controls-panel,
+video::-webkit-media-controls-play-button,
 video::-webkit-media-controls-overlay-play-button,
-video::-webkit-media-controls-start-playback-button {
+video::-webkit-media-controls-overlay-enclosure,
+video::-webkit-media-controls-start-playback-button,
+video::-webkit-media-controls-fullscreen-button,
+video::-webkit-media-controls-timeline,
+video::-webkit-media-controls-current-time-display,
+video::-webkit-media-controls-time-remaining-display,
+video::-webkit-media-controls-mute-button,
+video::-webkit-media-controls-volume-slider,
+video::-internal-media-controls-overlay-cast-button,
+video::-internal-media-controls-download-button {
   display: none !important;
-  -webkit-appearance: none;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  -webkit-appearance: none !important;
 }

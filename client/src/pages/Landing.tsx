@@ -87,11 +87,15 @@ export default function Landing() {
             playsInline
             disablePictureInPicture
             disableRemotePlayback
+            controls={false}
             poster="/videos/hero_showreel_poster.jpg"
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
-            style={{ WebkitMediaControls: 'none' } as React.CSSProperties}
+            className="absolute inset-0 w-full h-full object-cover select-none"
+            style={{ pointerEvents: "none", WebkitMediaControls: "none" } as React.CSSProperties}
+            onContextMenu={e => e.preventDefault()}
           />
-          <div className="absolute inset-0 bg-gradient-to-r from-background via-background/80 to-background/30" />
+          {/* Transparent blocker — prevents any browser play/pause overlay appearing on hover/tap */}
+          <div className="absolute inset-0" style={{ zIndex: 1, pointerEvents: "all", cursor: "default", background: "transparent" }} />
+          <div className="absolute inset-0 bg-gradient-to-r from-background via-background/80 to-background/30" style={{ zIndex: 2 }} />
         </div>
 
         <div className="relative z-10 mx-auto max-w-7xl px-6 py-24 md:py-32">
