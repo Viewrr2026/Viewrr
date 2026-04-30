@@ -59,6 +59,7 @@ function InterestMessageThread({
 }: { userId: number; otherId: number; otherName: string; otherAvatar?: string; interestId: number; briefTitle: string }) {
   const [text, setText] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const hasScolledRef = useRef(false);
 
   const { data: messages = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/interest-messages", interestId],
@@ -72,9 +73,13 @@ function InterestMessageThread({
     refetchInterval: 5000,
   });
 
+  // Scroll to bottom only on initial load — not on every poll refetch
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (!isLoading && messages.length > 0 && !hasScolledRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      hasScolledRef.current = true;
+    }
+  }, [isLoading, messages.length]);
 
   const sendMutation = useMutation({
     mutationFn: async (content: string) => {

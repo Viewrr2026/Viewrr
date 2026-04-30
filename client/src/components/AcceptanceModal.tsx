@@ -15,6 +15,51 @@ import {
   Zap, X, FolderOpen, Video,
 } from "lucide-react";
 
+// ── Brief Booked confirmation overlay (separate from the compose modal) ──────
+function BriefBookedPopup({ onClose, onGoToWork }: { onClose: () => void; onGoToWork: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(6px)" }}
+    >
+      <div className="relative bg-background border border-border rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden text-center px-8 py-10">
+        {/* Close X — user MUST click this or the CTA to dismiss */}
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <X size={14} />
+        </button>
+
+        {/* Tick */}
+        <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-5">
+          <CheckCircle2 size={36} className="text-primary" />
+        </div>
+
+        {/* Headline */}
+        <h2 className="text-2xl font-extrabold tracking-tight uppercase mb-2">Brief Booked</h2>
+
+        {/* Sub-copy */}
+        <p className="text-sm text-muted-foreground mb-8">
+          Your project can be found in the <span className="font-semibold text-foreground">'Your Work'</span> tab.
+        </p>
+
+        <div className="flex flex-col gap-2">
+          <Button
+            className="w-full bg-primary hover:bg-primary/90 text-white rounded-full gap-2"
+            onClick={onGoToWork}
+          >
+            <FolderOpen size={14} /> Go to Your Work
+          </Button>
+          <Button variant="ghost" className="w-full rounded-full text-muted-foreground" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface AcceptanceModalProps {
   interest: any;           // the BriefInterest being accepted
   clientName: string;
@@ -38,7 +83,7 @@ export default function AcceptanceModal({
   const [meetingOption, setMeetingOption] = useState<"none" | "instant" | "scheduled">("none");
   const [meetTitle, setMeetTitle] = useState("");
   const [meetDateTime, setMeetDateTime] = useState("");
-  const [step, setStep] = useState<"compose" | "done">("compose");
+  const [showBooked, setShowBooked] = useState(false);
   const [, navigate] = useLocation();
 
   // Min datetime: now + 15 min
@@ -154,10 +199,22 @@ export default function AcceptanceModal({
       queryClient.invalidateQueries({ queryKey: ["/api/projects", clientId] });
       queryClient.invalidateQueries({ queryKey: ["/api/briefs"] });
 
-      setStep("done");
+      // Close compose modal, show Brief Booked popup
+      onClose();
+      setShowBooked(true);
     } catch (e) {
       console.error("Acceptance flow error:", e);
     }
+  }
+
+  // Render Brief Booked popup (outside/above the compose modal)
+  if (showBooked) {
+    return (
+      <BriefBookedPopup
+        onClose={() => { setShowBooked(false); onAccepted(); }}
+        onGoToWork={() => { setShowBooked(false); onAccepted(); navigate("/your-work"); }}
+      />
+    );
   }
 
   return (
@@ -176,34 +233,8 @@ export default function AcceptanceModal({
           <X size={14} />
         </button>
 
-        {step === "done" ? (
-          /* ── Success screen ── */
-          <div className="p-8 text-center">
-            <div className="w-16 h-16 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center mx-auto mb-4">
-              <CheckCircle2 size={28} className="text-green-600 dark:text-green-400" />
-            </div>
-            <h2 className="text-lg font-bold mb-1">Project is live!</h2>
-            <p className="text-sm text-muted-foreground mb-1">
-              <span className="font-medium text-foreground">{interest.freelancerName}</span> has been notified and your message is on its way.
-            </p>
-            <p className="text-xs text-muted-foreground mb-6">
-              You can track everything under <span className="font-medium text-primary">Your Work</span>.
-            </p>
-            <div className="flex gap-3 justify-center">
-              <Button
-                className="bg-primary hover:bg-primary/90 text-white rounded-full px-5 gap-2"
-                onClick={() => { onAccepted(); onClose(); navigate("/your-work"); }}
-              >
-                <FolderOpen size={14} /> Go to Your Work
-              </Button>
-              <Button variant="outline" className="rounded-full px-5" onClick={onClose}>
-                Close
-              </Button>
-            </div>
-          </div>
-        ) : (
-          /* ── Compose screen ── */
-          <>
+        {/* Compose screen */}
+        <>
             {/* Header */}
             <div className="px-6 pt-6 pb-4 border-b border-border">
               <div className="flex items-center gap-3 mb-3">
@@ -353,8 +384,7 @@ export default function AcceptanceModal({
                 Cancel
               </Button>
             </div>
-          </>
-        )}
+        </>
       </div>
     </div>
   );

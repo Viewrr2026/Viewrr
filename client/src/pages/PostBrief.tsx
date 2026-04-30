@@ -22,7 +22,7 @@ export default function PostBrief() {
 
   const [form, setForm] = useState({
     title: "",
-    category: "",
+    categories: [] as string[], // multi-select
     description: "",
     location: "",
     remote: false,
@@ -34,6 +34,16 @@ export default function PostBrief() {
     requirements: "",
   });
 
+  const toggleCategory = (cat: string) => {
+    setForm(f => ({
+      ...f,
+      categories: f.categories.includes(cat)
+        ? f.categories.filter(c => c !== cat)
+        : [...f.categories, cat],
+    }));
+    setErrors(e => ({ ...e, category: "" }));
+  };
+
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const set = (field: string, value: any) => {
@@ -44,7 +54,7 @@ export default function PostBrief() {
   const validate = () => {
     const e: Record<string, string> = {};
     if (!form.title.trim()) e.title = "Please add a title";
-    if (!form.category) e.category = "Please select a category";
+    if (form.categories.length === 0) e.category = "Please select at least one category";
     if (!form.description.trim()) e.description = "Please describe the brief";
     if (form.description.trim().length < 50) e.description = "Please add more detail (at least 50 characters)";
     if (!form.location.trim()) e.location = "Please enter a location";
@@ -68,7 +78,7 @@ export default function PostBrief() {
         clientName: user.name || "Anonymous",
         clientAvatar: user.avatar || null,
         title: form.title.trim(),
-        category: form.category,
+        category: form.categories.join(", "),
         description: form.description.trim(),
         location: form.location.trim(),
         remote: form.remote ? 1 : 0,
@@ -115,7 +125,7 @@ export default function PostBrief() {
             </Link>
             <Button variant="outline" className="rounded-full" onClick={() => {
               setSubmitted(false);
-              setForm({ title: "", category: "", description: "", location: "", remote: false, startDate: "", duration: "", budgetType: "project", budgetMin: "", budgetMax: "", requirements: "" });
+              setForm({ title: "", categories: [], description: "", location: "", remote: false, startDate: "", duration: "", budgetType: "project", budgetMin: "", budgetMax: "", requirements: "" });
             }}>
               Post another
             </Button>
@@ -156,24 +166,31 @@ export default function PostBrief() {
             {errors.title && <p className="text-xs text-red-500 mt-1">{errors.title}</p>}
           </div>
 
-          {/* Category */}
+          {/* Category — multi-select */}
           <div>
-            <label className="block text-sm font-semibold mb-1.5">Category <span className="text-primary">*</span></label>
+            <label className="block text-sm font-semibold mb-1">
+              Category <span className="text-primary">*</span>
+              <span className="ml-2 font-normal text-muted-foreground text-xs">Select all that apply</span>
+            </label>
             <div className="flex flex-wrap gap-2">
-              {CATEGORIES.map(cat => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => set("category", cat)}
-                  className={`px-4 py-1.5 rounded-full text-sm border transition-all ${
-                    form.category === cat
-                      ? "bg-primary text-white border-primary"
-                      : "border-border text-muted-foreground hover:border-primary/40"
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
+              {CATEGORIES.map(cat => {
+                const selected = form.categories.includes(cat);
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => toggleCategory(cat)}
+                    className={`px-4 py-1.5 rounded-full text-sm border transition-all flex items-center gap-1.5 ${
+                      selected
+                        ? "bg-primary text-white border-primary"
+                        : "border-border text-muted-foreground hover:border-primary/40"
+                    }`}
+                  >
+                    {selected && <span className="text-white text-xs leading-none">✓</span>}
+                    {cat}
+                  </button>
+                );
+              })}
             </div>
             {errors.category && <p className="text-xs text-red-500 mt-1">{errors.category}</p>}
           </div>

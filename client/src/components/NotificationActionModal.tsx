@@ -51,9 +51,12 @@ function fmt(iso: string) {
 function ModalShell({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
   return (
     <>
-      <div className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div
-        className="fixed z-[201] inset-x-4 sm:inset-auto sm:left-1/2 sm:-translate-x-1/2 sm:w-[420px] top-1/2 -translate-y-1/2 flex flex-col rounded-2xl border border-border bg-background shadow-2xl overflow-hidden max-h-[85vh]"
+        className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+        onClick={onClose}
+      >
+      <div
+        className="relative z-[201] w-full max-w-[420px] flex flex-col rounded-2xl border border-border bg-background shadow-2xl overflow-hidden max-h-[85vh]"
         onClick={e => e.stopPropagation()}
       >
         <button
@@ -64,6 +67,7 @@ function ModalShell({ onClose, children }: { onClose: () => void; children: Reac
           <X size={16} />
         </button>
         {children}
+      </div>
       </div>
     </>
   );
