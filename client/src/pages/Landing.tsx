@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Link } from "wouter";
 import { ArrowRight, Sparkles, Play, Star, Shield, Zap, Users, CheckCircle, Video, Camera, Megaphone, Scissors } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -64,6 +64,20 @@ const TESTIMONIALS = [
 ];
 
 export default function Landing() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Force-remove controls after mount via DOM — belt-and-braces for all browsers
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.removeAttribute("controls");
+    v.controls = false;
+    // Some mobile browsers re-add controls when the video pauses — keep it playing
+    const keepPlaying = () => { try { v.play(); } catch {} };
+    v.addEventListener("pause", keepPlaying);
+    return () => v.removeEventListener("pause", keepPlaying);
+  }, []);
+
   const { data: featured = [] } = useQuery<ProfileWithUser[]>({
     queryKey: ["/api/profiles/featured"],
     queryFn: async () => {
@@ -77,9 +91,14 @@ export default function Landing() {
 
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
-        {/* Background video */}
-        <div className="absolute inset-0 z-0 overflow-hidden bg-neutral-900">
+        {/* Background video — controls suppressed at every level */}
+        <div
+          className="absolute inset-0 z-0 bg-neutral-900"
+          style={{ overflow: "hidden", userSelect: "none" }}
+        >
+          {/* Video sits at z-index 0, pointer-events disabled */}
           <video
+            ref={videoRef}
             src="/videos/hero_showreel_web.mp4"
             autoPlay
             muted
@@ -87,15 +106,28 @@ export default function Landing() {
             playsInline
             disablePictureInPicture
             disableRemotePlayback
-            controls={false}
             poster="/videos/hero_showreel_poster.jpg"
-            className="absolute inset-0 w-full h-full object-cover select-none"
-            style={{ pointerEvents: "none", WebkitMediaControls: "none" } as React.CSSProperties}
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ zIndex: 0, pointerEvents: "none", userSelect: "none" } as React.CSSProperties}
             onContextMenu={e => e.preventDefault()}
           />
-          {/* Transparent blocker — prevents any browser play/pause overlay appearing on hover/tap */}
-          <div className="absolute inset-0" style={{ zIndex: 1, pointerEvents: "all", cursor: "default", background: "transparent" }} />
-          <div className="absolute inset-0 bg-gradient-to-r from-background via-background/80 to-background/30" style={{ zIndex: 2 }} />
+          {/* Full-cover sibling at z-index 1 — absorbs every mouse/touch event above the video.
+              No browser overlay can show through this because it occupies the exact same pixels
+              at a higher stacking order. Background must be set to block the video controls layer. */}
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute", inset: 0, zIndex: 1,
+              pointerEvents: "all", cursor: "default",
+              // Tiny opacity so it's invisible but still forms a real painted layer the browser won't skip
+              background: "rgba(0,0,0,0.001)",
+            }}
+          />
+          {/* Gradient overlay at z-index 2 */}
+          <div
+            className="absolute inset-0 bg-gradient-to-r from-background via-background/80 to-background/30"
+            style={{ zIndex: 2 }}
+          />
         </div>
 
         <div className="relative z-10 mx-auto max-w-7xl px-6 py-24 md:py-32">
