@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Link } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import AcceptanceModal from "@/components/AcceptanceModal";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const ukDate = new Intl.DateTimeFormat("en-GB", {
@@ -200,6 +201,7 @@ function InterestDetail({
   const otherId    = isFreelancer ? interest.briefClientId  : interest.freelancerId;
   const otherName  = isFreelancer ? interest.briefClientName : interest.freelancerName;
   const otherAvatar = isFreelancer ? undefined               : interest.freelancerAvatar;
+  const [showAcceptModal, setShowAcceptModal] = useState(false);
 
   return (
     <div className="flex flex-col h-full min-h-[560px]">
@@ -267,7 +269,7 @@ function InterestDetail({
             <Button
               size="sm"
               className="bg-primary hover:bg-primary/90 text-white rounded-full text-xs px-4"
-              onClick={() => onStatusChange(interest.id, "accepted")}
+              onClick={() => setShowAcceptModal(true)}
             >
               <CheckCircle2 size={12} className="mr-1" /> Accept
             </Button>
@@ -280,6 +282,21 @@ function InterestDetail({
               <XCircle size={12} className="mr-1" /> Decline
             </Button>
           </div>
+        )}
+
+        {/* Acceptance modal */}
+        {showAcceptModal && (
+          <AcceptanceModal
+            interest={interest}
+            clientName={userName}
+            clientAvatar={userAvatar}
+            clientId={userId}
+            onClose={() => setShowAcceptModal(false)}
+            onAccepted={() => {
+              onStatusChange(interest.id, "accepted");
+              setShowAcceptModal(false);
+            }}
+          />
         )}
       </div>
 

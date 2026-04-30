@@ -278,6 +278,7 @@ export interface IStorage {
   getBriefInterestsForFreelancer(freelancerId: number): Promise<schema.BriefInterest[]>;
   getBriefInterestsForClient(clientId: number): Promise<schema.BriefInterest[]>;
   updateBriefInterestStatus(id: number, status: string): Promise<void>;
+  deactivateBrief(briefId: number): Promise<void>;
   getBriefInterest(id: number): Promise<schema.BriefInterest | undefined>;
 
   // Notifications
@@ -762,7 +763,8 @@ class Storage implements IStorage {
 
   // ─── Briefs ────────────────────────────────────────────────────────────────
   async getBriefs(): Promise<schema.Brief[]> {
-    const r = await db.select().from(schema.briefs);
+    const r = await db.select().from(schema.briefs)
+      .where(eq(schema.briefs.isActive, true));
     return r.reverse();
   }
 
@@ -867,6 +869,12 @@ class Storage implements IStorage {
     await db.update(schema.briefInterests)
       .set(respondedAt ? { status, respondedAt } : { status })
       .where(eq(schema.briefInterests.id, id));
+  }
+
+  async deactivateBrief(briefId: number): Promise<void> {
+    await db.update(schema.briefs)
+      .set({ isActive: false })
+      .where(eq(schema.briefs.id, briefId));
   }
 
   async getBriefInterest(id: number): Promise<schema.BriefInterest | undefined> {

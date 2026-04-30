@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import LoginModal from "@/components/LoginModal";
 import SignupModal from "@/components/SignupModal";
+import MeetingSection from "@/components/MeetingSection";
 import {
   CheckCircle2, Circle, Clock, Briefcase, MessageSquare,
   ArrowRight, ChevronDown, ChevronUp, X, Expand,
@@ -356,6 +357,15 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                     <UpdateEntry key={update.id} update={update} author={author} size="lg" />
                   ))
                 )}
+              </div>
+
+              {/* Meetings section */}
+              <div className="border-t border-border pt-4">
+                <MeetingSection
+                  projectId={pw.project.id}
+                  userId={currentUserId}
+                  otherName={otherPerson.name}
+                />
               </div>
 
               {/* Visibility toggle — completed projects, client only */}

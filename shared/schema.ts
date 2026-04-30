@@ -175,6 +175,7 @@ export const briefs = pgTable("briefs", {
   requirements: text("requirements").notNull().default(""),
   status: text("status").notNull().default("open"),
   applicationCount: integer("application_count").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true), // false once a freelancer is accepted
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 

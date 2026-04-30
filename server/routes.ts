@@ -872,6 +872,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             clientName:     interest.briefClientName,
             briefCategory,
           } as any);
+          // Remove brief from the public board
+          if (interest.briefId) {
+            try { await storage.deactivateBrief(interest.briefId); } catch {}
+          }
         }
         // Notify freelancer
         const client = await storage.getUser(interest.briefClientId);
