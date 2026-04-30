@@ -66,16 +66,30 @@ const TESTIMONIALS = [
 export default function Landing() {
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Force-remove controls after mount via DOM — belt-and-braces for all browsers
+  // Explicitly trigger autoplay after mount.
+  // Browsers block autoplay until a user gesture when inside certain contexts (iframes, strict
+  // autoplay policies). Calling .play() in a useEffect satisfies most of these policies because
+  // it runs after the first render paint — and the video is muted so browsers allow it.
+  // Removing the poster stops the browser showing a static image + native play button
+  // when autoplay hasn’t fired yet.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
+    v.muted = true;           // must be muted for programmatic autoplay to work
     v.removeAttribute("controls");
     v.controls = false;
-    // Some mobile browsers re-add controls when the video pauses — keep it playing
-    const keepPlaying = () => { try { v.play(); } catch {} };
-    v.addEventListener("pause", keepPlaying);
-    return () => v.removeEventListener("pause", keepPlaying);
+    const attempt = () => {
+      v.play().catch(() => {
+        // Autoplay still blocked — retry once on the first user interaction
+        const retry = () => { v.play().catch(() => {}); document.removeEventListener("click", retry); document.removeEventListener("touchstart", retry); };
+        document.addEventListener("click", retry, { once: true });
+        document.addEventListener("touchstart", retry, { once: true });
+      });
+    };
+    attempt();
+    // Re-play if the browser pauses it (e.g. tab visibility change)
+    v.addEventListener("pause", attempt);
+    return () => v.removeEventListener("pause", attempt);
   }, []);
 
   const { data: featured = [] } = useQuery<ProfileWithUser[]>({
@@ -106,7 +120,6 @@ export default function Landing() {
             playsInline
             disablePictureInPicture
             disableRemotePlayback
-            poster="/videos/hero_showreel_poster.jpg"
             className="absolute inset-0 w-full h-full object-cover"
             style={{ zIndex: 0, pointerEvents: "none", userSelect: "none" } as React.CSSProperties}
             onContextMenu={e => e.preventDefault()}
