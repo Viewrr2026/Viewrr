@@ -257,6 +257,11 @@ export interface IStorage {
   addProjectUpdate(data: schema.InsertProjectUpdate): Promise<schema.ProjectUpdate>;
   getProjectUpdates(projectId: number): Promise<ProjectUpdateWithAuthor[]>;
 
+  // Meetings
+  getMeetingsForProject(projectId: number): Promise<schema.Meeting[]>;
+  createMeeting(data: schema.InsertMeeting): Promise<schema.Meeting>;
+  cancelMeeting(id: number): Promise<void>;
+
   // Briefs
   getBriefs(): Promise<schema.Brief[]>;
   getBrief(id: number): Promise<schema.Brief | undefined>;
@@ -734,6 +739,25 @@ class Storage implements IStorage {
       results.push({ update, author });
     }
     return results;
+  }
+
+  // ─── Meetings ──────────────────────────────────────────────────────────────
+  async getMeetingsForProject(projectId: number): Promise<schema.Meeting[]> {
+    const r = await db.select().from(schema.meetings)
+      .where(eq(schema.meetings.projectId, projectId))
+      .orderBy(schema.meetings.createdAt);
+    return r;
+  }
+
+  async createMeeting(data: schema.InsertMeeting): Promise<schema.Meeting> {
+    const r = await db.insert(schema.meetings).values(data).returning();
+    return r[0];
+  }
+
+  async cancelMeeting(id: number): Promise<void> {
+    await db.update(schema.meetings)
+      .set({ status: "cancelled" })
+      .where(eq(schema.meetings.id, id));
   }
 
   // ─── Briefs ────────────────────────────────────────────────────────────────

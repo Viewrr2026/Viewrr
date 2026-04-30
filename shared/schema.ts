@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, serial, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, real, serial, boolean, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -275,3 +275,19 @@ export const calendarEvents = pgTable("calendar_events", {
 export const insertCalendarEventSchema = createInsertSchema(calendarEvents).omit({ id: true });
 export type InsertCalendarEvent = z.infer<typeof insertCalendarEventSchema>;
 export type CalendarEvent = typeof calendarEvents.$inferSelect;
+
+// ─── Meetings ────────────────────────────────────────────────────────────────
+export const meetings = pgTable("meetings", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  createdBy: integer("created_by").notNull(),
+  title: text("title").notNull().default("Project call"),
+  meetLink: text("meet_link").notNull(),
+  scheduledAt: timestamp("scheduled_at"),
+  isInstant: boolean("is_instant").notNull().default(false),
+  status: text("status").notNull().default("scheduled"), // "scheduled" | "cancelled" | "completed"
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export const insertMeetingSchema = createInsertSchema(meetings).omit({ id: true, createdAt: true });
+export type InsertMeeting = z.infer<typeof insertMeetingSchema>;
+export type Meeting = typeof meetings.$inferSelect;

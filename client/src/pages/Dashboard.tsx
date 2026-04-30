@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import FreelancerCard from "@/components/FreelancerCard";
 import InterestsPanel from "@/components/InterestsPanel";
 import EditProfileModal from "@/components/EditProfileModal";
+import MeetingSection from "@/components/MeetingSection";
 import { useAuth } from "@/components/AuthProvider";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
@@ -964,6 +965,13 @@ export default function Dashboard() {
                               <MessageSquare size={11} /> Open messages
                             </button>
                           </div>
+
+                          {/* Meeting section */}
+                          <MeetingSection
+                            projectId={p.id}
+                            userId={user.id}
+                            otherName={otherName ?? "Unknown"}
+                          />
                         </div>
                       );
                     })}

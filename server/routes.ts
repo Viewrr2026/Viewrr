@@ -723,6 +723,54 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(await storage.getProjectUpdates(Number(req.params.id)));
   });
 
+  // ─── Meetings ──────────────────────────────────────────────────────────────────
+  // GET all meetings for a project
+  app.get("/api/projects/:id/meetings", async (req, res) => {
+    try {
+      const meetings = await storage.getMeetingsForProject(Number(req.params.id));
+      res.json(meetings);
+    } catch (e) {
+      res.status(500).json({ error: "Failed to fetch meetings" });
+    }
+  });
+
+  // POST create a meeting (instant or scheduled)
+  app.post("/api/projects/:id/meetings", async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      const { createdBy, title, scheduledAt, isInstant } = req.body;
+      if (!createdBy) return res.status(400).json({ error: "createdBy required" });
+
+      // Generate a unique Google Meet link using a random room code
+      const roomId = `viewrr-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 6)}`;
+      const meetLink = `https://meet.google.com/${roomId}`;
+
+      const meeting = await storage.createMeeting({
+        projectId,
+        createdBy: Number(createdBy),
+        title: title || (isInstant ? "Instant call" : "Project call"),
+        meetLink,
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+        isInstant: Boolean(isInstant),
+        status: "scheduled",
+      });
+      res.json(meeting);
+    } catch (e) {
+      console.error("Create meeting error:", e);
+      res.status(500).json({ error: "Failed to create meeting" });
+    }
+  });
+
+  // PATCH cancel a meeting
+  app.patch("/api/meetings/:id/cancel", async (req, res) => {
+    try {
+      await storage.cancelMeeting(Number(req.params.id));
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: "Failed to cancel meeting" });
+    }
+  });
+
   // ─── Briefs ────────────────────────────────────────────────────────────────
   app.get("/api/briefs", async (req, res) => {
     const { category, location } = req.query;
