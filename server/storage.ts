@@ -605,14 +605,32 @@ class Storage implements IStorage {
     return true;
   }
 
-  // Admin-only: delete any post regardless of ownership, returns the original post owner's userId
-  async adminDeletePost(id: number): Promise<number | null> {
+  // Admin-only: delete any post regardless of ownership, logs to deleted_posts, returns owner userId
+  async adminDeletePost(id: number, adminId: number): Promise<number | null> {
     const r = await db.select().from(schema.posts).where(eq(schema.posts.id, id));
     const post = r[0];
     if (!post) return null;
-    const ownerId = post.userId;
+    const owner = await this.getUser(post.userId);
+    // Log the deletion before removing
+    await db.insert(schema.deletedPosts).values({
+      postId: post.id,
+      ownerId: post.userId,
+      ownerName: owner?.name ?? "Unknown",
+      ownerEmail: owner?.email ?? "unknown",
+      caption: post.caption,
+      mediaUrl: post.mediaUrl,
+      mediaType: post.mediaType,
+      tags: post.tags,
+      deletedBy: adminId,
+      deletedAt: new Date().toISOString(),
+    });
     await db.delete(schema.posts).where(eq(schema.posts.id, id));
-    return ownerId;
+    return post.userId;
+  }
+
+  async getDeletedPosts(): Promise<schema.DeletedPost[]> {
+    const rows = await db.select().from(schema.deletedPosts).orderBy(drizzleSql`${schema.deletedPosts.id} DESC`);
+    return rows;
   }
 
   async toggleLike(postId: number, userId: number): Promise<boolean> {

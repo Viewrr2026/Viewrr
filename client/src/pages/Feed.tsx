@@ -209,6 +209,22 @@ function PostCard({ pw }: { pw: PostWithUser }) {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/feed"] }); toast({ title: "Post deleted" }); },
   });
 
+  const adminDeleteMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/admin/feed/${pw.post.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user!.id }),
+      });
+      if (!res.ok) throw new Error("Failed");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/feed"] });
+      toast({ title: "Post removed", description: "The user has been notified." });
+    },
+    onError: () => toast({ title: "Failed to remove post", variant: "destructive" } as any),
+  });
+
   const editMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("PATCH", `/api/feed/${pw.post.id}`, {
@@ -245,6 +261,7 @@ function PostCard({ pw }: { pw: PostWithUser }) {
   }
 
   const isOwner = user?.id === pw.user.id;
+  const isAdminUser = !!(user as any)?.isAdmin;
 
   function handleShare() {
     if (navigator.clipboard) {
@@ -324,6 +341,18 @@ function PostCard({ pw }: { pw: PostWithUser }) {
                 </DropdownMenuItem>
                 <DropdownMenuItem className="text-destructive flex items-center gap-2" onClick={() => deleteMutation.mutate()}>
                   <Trash2 size={13} /> Delete post
+                </DropdownMenuItem>
+              </>
+            )}
+            {isAdminUser && !isOwner && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-destructive flex items-center gap-2"
+                  onClick={() => adminDeleteMutation.mutate()}
+                  disabled={adminDeleteMutation.isPending}
+                >
+                  <Trash2 size={13} /> Remove post (Admin)
                 </DropdownMenuItem>
               </>
             )}

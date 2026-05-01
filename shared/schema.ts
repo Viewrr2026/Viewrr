@@ -293,3 +293,19 @@ export const meetings = pgTable("meetings", {
 export const insertMeetingSchema = createInsertSchema(meetings).omit({ id: true, createdAt: true });
 export type InsertMeeting = z.infer<typeof insertMeetingSchema>;
 export type Meeting = typeof meetings.$inferSelect;
+
+// ─── Deleted Posts Log (admin moderation history) ─────────────────────────────
+export const deletedPosts = pgTable("deleted_posts", {
+  id: serial("id").primaryKey(),
+  postId: integer("post_id").notNull(),
+  ownerId: integer("owner_id").notNull(),
+  ownerName: text("owner_name").notNull(),
+  ownerEmail: text("owner_email").notNull(),
+  caption: text("caption"),
+  mediaUrl: text("media_url"),
+  mediaType: text("media_type"),
+  tags: text("tags"),
+  deletedBy: integer("deleted_by").notNull(),
+  deletedAt: text("deleted_at").notNull(),
+});
+export type DeletedPost = typeof deletedPosts.$inferSelect;
