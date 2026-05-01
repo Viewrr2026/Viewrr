@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid, Plus, Trash2, GripVertical, FolderOpen } from "lucide-react";
+import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid, Plus, Trash2, GripVertical, FolderOpen, ShieldAlert } from "lucide-react";
 import VideoEmbed from "@/components/VideoEmbed";
 import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -981,6 +981,24 @@ export default function Dashboard() {
             )}
 
           </div>
+        )}
+
+        {/* Admin panel shortcut — only visible to admins */}
+        {(user as any)?.isAdmin && (
+          <Link href="/admin">
+            <div className="bg-destructive/5 border border-destructive/20 rounded-2xl p-5 mb-4 flex items-center justify-between cursor-pointer hover:border-destructive/50 hover:shadow-sm transition-all group">
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 rounded-xl bg-destructive/10 flex items-center justify-center flex-shrink-0">
+                  <ShieldAlert size={18} className="text-destructive" />
+                </div>
+                <div>
+                  <p className="font-semibold text-sm text-destructive">Content Moderation</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Remove posts that violate guidelines</p>
+                </div>
+              </div>
+              <ChevronRight size={16} className="text-muted-foreground group-hover:text-destructive transition-colors" />
+            </div>
+          </Link>
         )}
 
         {/* Workspace shortcut */}

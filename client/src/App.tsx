@@ -20,6 +20,7 @@ import Privacy from "@/pages/Privacy";
 import Briefs from "@/pages/Briefs";
 import PostBrief from "@/pages/PostBrief";
 import Workspace from "@/pages/Workspace";
+import AdminPanel from "@/pages/AdminPanel";
 import CookieBanner from "@/components/CookieBanner";
 import GetNoticedBanner from "@/components/GetNoticedBanner";
 
@@ -46,6 +47,7 @@ export default function App() {
               <Route path="/briefs" component={Briefs} />
               <Route path="/briefs/new" component={PostBrief} />
               <Route path="/workspace" component={Workspace} />
+              <Route path="/admin" component={AdminPanel} />
               <Route component={NotFound} />
             </Switch>
           </Router>

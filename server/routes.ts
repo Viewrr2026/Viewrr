@@ -600,6 +600,41 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json({ success: true });
   });
 
+  // Admin-only: remove any post + notify the owner
+  app.delete("/api/admin/feed/:id", async (req, res) => {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    const admin = await storage.getUser(Number(userId));
+    if (!admin || !admin.isAdmin) return res.status(403).json({ error: "Admin only" });
+    const ownerId = await storage.adminDeletePost(Number(req.params.id));
+    if (ownerId === null) return res.status(404).json({ error: "Post not found" });
+    bustFeedCache();
+    // Notify the post owner
+    await notify({
+      recipientId: ownerId,
+      actorId: admin.id,
+      actorName: "Viewrr",
+      actorAvatar: null,
+      type: "system",
+      message: "Your post was removed by Viewrr for violating our community guidelines.",
+      link: "/feed",
+      read: 0,
+    });
+    res.json({ success: true });
+  });
+
+  // Admin: fetch all posts (paginated, newest first) for moderation panel
+  app.get("/api/admin/feed", async (req, res) => {
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    const admin = await storage.getUser(userId);
+    if (!admin || !admin.isAdmin) return res.status(403).json({ error: "Admin only" });
+    const limit = Number(req.query.limit) || 50;
+    const offset = Number(req.query.offset) || 0;
+    const posts = await storage.getFeedPosts(limit, offset, userId);
+    res.json(posts);
+  });
+
   app.post("/api/feed/:id/like", async (req, res) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });

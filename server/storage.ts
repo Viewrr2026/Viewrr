@@ -605,6 +605,16 @@ class Storage implements IStorage {
     return true;
   }
 
+  // Admin-only: delete any post regardless of ownership, returns the original post owner's userId
+  async adminDeletePost(id: number): Promise<number | null> {
+    const r = await db.select().from(schema.posts).where(eq(schema.posts.id, id));
+    const post = r[0];
+    if (!post) return null;
+    const ownerId = post.userId;
+    await db.delete(schema.posts).where(eq(schema.posts.id, id));
+    return ownerId;
+  }
+
   async toggleLike(postId: number, userId: number): Promise<boolean> {
     const r = await db.select().from(schema.postLikes)
       .where(and(eq(schema.postLikes.postId, postId), eq(schema.postLikes.userId, userId)));

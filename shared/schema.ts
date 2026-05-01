@@ -16,6 +16,7 @@ export const users = pgTable("users", {
   bio: text("bio"),
   location: text("location"),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  isAdmin: boolean("is_admin").notNull().default(false),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
