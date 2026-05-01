@@ -90,8 +90,8 @@ export default function Landing() {
       <section className="relative overflow-hidden">
         {/* Background video — controls suppressed at every level */}
         <div
-          className="absolute inset-0 z-0 bg-neutral-900"
-          style={{ overflow: "hidden", userSelect: "none" }}
+          className="absolute inset-0 z-0"
+          style={{ overflow: "hidden", userSelect: "none", backgroundImage: "url('/videos/hero_showreel_poster.jpg')", backgroundSize: "cover", backgroundPosition: "center" }}
         >
           {/* Video sits at z-index 0, pointer-events disabled */}
           <video
