@@ -748,11 +748,12 @@ export default function Feed() {
         return mock;
       }
     },
-    staleTime: 2 * 60 * 1000,   // treat cached data as fresh for 2 mins — matches server TTL
-    gcTime: 10 * 60 * 1000,      // keep in memory for 10 mins so returning to the tab is instant
+    staleTime: 60 * 1000,        // treat cached data as fresh for 60s
+    gcTime: 5 * 60 * 1000,       // keep in memory for 5 mins
     refetchInterval: false,
+    refetchOnMount: true,         // always check for new posts when navigating to feed
     retry: false,
-    refetchOnWindowFocus: false, // don't re-fetch just because the user switched tabs
+    refetchOnWindowFocus: false,  // don't re-fetch just because the user switched tabs
   });
 
   const loadMore = useCallback(async () => {
