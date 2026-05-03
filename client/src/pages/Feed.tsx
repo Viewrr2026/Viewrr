@@ -748,8 +748,11 @@ export default function Feed() {
         return mock;
       }
     },
+    staleTime: 2 * 60 * 1000,   // treat cached data as fresh for 2 mins — matches server TTL
+    gcTime: 10 * 60 * 1000,      // keep in memory for 10 mins so returning to the tab is instant
     refetchInterval: false,
     retry: false,
+    refetchOnWindowFocus: false, // don't re-fetch just because the user switched tabs
   });
 
   const loadMore = useCallback(async () => {

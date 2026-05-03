@@ -552,8 +552,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ── Feed cache (30-second TTL, keyed by viewerUserId|offset|limit) ───────────
-  const feedCache = new Map<string, { data: any; expiresAt: number }>();
+  // ── Feed cache (2-min TTL, keyed by viewerUserId|offset|limit) ─────────────
+  const feedCache = new Map<string, { data: any; etag: string; expiresAt: number }>();
   function bustFeedCache() { feedCache.clear(); }
 
   // Feed
@@ -563,11 +563,25 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const viewerUserId = req.query.viewerUserId ? Number(req.query.viewerUserId) : undefined;
     const cacheKey = `${viewerUserId ?? "anon"}|${offset}|${limit}`;
     const cached = feedCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
+    const now = Date.now();
+
+    if (cached && cached.expiresAt > now) {
+      // ETag support — if client already has this version, return 304
+      if (req.headers["if-none-match"] === cached.etag) {
+        res.set("ETag", cached.etag);
+        res.set("Cache-Control", "public, max-age=120, stale-while-revalidate=60");
+        return res.status(304).end();
+      }
+      res.set("ETag", cached.etag);
+      res.set("Cache-Control", "public, max-age=120, stale-while-revalidate=60");
       return res.json(cached.data);
     }
+
     const data = await storage.getFeedPosts(limit, offset, viewerUserId);
-    feedCache.set(cacheKey, { data, expiresAt: Date.now() + 30_000 });
+    const etag = `"feed-${cacheKey}-${now}"`;
+    feedCache.set(cacheKey, { data, etag, expiresAt: now + 120_000 });
+    res.set("ETag", etag);
+    res.set("Cache-Control", "public, max-age=120, stale-while-revalidate=60");
     res.json(data);
   });
 

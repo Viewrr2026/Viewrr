@@ -557,19 +557,38 @@ class Storage implements IStorage {
 
   // ── Feed ─────────────────────────────────────────────────────────────────
   async getFeedPosts(limit = 20, offset = 0, viewerUserId?: number): Promise<PostWithUser[]> {
-    const allPosts = await db.select().from(schema.posts);
-    const sorted = allPosts
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(offset, offset + limit);
+    // Single JOIN query — fetches posts + users in one round trip
+    const rows = await db
+      .select()
+      .from(schema.posts)
+      .innerJoin(schema.users, eq(schema.posts.userId, schema.users.id))
+      .orderBy(desc(schema.posts.createdAt))
+      .limit(limit)
+      .offset(offset);
 
-    const results: PostWithUser[] = [];
-    for (const post of sorted) {
-      const user = await this.getUser(post.userId);
-      if (!user) continue;
-      const liked = viewerUserId ? await this.isLiked(post.id, viewerUserId) : false;
-      results.push({ post, user, liked });
+    if (rows.length === 0) return [];
+
+    // Batch-fetch likes for the viewer in one query if needed
+    let likedPostIds = new Set<number>();
+    if (viewerUserId) {
+      const postIds = rows.map(r => r.posts.id);
+      const likes = await db
+        .select({ postId: schema.postLikes.postId })
+        .from(schema.postLikes)
+        .where(
+          and(
+            eq(schema.postLikes.userId, viewerUserId),
+            drizzleSql`${schema.postLikes.postId} = ANY(${postIds})`
+          )
+        );
+      likedPostIds = new Set(likes.map(l => l.postId));
     }
-    return results;
+
+    return rows.map(r => ({
+      post: r.posts,
+      user: r.users,
+      liked: likedPostIds.has(r.posts.id),
+    }));
   }
 
   async getPost(id: number): Promise<PostWithUser | undefined> {
