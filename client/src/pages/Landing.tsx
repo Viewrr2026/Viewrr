@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Link } from "wouter";
 import { ArrowRight, Sparkles, Play, Star, Shield, Zap, Users, CheckCircle, Video, Camera, Megaphone, Scissors } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -63,8 +63,49 @@ const TESTIMONIALS = [
   },
 ];
 
+const LINE1 = "Hire the creative Freelancer";
+const LINE2 = "You deserve.";
+const SPEED = 42; // ms per character
+
+function useTypewriter() {
+  const [line1, setLine1] = useState("");
+  const [line2, setLine2] = useState("");
+  const [showCursor, setShowCursor] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    let i = 0;
+
+    function tick() {
+      if (cancelled) return;
+      if (i < LINE1.length) {
+        setLine1(LINE1.slice(0, i + 1));
+        i++;
+        setTimeout(tick, SPEED);
+      } else if (i === LINE1.length) {
+        i++;
+        setTimeout(tick, 200); // pause between lines
+      } else {
+        const j = i - LINE1.length - 1;
+        if (j < LINE2.length) {
+          setLine2(LINE2.slice(0, j + 1));
+          i++;
+          setTimeout(tick, SPEED + 10);
+        } else {
+          setTimeout(() => { if (!cancelled) setShowCursor(false); }, 1500);
+        }
+      }
+    }
+    tick();
+    return () => { cancelled = true; };
+  }, []);
+
+  return { line1, line2, showCursor };
+}
+
 export default function Landing() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const { line1, line2, showCursor } = useTypewriter();
 
   useEffect(() => {
     const v = videoRef.current;
@@ -130,8 +171,14 @@ export default function Landing() {
         <div className="relative z-10 mx-auto max-w-7xl px-6 py-24 md:py-32">
           <div className="max-w-2xl">
             <h1 className="text-5xl md:text-6xl lg:text-7xl font-bold leading-[1.05] mb-6 mt-[-8px]">
-              Hire the creative Freelancer<br />
-              <span className="gradient-text">You deserve.</span>
+              {line1}<br />
+              <span className="gradient-text">{line2}</span>
+              {showCursor && (
+                <span
+                  className="inline-block align-middle rounded-sm bg-[#FF5A1F] animate-pulse"
+                  style={{ width: "3px", height: "0.85em", marginLeft: "4px" }}
+                />
+              )}
             </h1>
 
             <p className="text-lg text-muted-foreground mb-8 max-w-xl leading-relaxed">
