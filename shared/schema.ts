@@ -309,3 +309,16 @@ export const deletedPosts = pgTable("deleted_posts", {
   deletedAt: text("deleted_at").notNull(),
 });
 export type DeletedPost = typeof deletedPosts.$inferSelect;
+
+// ─── Deliverables (WIP file sharing) ─────────────────────────────────────────
+export const deliverables = pgTable("deliverables", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  url: text("url").notNull(),
+  label: text("label").notNull(),
+  platform: text("platform").notNull(),
+  embedUrl: text("embed_url").notNull(),
+  createdBy: integer("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+export type Deliverable = typeof deliverables.$inferSelect;

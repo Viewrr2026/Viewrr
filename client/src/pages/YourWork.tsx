@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import LoginModal from "@/components/LoginModal";
 import SignupModal from "@/components/SignupModal";
 import MeetingSection from "@/components/MeetingSection";
+import DeliverablesSection from "@/components/DeliverablesSection";
 import {
   CheckCircle2, Circle, Clock, Briefcase, MessageSquare,
   ArrowRight, ChevronDown, ChevronUp, X, Expand,
@@ -367,6 +368,15 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                   otherName={otherPerson.name}
                 />
               </div>
+
+              {/* Work delivery — active projects */}
+              {pw.project.status !== "completed" && (
+                <DeliverablesSection
+                  projectId={pw.project.id}
+                  userId={currentUserId}
+                  isFreelancer={isFreelancer}
+                />
+              )}
 
               {/* Visibility toggle — completed projects, client only */}
               {pw.project.status === "completed" && isClient && (

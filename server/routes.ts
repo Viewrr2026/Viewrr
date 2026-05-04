@@ -818,6 +818,32 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  // ─── Deliverables ──────────────────────────────────────────────────────────
+  app.get("/api/projects/:id/deliverables", async (req, res) => {
+    const list = await storage.getDeliverables(Number(req.params.id));
+    res.json(list);
+  });
+
+  app.post("/api/projects/:id/deliverables", async (req, res) => {
+    const { url, label, platform, embedUrl, createdBy } = req.body;
+    if (!url || !label || !platform || !embedUrl || !createdBy) {
+      return res.status(400).json({ error: "Missing fields" });
+    }
+    const d = await storage.addDeliverable({
+      projectId: Number(req.params.id),
+      url, label, platform, embedUrl,
+      createdBy: Number(createdBy),
+    });
+    res.json(d);
+  });
+
+  app.delete("/api/deliverables/:id", async (req, res) => {
+    const { userId } = req.body;
+    const ok = await storage.deleteDeliverable(Number(req.params.id), Number(userId));
+    if (!ok) return res.status(403).json({ error: "Not allowed" });
+    res.json({ success: true });
+  });
+
   // ─── Briefs ────────────────────────────────────────────────────────────────
   app.get("/api/briefs", async (req, res) => {
     const { category, location } = req.query;

@@ -647,6 +647,32 @@ class Storage implements IStorage {
     return post.userId;
   }
 
+  // ── Deliverables ────────────────────────────────────────────────────────
+  async getDeliverables(projectId: number): Promise<schema.Deliverable[]> {
+    return db.select().from(schema.deliverables)
+      .where(eq(schema.deliverables.projectId, projectId))
+      .orderBy(desc(schema.deliverables.id));
+  }
+
+  async addDeliverable(data: {
+    projectId: number; url: string; label: string;
+    platform: string; embedUrl: string; createdBy: number;
+  }): Promise<schema.Deliverable> {
+    const rows = await db.insert(schema.deliverables).values({
+      ...data,
+      createdAt: new Date().toISOString(),
+    }).returning();
+    return rows[0];
+  }
+
+  async deleteDeliverable(id: number, userId: number): Promise<boolean> {
+    const rows = await db.select().from(schema.deliverables).where(eq(schema.deliverables.id, id));
+    const d = rows[0];
+    if (!d || d.createdBy !== userId) return false;
+    await db.delete(schema.deliverables).where(eq(schema.deliverables.id, id));
+    return true;
+  }
+
   async getDeletedPosts(): Promise<schema.DeletedPost[]> {
     const rows = await db.select().from(schema.deletedPosts).orderBy(drizzleSql`${schema.deletedPosts.id} DESC`);
     return rows;
