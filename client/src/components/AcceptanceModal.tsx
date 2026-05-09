@@ -1,0 +1,505 @@
+// AcceptanceModal — shown when a client accepts a freelancer's interest.
+// Client can send a welcome message and optionally propose a meeting time
+// before the acceptance is confirmed and the project goes live.
+
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
+import { useLocation } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import {
+  CheckCircle2, Calendar, MessageSquare, ArrowRight,
+  Zap, X, FolderOpen, Video, PoundSterling, AlertCircle,
+} from "lucide-react";
+
+// ── Brief Booked confirmation overlay (separate from the compose modal) ──────
+function BriefBookedPopup({ onClose, onGoToWork }: { onClose: () => void; onGoToWork: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(6px)" }}
+    >
+      <div className="relative bg-background border border-border rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden text-center px-8 py-10">
+        {/* Close X — user MUST click this or the CTA to dismiss */}
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <X size={14} />
+        </button>
+
+        {/* Tick */}
+        <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-5">
+          <CheckCircle2 size={36} className="text-primary" />
+        </div>
+
+        {/* Headline */}
+        <h2 className="text-2xl font-extrabold tracking-tight uppercase mb-2">Brief Booked</h2>
+
+        {/* Sub-copy */}
+        <p className="text-sm text-muted-foreground mb-8">
+          Your project can be found in the <span className="font-semibold text-foreground">'Your Work'</span> tab.
+        </p>
+
+        <div className="flex flex-col gap-2">
+          <Button
+            className="w-full bg-primary hover:bg-primary/90 text-white rounded-full gap-2"
+            onClick={onGoToWork}
+          >
+            <FolderOpen size={14} /> Go to Your Work
+          </Button>
+          <Button variant="ghost" className="w-full rounded-full text-muted-foreground" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface AcceptanceModalProps {
+  interest: any;           // the BriefInterest being accepted
+  clientName: string;
+  clientAvatar?: string;
+  clientId: number;
+  onClose: () => void;
+  onAccepted: () => void;  // called after everything is confirmed
+}
+
+export default function AcceptanceModal({
+  interest,
+  clientName,
+  clientAvatar,
+  clientId,
+  onClose,
+  onAccepted,
+}: AcceptanceModalProps) {
+  const [welcomeMessage, setWelcomeMessage] = useState(
+    `Hi ${interest.freelancerName?.split(" ")[0] ?? "there"}, excited to work together on "${interest.briefTitle}"! Looking forward to getting started.`
+  );
+  const [meetingOption, setMeetingOption] = useState<"none" | "instant" | "scheduled">("none");
+  const [meetTitle, setMeetTitle] = useState("");
+  const [meetDateTime, setMeetDateTime] = useState("");
+  const [showBooked, setShowBooked] = useState(false);
+  const [, navigate] = useLocation();
+
+  // Counter-offer state
+  const [counterMode, setCounterMode] = useState(false);
+  const [counterValue, setCounterValue] = useState("");
+
+  const proposedPricePence: number | null = (interest as any).proposedPricePence ?? null;
+  const priceBreakdown: string | null = (interest as any).priceBreakdown ?? null;
+
+  const formatGBP = (pence: number) =>
+    `£${(pence / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // Min datetime: now + 15 min
+  const minDateTime = new Date(Date.now() + 15 * 60 * 1000)
+    .toISOString()
+    .slice(0, 16);
+
+  // 1) Accept the interest + create project (server-side)
+  const acceptMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/interests/${interest.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "accepted",
+          clientName,
+          clientAvatar,
+        }),
+      });
+      if (!res.ok) throw new Error("Accept failed");
+      return res.json();
+    },
+  });
+
+  // 2) Send welcome message into the interest thread
+  const messageMutation = useMutation({
+    mutationFn: async (text: string) => {
+      const res = await fetch("/api/interest-messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          interestId: interest.id,
+          senderId: clientId,
+          text,
+        }),
+      });
+      if (!res.ok) throw new Error("Message failed");
+      return res.json();
+    },
+  });
+
+  // 3) Create the meeting card (after project exists)
+  const meetingMutation = useMutation({
+    mutationFn: async ({ projectId, isInstant, scheduledAt, title }: {
+      projectId: number;
+      isInstant: boolean;
+      scheduledAt?: string;
+      title?: string;
+    }) => {
+      const res = await fetch(`/api/projects/${projectId}/meetings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          createdBy: clientId,
+          isInstant,
+          scheduledAt,
+          title: title || (isInstant ? "Intro call" : "Kick-off meeting"),
+        }),
+      });
+      if (!res.ok) throw new Error("Meeting creation failed");
+      return res.json();
+    },
+  });
+
+  // 4) Send counter-offer
+  const counterMutation = useMutation({
+    mutationFn: async (pence: number) => {
+      const res = await fetch(`/api/interests/${interest.id}/counter`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counterOfferPence: pence }),
+      });
+      if (!res.ok) throw new Error("Counter failed");
+      return res.json();
+    },
+  });
+
+  const isPending = acceptMutation.isPending || messageMutation.isPending || meetingMutation.isPending || counterMutation.isPending;
+
+  async function handleSendCounter() {
+    if (!counterValue) return;
+    const pence = Math.round(parseFloat(counterValue) * 100);
+    if (!pence || pence < 1) return;
+    try {
+      await counterMutation.mutateAsync(pence);
+      queryClient.invalidateQueries({ queryKey: ["/api/interests"] });
+      onClose();
+    } catch (e) {
+      console.error("Counter-offer error:", e);
+    }
+  }
+
+  async function handleConfirm() {
+    try {
+      // Step 1: Accept + create project
+      await acceptMutation.mutateAsync();
+
+      // Step 2: Send welcome message
+      if (welcomeMessage.trim()) {
+        await messageMutation.mutateAsync(welcomeMessage.trim());
+      }
+
+      // Step 3: Fetch the newly created project to get its ID for meeting
+      if (meetingOption !== "none") {
+        let projectId: number | null = null;
+        try {
+          const res = await fetch(`/api/projects?userId=${clientId}`);
+          if (res.ok) {
+            const projects: any[] = await res.json();
+            // Find the project matching this interest
+            const found = projects.find(
+              (pw: any) => (pw.project ?? pw).interestId === interest.id
+            );
+            projectId = found ? (found.project ?? found).id : null;
+          }
+        } catch {}
+
+        if (projectId) {
+          if (meetingOption === "instant") {
+            const meeting = await meetingMutation.mutateAsync({
+              projectId,
+              isInstant: true,
+              title: "Intro call",
+            });
+            // Open the meet link immediately for the client
+            window.open(meeting.meetLink, "_blank", "noopener,noreferrer");
+          } else if (meetingOption === "scheduled" && meetDateTime) {
+            await meetingMutation.mutateAsync({
+              projectId,
+              isInstant: false,
+              scheduledAt: new Date(meetDateTime).toISOString(),
+              title: meetTitle.trim() || "Kick-off meeting",
+            });
+          }
+        }
+      }
+
+      // Invalidate caches
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", clientId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/briefs"] });
+
+      // Close compose modal, show Brief Booked popup
+      onClose();
+      setShowBooked(true);
+    } catch (e) {
+      console.error("Acceptance flow error:", e);
+    }
+  }
+
+  // Render Brief Booked popup (outside/above the compose modal)
+  if (showBooked) {
+    return (
+      <BriefBookedPopup
+        onClose={() => { setShowBooked(false); onAccepted(); }}
+        onGoToWork={() => { setShowBooked(false); onAccepted(); navigate("/your-work"); }}
+      />
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="relative bg-background border border-border rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden">
+
+        {/* Close */}
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors z-10"
+        >
+          <X size={14} />
+        </button>
+
+        {/* Compose screen */}
+        <>
+            {/* Header */}
+            <div className="px-6 pt-6 pb-4 border-b border-border">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center">
+                  <CheckCircle2 size={18} className="text-primary" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-base leading-tight">Accept &amp; kick off project</h2>
+                  <p className="text-xs text-muted-foreground">{interest.briefTitle}</p>
+                </div>
+              </div>
+
+              {/* Freelancer pill */}
+              <div className="flex items-center gap-2 bg-muted/50 rounded-xl px-3 py-2.5">
+                <Avatar className="w-7 h-7">
+                  <AvatarImage src={interest.freelancerAvatar || undefined} />
+                  <AvatarFallback className="bg-primary text-white text-[10px]">
+                    {interest.freelancerName?.slice(0, 2).toUpperCase() ?? "??"}
+                  </AvatarFallback>
+                </Avatar>
+                <div>
+                  <p className="text-xs font-semibold">{interest.freelancerName}</p>
+                  <p className="text-[10px] text-muted-foreground">Freelancer</p>
+                </div>
+                <ArrowRight size={12} className="text-muted-foreground mx-1" />
+                <div className="text-[10px] text-muted-foreground">
+                  Project goes live · Brief removed from board
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
+
+              {/* ── Proposed price card ── */}
+              {proposedPricePence !== null && (
+                <div className="rounded-2xl border border-primary/25 bg-primary/5 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-primary/15">
+                    <div className="flex items-center gap-2">
+                      <PoundSterling size={14} className="text-primary" />
+                      <p className="text-xs font-bold uppercase tracking-wide text-primary">Freelancer&apos;s proposed price</p>
+                    </div>
+                    <p className="text-lg font-extrabold tracking-tight" style={{ color: "#FF5A1F" }}>
+                      {formatGBP(proposedPricePence)}
+                    </p>
+                  </div>
+                  {priceBreakdown && (
+                    <div className="px-4 py-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">Breakdown</p>
+                      <p className="text-xs text-foreground leading-relaxed whitespace-pre-line">{priceBreakdown}</p>
+                    </div>
+                  )}
+
+                  {/* Counter-offer toggle */}
+                  {!counterMode ? (
+                    <div className="px-4 pb-3">
+                      <button
+                        onClick={() => setCounterMode(true)}
+                        className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                      >
+                        Want to counter-offer instead?
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="px-4 pb-4 space-y-2">
+                      <p className="text-xs font-semibold text-foreground">Your counter-offer</p>
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">£</span>
+                          <Input
+                            type="number"
+                            min="1"
+                            step="0.01"
+                            placeholder="0.00"
+                            value={counterValue}
+                            onChange={e => setCounterValue(e.target.value)}
+                            className="pl-7 h-8 text-sm"
+                          />
+                        </div>
+                        <button
+                          onClick={() => setCounterMode(false)}
+                          className="text-xs text-muted-foreground hover:text-foreground px-2 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground flex items-start gap-1">
+                        <AlertCircle size={10} className="mt-0.5 flex-shrink-0" />
+                        Sending a counter-offer will notify the freelancer. The project won&apos;t go live until they accept.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Welcome message */}
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-2 uppercase tracking-wide">
+                  <MessageSquare size={11} /> Welcome message
+                </label>
+                <Textarea
+                  value={welcomeMessage}
+                  onChange={(e) => setWelcomeMessage(e.target.value)}
+                  placeholder="Say something to kick things off…"
+                  className="resize-none text-sm min-h-[80px]"
+                  maxLength={500}
+                />
+                <p className="text-[10px] text-muted-foreground mt-1 text-right">
+                  {welcomeMessage.length}/500
+                </p>
+              </div>
+
+              {/* Meeting proposal */}
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 mb-3 uppercase tracking-wide">
+                  <Video size={11} /> Propose a meeting <span className="font-normal normal-case">(optional)</span>
+                </label>
+
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  {/* No meeting */}
+                  <button
+                    onClick={() => setMeetingOption("none")}
+                    className={`rounded-xl border p-3 text-xs text-center transition-all ${
+                      meetingOption === "none"
+                        ? "border-primary/60 bg-primary/5 text-primary font-semibold"
+                        : "border-border text-muted-foreground hover:border-primary/30"
+                    }`}
+                  >
+                    <MessageSquare size={14} className="mx-auto mb-1.5" />
+                    Messages only
+                  </button>
+                  {/* Instant call */}
+                  <button
+                    onClick={() => setMeetingOption("instant")}
+                    className={`rounded-xl border p-3 text-xs text-center transition-all ${
+                      meetingOption === "instant"
+                        ? "border-primary/60 bg-primary/5 text-primary font-semibold"
+                        : "border-border text-muted-foreground hover:border-primary/30"
+                    }`}
+                  >
+                    <Zap size={14} className="mx-auto mb-1.5" />
+                    Start call now
+                  </button>
+                  {/* Scheduled */}
+                  <button
+                    onClick={() => setMeetingOption("scheduled")}
+                    className={`rounded-xl border p-3 text-xs text-center transition-all ${
+                      meetingOption === "scheduled"
+                        ? "border-primary/60 bg-primary/5 text-primary font-semibold"
+                        : "border-border text-muted-foreground hover:border-primary/30"
+                    }`}
+                  >
+                    <Calendar size={14} className="mx-auto mb-1.5" />
+                    Schedule one
+                  </button>
+                </div>
+
+                {/* Scheduled form */}
+                {meetingOption === "scheduled" && (
+                  <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-3">
+                    <Input
+                      placeholder="Meeting title (optional)"
+                      value={meetTitle}
+                      onChange={(e) => setMeetTitle(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                    <Input
+                      type="datetime-local"
+                      min={minDateTime}
+                      value={meetDateTime}
+                      onChange={(e) => setMeetDateTime(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                    {meetDateTime && (
+                      <p className="text-[10px] text-muted-foreground">
+                        A Google Meet link will be created and sent to {interest.freelancerName?.split(" ")[0]}.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {meetingOption === "instant" && (
+                  <p className="text-[10px] text-muted-foreground bg-muted/30 rounded-xl border border-border px-3 py-2">
+                    A Google Meet room will open immediately when you confirm. {interest.freelancerName?.split(" ")[0]} will find the link in the project.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 pb-6 pt-2 border-t border-border flex gap-3">
+              {counterMode ? (
+                <>
+                  <Button
+                    className="flex-1 bg-primary hover:bg-primary/90 text-white rounded-full gap-2"
+                    onClick={handleSendCounter}
+                    disabled={!counterValue || counterMutation.isPending}
+                  >
+                    {counterMutation.isPending ? "Sending…" : "Send counter-offer"}
+                  </Button>
+                  <Button variant="outline" className="rounded-full px-5" onClick={() => setCounterMode(false)}>
+                    Back
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    className="flex-1 bg-primary hover:bg-primary/90 text-white rounded-full gap-2"
+                    onClick={handleConfirm}
+                    disabled={
+                      isPending ||
+                      (meetingOption === "scheduled" && !meetDateTime)
+                    }
+                  >
+                    {isPending ? (
+                      "Confirming…"
+                    ) : (
+                      <>
+                        <CheckCircle2 size={14} /> Confirm &amp; go live
+                      </>
+                    )}
+                  </Button>
+                  <Button variant="outline" className="rounded-full px-5" onClick={onClose}>
+                    Cancel
+                  </Button>
+                </>
+              )}
+            </div>
+        </>
+      </div>
+    </div>
+  );
+}

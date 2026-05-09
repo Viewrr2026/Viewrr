@@ -1,0 +1,678 @@
+import { useParams, Link } from "wouter";
+import { useQuery } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Star, MapPin, Briefcase, Clock, ExternalLink, MessageSquare, Bookmark, BookmarkCheck, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users } from "lucide-react";
+import VideoEmbed from "@/components/VideoEmbed";
+import { parseVideoUrl } from "@/lib/videoEmbed";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/components/AuthProvider";
+import { useToast } from "@/hooks/use-toast";
+import { useState, useEffect } from "react";
+import { connectionCount } from "@/lib/storage";
+
+type ConnStatus = 'none' | 'pending_sent' | 'pending_received' | 'connected';
+
+interface ProfileData {
+  profile: any;
+  user: any;
+  reviews: any[];
+  isClientStub?: boolean;
+}
+
+function Stars({ rating }: { rating: number }) {
+  return (
+    <div className="flex gap-0.5">
+      {[1, 2, 3, 4, 5].map(i => (
+        <Star
+          key={i}
+          size={14}
+          className={i <= Math.round(rating) ? "star-filled fill-current" : "star-empty"}
+        />
+      ))}
+    </div>
+  );
+}
+
+export default function ProfilePage() {
+  const { id } = useParams<{ id: string }>();
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgText, setMsgText] = useState("");
+  const [isSaved, setIsSaved] = useState(false);
+  const [reelOpen, setReelOpen] = useState(false);
+  const [reviewsOpen, setReviewsOpen] = useState(false);
+  const profileIdNum = Number(id);
+  const [connStatus, setConnStatus] = useState<ConnStatus>('none');
+  const [connRequestId, setConnRequestId] = useState<number | null>(null);
+  const [connLoading, setConnLoading] = useState(false);
+  // For display count (seeded; real count via API someday)
+  const connCount = connectionCount(profileIdNum);
+
+  // ── Profile data query — MUST be declared before any useEffect that reads `data` ──
+  const { data, isLoading, isError } = useQuery<ProfileData>({
+    queryKey: ["/api/profiles", id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/profiles/${id}`);
+        if (!res.ok) return null;
+        return res.json();
+      } catch {
+        return null;
+      }
+    },
+  });
+
+  // Load connection status once we know both user IDs
+  useEffect(() => {
+    if (!user || !data?.user?.id || user.id === data.user.id) return;
+    apiRequest("GET", `/api/connections/status?userA=${user.id}&userB=${data.user.id}`)
+      .then(r => r.json())
+      .then(res => {
+        if (res.status === 'accepted') setConnStatus('connected');
+        else if (res.status === 'pending') {
+          setConnStatus(res.senderId === user.id ? 'pending_sent' : 'pending_received');
+          setConnRequestId(res.requestId);
+        } else setConnStatus('none');
+      })
+      .catch(() => {});
+  }, [user?.id, data?.user?.id]);
+
+  async function handleConnect() {
+    if (!user) { toast({ title: "Sign in to connect" }); return; }
+    if (connLoading) return;
+    const targetUserId = data?.user?.id;
+    if (!targetUserId) return;
+    setConnLoading(true);
+    try {
+      if (connStatus === 'connected') {
+        await apiRequest("DELETE", "/api/connections", { userA: user.id, userB: targetUserId });
+        setConnStatus('none');
+        setConnRequestId(null);
+        toast({ title: `Disconnected from ${data?.user.name}` });
+      } else if (connStatus === 'pending_sent') {
+        toast({ title: "Request pending", description: `Waiting for ${data?.user.name} to accept` });
+      } else if (connStatus === 'pending_received') {
+        await apiRequest("POST", "/api/connections/respond", {
+          requestId: connRequestId,
+          responderId: user.id,
+          senderId: targetUserId,
+          status: 'accepted',
+        });
+        setConnStatus('connected');
+        toast({ title: `Connected with ${data?.user.name}` });
+      } else {
+        const res = await apiRequest("POST", "/api/connections/request", {
+          senderId: user.id,
+          recipientId: targetUserId,
+        });
+        const d = await res.json();
+        setConnStatus('pending_sent');
+        setConnRequestId(d.id ?? null);
+        toast({ title: `Connection request sent to ${data?.user.name}` });
+      }
+    } catch {
+      toast({ title: "Something went wrong", variant: "destructive" });
+    } finally {
+      setConnLoading(false);
+    }
+  }
+
+  // Fire a profile view as soon as the page loads (once per mount)
+  useEffect(() => {
+    if (!id) return;
+    fetch(`/api/profile-views/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ viewerId: user?.id ?? null }),
+    }).catch(() => {}); // silent — never block the page
+  }, [id]);
+
+  const specialisms: string[] = data ? JSON.parse(data.profile.specialisms || "[]") : [];
+  const skills: string[] = data ? JSON.parse(data.profile.skills || "[]") : [];
+  const badges: string[] = data ? JSON.parse(data.profile.badges || "[]") : [];
+  const portfolio: any[] = data ? JSON.parse(data.profile.portfolioItems || "[]") : [];
+  const socialLinks: Record<string, string> = data ? JSON.parse(data.profile.socialLinks || "{}") : {};
+
+  const availClass: Record<string, string> = {
+    available: "badge-available",
+    busy: "badge-busy",
+    unavailable: "badge-unavail",
+  };
+  const availLabel: Record<string, string> = {
+    available: "Available for work",
+    busy: "Currently busy",
+    unavailable: "Not available",
+  };
+
+  async function toggleSave() {
+    if (!user) { toast({ title: "Sign in to save creatives" }); return; }
+    const res = await apiRequest("POST", "/api/saved/toggle", { clientId: user.id, profileId: Number(id) });
+    const d = await res.json();
+    setIsSaved(d.saved);
+    toast({ title: d.saved ? "Saved to your list" : "Removed from saved" });
+  }
+
+  async function sendMessage(e: React.FormEvent) {
+    e.preventDefault();
+    if (!user || !msgText.trim()) return;
+    try {
+      await apiRequest("POST", "/api/messages", { fromId: user.id, toId: data?.user.id, content: msgText });
+      toast({ title: "Message sent!" });
+      setMsgOpen(false);
+      setMsgText("");
+    } catch {
+      toast({ title: "Failed to send message", variant: "destructive" });
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background">
+        <div className="mx-auto max-w-6xl px-6 py-10">
+          <div className="h-8 w-48 skeleton rounded mb-8" />
+          <div className="grid lg:grid-cols-[2fr,1fr] gap-8">
+            <div className="space-y-4">
+              <div className="h-64 skeleton rounded-2xl" />
+              <div className="h-40 skeleton rounded-2xl" />
+            </div>
+            <div className="h-80 skeleton rounded-2xl" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data || isError) return (
+    <div className="min-h-screen bg-background">
+      <div className="p-20 text-center text-muted-foreground">
+        <p className="text-lg font-semibold mb-2">Profile not found</p>
+        <Link href="/marketplace" className="text-primary underline text-sm">Back to marketplace</Link>
+      </div>
+    </div>
+  );
+
+  const { profile, user: freelancer, reviews, isClientStub } = data;
+
+  // ── Client stub: no freelancer profile row exists — render a simple client card ──
+  if (isClientStub) {
+    const clientUser = freelancer;
+    return (
+      <div className="min-h-screen bg-background">
+        <div className="mx-auto max-w-3xl px-6 py-8">
+          <Link href="/marketplace" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-6">
+            <ChevronLeft size={16} /> Back
+          </Link>
+
+          <div className="bg-card border border-border rounded-2xl overflow-hidden">
+            {/* Banner */}
+            {clientUser.banner ? (
+              <div className="h-28 w-full bg-cover bg-center" style={{ backgroundImage: `url(${clientUser.banner})` }} />
+            ) : (
+              <div className="h-20 w-full bg-gradient-to-r from-primary/20 via-primary/10 to-background" />
+            )}
+            <div className="px-6 pb-6 pt-4">
+              <div className="flex items-end gap-4 -mt-12 mb-4">
+                <Avatar className="w-20 h-20 ring-4 ring-card shadow-lg flex-shrink-0">
+                  <AvatarImage src={clientUser.avatar || undefined} />
+                  <AvatarFallback className="bg-primary text-white text-2xl">
+                    {(clientUser.name || '?').slice(0, 2).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="mb-2 px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                  Client
+                </span>
+              </div>
+
+              <h1 className="text-2xl font-bold">{clientUser.name}</h1>
+              {clientUser.headline && (
+                <p className="text-base text-foreground/80 mt-0.5">{clientUser.headline}</p>
+              )}
+              {clientUser.location && (
+                <p className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
+                  <MapPin size={12} /> {clientUser.location}
+                </p>
+              )}
+              {clientUser.bio && (
+                <p className="mt-4 text-muted-foreground leading-relaxed">{clientUser.bio}</p>
+              )}
+
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground mt-4">
+                <Users size={13} /> {connCount} connections
+              </div>
+
+              <div className="flex gap-3 mt-5 flex-wrap">
+                <Button
+                  className="bg-primary hover:bg-primary/90 text-white gap-2"
+                  onClick={() => setMsgOpen(true)}
+                  data-testid="btn-message"
+                >
+                  <MessageSquare size={16} /> Send message
+                </Button>
+                <Button
+                  variant="outline"
+                  className={`gap-2 transition-all ${
+                    connStatus === 'connected' ? "border-primary/40 text-primary bg-primary/5 hover:bg-primary/10"
+                    : connStatus === 'pending_sent' ? "border-amber-300 text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400"
+                    : connStatus === 'pending_received' ? "border-primary/50 text-primary bg-primary/5"
+                    : ""
+                  }`}
+                  onClick={handleConnect}
+                  disabled={connLoading}
+                  data-testid="btn-connect"
+                >
+                  {connStatus === 'connected' ? <UserCheck size={16} className="text-primary" />
+                   : connStatus === 'pending_sent' ? <Clock size={16} />
+                   : <UserPlus size={16} />}
+                  {connStatus === 'connected' ? "Connected"
+                   : connStatus === 'pending_sent' ? "Pending"
+                   : connStatus === 'pending_received' ? "Accept Request"
+                   : "Connect"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Message dialog */}
+        <Dialog open={msgOpen} onOpenChange={v => !v && setMsgOpen(false)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader><DialogTitle>Message {clientUser.name}</DialogTitle></DialogHeader>
+            {!user ? (
+              <p className="text-sm text-muted-foreground">Please sign in to send a message.</p>
+            ) : (
+              <form onSubmit={async e => {
+                e.preventDefault();
+                if (!msgText.trim()) return;
+                try {
+                  await apiRequest("POST", "/api/messages", { fromId: user.id, toId: clientUser.id, content: msgText });
+                  toast({ title: "Message sent!" });
+                  setMsgOpen(false); setMsgText("");
+                } catch { toast({ title: "Failed to send", variant: "destructive" }); }
+              }} className="space-y-4">
+                <Textarea placeholder="Write a message..." value={msgText} onChange={e => setMsgText(e.target.value)} rows={4} required />
+                <Button type="submit" className="w-full bg-primary hover:bg-primary/90 text-white">Send message</Button>
+              </form>
+            )}
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+
+      <div className="mx-auto max-w-6xl px-6 py-8">
+        {/* Back */}
+        <Link href="/marketplace" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-6">
+          <ChevronLeft size={16} /> Back to marketplace
+        </Link>
+
+        <div className="grid lg:grid-cols-[1fr,320px] gap-8">
+          {/* ── Main content ──────────────────────────────────────────── */}
+          <div className="space-y-6">
+            {/* Profile header card */}
+            <div className="bg-card border border-border rounded-2xl overflow-hidden">
+              {/* Banner */}
+              {freelancer.banner ? (
+                <div
+                  className="h-32 w-full bg-cover bg-center"
+                  style={{ backgroundImage: `url(${freelancer.banner})` }}
+                />
+              ) : (
+                <div className="h-20 w-full bg-gradient-to-r from-primary/20 via-primary/10 to-background" />
+              )}
+              <div className="p-6 md:p-8 pt-4">
+              {/* Avatar floats below banner with spacing — no overlap */}
+              <div className="flex items-end gap-4 -mt-14 mb-4">
+                <Avatar className="w-20 h-20 flex-shrink-0 ring-4 ring-card shadow-lg">
+                  <AvatarImage src={freelancer.avatar || undefined} />
+                  <AvatarFallback className="bg-primary text-white text-2xl">
+                    {(freelancer.name || '?').slice(0, 2).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                {/* Availability badge next to avatar at the bottom of the banner zone */}
+                <div className="ml-auto pb-1">
+                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${availClass[profile.availability]}`}>
+                    {availLabel[profile.availability]}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <h1 className="text-2xl font-bold leading-tight">{freelancer.name}</h1>
+                  {/* Headline — LinkedIn-style, normal weight */}
+                  {(freelancer as any).headline && (
+                    <p className="text-base text-foreground/80 font-normal mt-0.5 leading-snug">
+                      {(freelancer as any).headline}
+                    </p>
+                  )}
+                  {/* Location */}
+                  {freelancer.location && (
+                    <p className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
+                      <MapPin size={12} /> {freelancer.location}
+                    </p>
+                  )}
+                  {/* Specialisms */}
+                  {specialisms.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {specialisms.map(s => (
+                        <span key={s} className="text-xs bg-primary/10 text-primary font-semibold px-2.5 py-0.5 rounded-full">{s}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {/* Stats row */}
+              <div className="flex flex-wrap gap-4 mt-5">
+                <button
+                  onClick={() => reviews.length > 0 && setReviewsOpen(true)}
+                  className={`flex items-center gap-1.5 ${reviews.length > 0 ? 'cursor-pointer hover:opacity-75 transition-opacity' : 'cursor-default'}`}
+                >
+                  <Stars rating={profile.rating || 0} />
+                  <span className="font-bold">{(profile.rating || 0).toFixed(1)}</span>
+                  <span className="text-sm text-muted-foreground underline-offset-2 hover:underline">({profile.reviewCount} reviews)</span>
+                </button>
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Briefcase size={13} />
+                  {profile.projectCount} projects
+                </div>
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Clock size={13} />
+                  {profile.yearsExperience} yrs experience
+                </div>
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Users size={13} />
+                  {connCount} connections
+                </div>
+              </div>
+
+              {/* Badges */}
+              {badges.length > 0 && (
+                <div className="flex gap-2 mt-3">
+                  {badges.map(b => (
+                    <span key={b} className="text-xs bg-primary/10 text-primary rounded-full px-2.5 py-0.5 font-medium">
+                      {b}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Bio */}
+              {freelancer.bio && (
+                <p className="mt-5 text-muted-foreground leading-relaxed">{freelancer.bio}</p>
+              )}
+
+              {/* Social links */}
+              {Object.keys(socialLinks).length > 0 && (
+                <div className="flex gap-3 mt-4">
+                  {socialLinks.instagram && (
+                    <a href={socialLinks.instagram} className="text-muted-foreground hover:text-primary transition-colors">
+                      <Instagram size={18} />
+                    </a>
+                  )}
+                  {socialLinks.linkedin && (
+                    <a href={socialLinks.linkedin} className="text-muted-foreground hover:text-primary transition-colors">
+                      <Linkedin size={18} />
+                    </a>
+                  )}
+                </div>
+              )}
+              </div>{/* /padding wrapper */}
+            </div>
+
+            {/* Tabs */}
+            <Tabs defaultValue="portfolio">
+              <TabsList className="w-full">
+                <TabsTrigger value="portfolio" className="flex-1">Portfolio</TabsTrigger>
+                <TabsTrigger value="reviews" className="flex-1">Reviews ({reviews.length})</TabsTrigger>
+                <TabsTrigger value="skills" className="flex-1">Skills</TabsTrigger>
+              </TabsList>
+
+              {/* Portfolio */}
+              <TabsContent value="portfolio" className="mt-4">
+                {(() => {
+                  // Build display list: portfolioItems (new multi-video format) or fallback to reelUrl
+                  type VideoItem = { url: string; title: string };
+                  let videoItems: VideoItem[] = [];
+                  try { videoItems = JSON.parse(profile.portfolioItems || "[]"); } catch {}
+                  // If no portfolioItems saved yet, fall back to legacy reelUrl
+                  if (videoItems.length === 0 && profile.reelUrl) {
+                    videoItems = [{ url: profile.reelUrl, title: "" }];
+                  }
+                  const validVideos = videoItems.filter(v => v.url && parseVideoUrl(v.url));
+
+                  if (validVideos.length === 0) {
+                    return (
+                      <div className="text-center py-12 text-muted-foreground">
+                        <Video size={32} className="mx-auto mb-3 opacity-40" />
+                        <p className="text-sm">No portfolio videos yet</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-6">
+                      {validVideos.map((v, i) => (
+                        <div key={i} className="space-y-2">
+                          {v.title && (
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                              {v.title}{i === 0 ? " · Featured" : ""}
+                            </p>
+                          )}
+                          {!v.title && i === 0 && (
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Featured</p>
+                          )}
+                          <VideoEmbed url={v.url} className="rounded-2xl" />
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </TabsContent>
+
+              {/* Reviews */}
+              <TabsContent value="reviews" className="mt-4 space-y-4">
+                {reviews.length === 0 ? (
+                  <div className="text-center py-12 text-muted-foreground text-sm">No reviews yet</div>
+                ) : (
+                  reviews.map((r: any) => (
+                    <div key={r.id} className="bg-card border border-border rounded-xl p-5">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={r.clientAvatar || `https://i.pravatar.cc/40?u=${r.clientName}`}
+                            alt={r.clientName}
+                            className="w-9 h-9 rounded-full"
+                          />
+                          <div>
+                            <p className="font-semibold text-sm">{r.clientName}</p>
+                            {r.projectType && <p className="text-xs text-muted-foreground">{r.projectType}</p>}
+                          </div>
+                        </div>
+                        <Stars rating={r.rating} />
+                      </div>
+                      <p className="text-sm text-muted-foreground leading-relaxed">"{r.comment}"</p>
+                    </div>
+                  ))
+                )}
+              </TabsContent>
+
+              {/* Skills */}
+              <TabsContent value="skills" className="mt-4">
+                <div className="bg-card border border-border rounded-xl p-6">
+                  <h3 className="font-semibold mb-4">Core skills</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {skills.map(s => (
+                      <Badge key={s} variant="secondary" className="rounded-full px-3 py-1">{s}</Badge>
+                    ))}
+                  </div>
+                </div>
+              </TabsContent>
+            </Tabs>
+          </div>
+
+          {/* ── Sidebar ──────────────────────────────────────────────── */}
+          <div className="space-y-4">
+            {/* Pricing card */}
+            <div className="bg-card border border-border rounded-2xl p-6 sticky top-20">
+              <div className="space-y-3 mb-5">
+                {profile.dayRate && (
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-3xl font-bold">£{profile.dayRate}</span>
+                    <span className="text-muted-foreground text-sm">/ day</span>
+                  </div>
+                )}
+                {profile.hourlyRate && (
+                  <p className="text-sm text-muted-foreground">£{profile.hourlyRate} per hour</p>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <Button
+                  className="w-full bg-primary hover:bg-primary/90 text-white gap-2"
+                  onClick={() => setMsgOpen(true)}
+                  data-testid="btn-message"
+                >
+                  <MessageSquare size={16} />
+                  Send message
+                </Button>
+                <Button
+                  variant="outline"
+                  className={`w-full gap-2 transition-all ${
+                    connStatus === 'connected' ? "border-primary/40 text-primary bg-primary/5 hover:bg-primary/10"
+                    : connStatus === 'pending_sent' ? "border-amber-300 text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400"
+                    : connStatus === 'pending_received' ? "border-primary/50 text-primary bg-primary/5"
+                    : ""
+                  }`}
+                  onClick={handleConnect}
+                  disabled={connLoading}
+                  data-testid="btn-connect"
+                >
+                  {connStatus === 'connected' ? <UserCheck size={16} className="text-primary" />
+                   : connStatus === 'pending_sent' ? <Clock size={16} />
+                   : <UserPlus size={16} />}
+                  {connStatus === 'connected' ? "Connected"
+                   : connStatus === 'pending_sent' ? "Pending"
+                   : connStatus === 'pending_received' ? "Accept Request"
+                   : "Connect"}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full gap-2"
+                  onClick={toggleSave}
+                  data-testid="btn-save-profile"
+                >
+                  {isSaved ? <BookmarkCheck size={16} className="text-primary" /> : <Bookmark size={16} />}
+                  {isSaved ? "Saved" : "Save"}
+                </Button>
+              </div>
+
+              <div className="mt-5 pt-5 border-t border-border space-y-2.5 text-sm">
+                <div className="flex items-center justify-between text-muted-foreground">
+                  <span>Experience</span>
+                  <span className="text-foreground font-medium">{profile.yearsExperience} years</span>
+                </div>
+                <div className="flex items-center justify-between text-muted-foreground">
+                  <span>Connections</span>
+                  <span className="text-foreground font-medium">{connCount}</span>
+                </div>
+                <div className="flex items-center justify-between text-muted-foreground">
+                  <span>Projects completed</span>
+                  <span className="text-foreground font-medium">{profile.projectCount}</span>
+                </div>
+                <div className="flex items-center justify-between text-muted-foreground">
+                  <span>Rating</span>
+                  <span className="text-foreground font-medium">{(profile.rating || 0).toFixed(1)} / 5.0</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Message dialog */}
+      <Dialog open={msgOpen} onOpenChange={v => !v && setMsgOpen(false)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Message {freelancer.name}</DialogTitle>
+          </DialogHeader>
+          {!user ? (
+            <p className="text-sm text-muted-foreground">Please sign in to send a message.</p>
+          ) : (
+            <form onSubmit={sendMessage} className="space-y-4">
+              <Textarea
+                placeholder="Describe your project briefly..."
+                value={msgText}
+                onChange={e => setMsgText(e.target.value)}
+                rows={4}
+                required
+                data-testid="input-message"
+              />
+              <Button type="submit" className="w-full bg-primary hover:bg-primary/90 text-white" data-testid="btn-send-message">
+                Send message
+              </Button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Reel dialog */}
+      {profile.reelUrl && (
+        <Dialog open={reelOpen} onOpenChange={v => !v && setReelOpen(false)}>
+          <DialogContent className="sm:max-w-3xl p-2">
+            <div className="aspect-video rounded-lg overflow-hidden">
+              <iframe
+                src={profile.reelUrl}
+                className="w-full h-full"
+                allow="autoplay; fullscreen"
+                allowFullScreen
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Reviews modal */}
+      <Dialog open={reviewsOpen} onOpenChange={setReviewsOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Stars rating={profile.rating || 0} />
+              <span>{(profile.rating || 0).toFixed(1)}</span>
+              <span className="text-muted-foreground font-normal text-sm">· {reviews.length} reviews</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="overflow-y-auto flex-1 space-y-4 pr-1 mt-2">
+            {reviews.map((r: any) => (
+              <div key={r.id} className="bg-secondary/50 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2.5">
+                    <img
+                      src={r.clientAvatar || `https://i.pravatar.cc/40?u=${r.clientName}`}
+                      alt={r.clientName}
+                      className="w-8 h-8 rounded-full"
+                    />
+                    <div>
+                      <p className="font-semibold text-sm">{r.clientName}</p>
+                      {r.projectType && <p className="text-xs text-muted-foreground">{r.projectType}</p>}
+                    </div>
+                  </div>
+                  <Stars rating={r.rating} />
+                </div>
+                <p className="text-sm text-muted-foreground leading-relaxed">"{r.comment}"</p>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
