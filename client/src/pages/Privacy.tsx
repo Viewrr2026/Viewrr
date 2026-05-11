@@ -87,7 +87,7 @@ export default function Privacy() {
               <li><strong className="text-foreground">Objection</strong> — object to processing based on legitimate interests</li>
               <li><strong className="text-foreground">Withdraw consent</strong> — where processing is based on consent</li>
             </ul>
-            <p className="text-muted-foreground leading-relaxed mt-3">To exercise any of these rights, contact us at <span className="text-primary">privacy@viewrr.co.uk</span>. You also have the right to lodge a complaint with the Information Commissioner's Office (ICO) at <span className="text-primary">ico.org.uk</span>.</p>
+            <p className="text-muted-foreground leading-relaxed mt-3">To exercise any of these rights, contact us at <span className="text-primary">support@viewrr.co.uk</span>. You also have the right to lodge a complaint with the Information Commissioner's Office (ICO) at <span className="text-primary">ico.org.uk</span>.</p>
           </section>
 
           <section>
@@ -102,7 +102,7 @@ export default function Privacy() {
 
           <section>
             <h2 className="text-xl font-semibold mb-3">11. Contact Us</h2>
-            <p className="text-muted-foreground leading-relaxed">For any privacy-related questions, contact us at <span className="text-primary">privacy@viewrr.co.uk</span>.</p>
+            <p className="text-muted-foreground leading-relaxed">For any privacy-related questions, contact us at <span className="text-primary">support@viewrr.co.uk</span>.</p>
           </section>
 
         </div>

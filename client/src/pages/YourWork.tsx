@@ -11,6 +11,7 @@ import LoginModal from "@/components/LoginModal";
 import SignupModal from "@/components/SignupModal";
 import MeetingSection from "@/components/MeetingSection";
 import DeliverablesSection from "@/components/DeliverablesSection";
+import TimeTracker from "@/components/TimeTracker";
 import CreateProjectModal from "@/components/CreateProjectModal";
 import {
   CheckCircle2, Circle, Clock, Briefcase, MessageSquare,
@@ -837,6 +838,14 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                   </div>
                 )}
               </div>
+
+              {/* Time Tracking */}
+              <TimeTracker
+                projectId={pw.project.id}
+                userId={currentUserId}
+                agencyId={(pw.freelancer as any).agencyId ?? null}
+                isFreelancer={isFreelancer}
+              />
 
               {/* Work delivery — active projects */}
               {pw.project.status !== "completed" || (pw.project as any).paymentStatus === "unpaid" ? (
@@ -1893,7 +1902,7 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
 export default function YourWork() {
   const { user } = useAuth();
   const [openProject, setOpenProject] = useState<ProjectWithDetails | null>(null);
-  const [filter, setFilter] = useState<"all" | "active" | "completed">("all");
+  const [filter, setFilter] = useState<"all" | "active" | "completed" | "none">("none");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [invTab, setInvTab] = useState<"received" | "sent">("received");
   const [reviewTarget, setReviewTarget] = useState<ProjectWithDetails | null>(null);
@@ -2192,7 +2201,7 @@ export default function YourWork() {
             return (
               <button
                 key={s.label}
-                onClick={() => setFilter(isSelected ? "all" : s.key)}
+                onClick={() => setFilter(isSelected ? "none" : s.key)}
                 data-testid={`stat-tile-${s.key}`}
                 className={`relative bg-card border rounded-xl p-4 text-center transition-all group ${
                   isSelected
@@ -2280,13 +2289,13 @@ export default function YourWork() {
         ) : (
           <div className="space-y-8">
             {/* Filter label */}
-            {filter !== "all" && (
+            {filter !== "all" && filter !== "none" && (
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold capitalize">
                   Showing: <span style={{ color: "#FF5A1F" }}>{filter === "active" ? "Active Projects" : "Completed"}</span>
                 </p>
                 <button
-                  onClick={() => setFilter("all")}
+                  onClick={() => setFilter("none")}
                   className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
                 >
                   <X size={11} /> Clear filter
@@ -2294,7 +2303,7 @@ export default function YourWork() {
               </div>
             )}
 
-            {(filter === "all" || filter === "active") && active.length > 0 && (
+            {(filter === "all" || filter === "active" || filter === "none") && active.length > 0 && (
               <section>
                 <h2 className="text-xs font-bold uppercase text-muted-foreground tracking-widest mb-4">
                   Active ({active.length})
@@ -2306,7 +2315,7 @@ export default function YourWork() {
                 </div>
               </section>
             )}
-            {(filter === "all" || filter === "completed") && completed.length > 0 && (
+            {(filter === "all" || filter === "completed" || filter === "none") && completed.length > 0 && (
               <section>
                 <h2 className="text-xs font-bold uppercase text-muted-foreground tracking-widest mb-4">
                   Completed ({completed.length})
@@ -2318,14 +2327,14 @@ export default function YourWork() {
                 </div>
               </section>
             )}
-            {filter !== "all" &&
+            {filter !== "all" && filter !== "none" &&
              ((filter === "active" && active.length === 0) ||
               (filter === "completed" && completed.length === 0)) && (
               <div className="text-center py-16 text-muted-foreground">
                 <Briefcase size={36} className="mx-auto mb-3 opacity-30" />
                 <p className="text-sm">No {filter} projects yet.</p>
                 <button
-                  onClick={() => setFilter("all")}
+                  onClick={() => setFilter("none")}
                   className="mt-3 text-xs text-primary hover:underline"
                 >
                   Show all projects

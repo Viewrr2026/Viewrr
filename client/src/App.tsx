@@ -21,6 +21,9 @@ import Briefs from "@/pages/Briefs";
 import PostBrief from "@/pages/PostBrief";
 import Workspace from "@/pages/Workspace";
 import AdminPanel from "@/pages/AdminPanel";
+import AgencyJoin from "@/pages/AgencyJoin";
+import AgencyProfile from "@/pages/AgencyProfile";
+import AgencyHQ from "@/pages/AgencyHQ";
 import CookieBanner from "@/components/CookieBanner";
 import GetNoticedBanner from "@/components/GetNoticedBanner";
 
@@ -48,6 +51,9 @@ export default function App() {
               <Route path="/briefs/new" component={PostBrief} />
               <Route path="/workspace" component={Workspace} />
               <Route path="/admin" component={AdminPanel} />
+              <Route path="/join/:code" component={AgencyJoin} />
+              <Route path="/agency/:slug" component={AgencyProfile} />
+              <Route path="/agency-hq" component={AgencyHQ} />
               <Route component={NotFound} />
             </Switch>
           </Router>

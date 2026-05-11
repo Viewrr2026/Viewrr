@@ -7,14 +7,14 @@ export default function Terms() {
         <div className="mb-10">
           <Link href="/" className="text-primary text-sm font-medium hover:underline">← Back to Viewrr</Link>
           <h1 className="text-4xl font-bold mt-6 mb-2">Terms &amp; Conditions</h1>
-          <p className="text-muted-foreground text-sm">Last updated: April 2026</p>
+          <p className="text-muted-foreground text-sm">Last updated: May 2026</p>
         </div>
 
         <div className="prose prose-neutral dark:prose-invert max-w-none space-y-8 text-foreground">
 
           <section>
             <h2 className="text-xl font-semibold mb-3">1. About Viewrr</h2>
-            <p className="text-muted-foreground leading-relaxed">Viewrr is an online marketplace platform operated in the United Kingdom that connects clients and businesses with freelance creative professionals including videographers, video editors, photographers, and marketers. By accessing or using Viewrr, you agree to be bound by these Terms &amp; Conditions.</p>
+            <p className="text-muted-foreground leading-relaxed">Viewrr is an online marketplace platform operated by <strong className="text-foreground">Viewrr Ltd</strong>, a company registered in England &amp; Wales (Company No. <strong className="text-foreground">17196781</strong>), with registered office at 2 The Mill, Stane Street, Maudlin, Chichester, England, PO18 0FF. Viewrr connects clients and businesses with freelance creative professionals including videographers, video editors, photographers, and marketers. By accessing or using Viewrr, you agree to be bound by these Terms &amp; Conditions.</p>
           </section>
 
           <section>
@@ -93,10 +93,32 @@ export default function Terms() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-3">13. Contact</h2>
-            <p className="text-muted-foreground leading-relaxed">If you have any questions about these Terms &amp; Conditions, please contact us at <span className="text-primary">legal@viewrr.co.uk</span>.</p>
+            <h2 className="text-xl font-semibold mb-3">13. Payments &amp; Fees</h2>
+            <p className="text-muted-foreground leading-relaxed">All payments on Viewrr are processed securely by <strong className="text-foreground">Stripe</strong>, a regulated payment service provider. Viewrr Ltd is not a payment institution and does not hold client funds at any point. By making or receiving payments through Viewrr, you also agree to <a href="https://stripe.com/gb/legal/ssa" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Stripe&apos;s Services Agreement</a>.</p>
+            <ul className="list-disc pl-6 mt-3 space-y-1 text-muted-foreground">
+              <li><strong className="text-foreground">Platform fee:</strong> Viewrr charges an 11% commission on each project payment. This is deducted automatically at the point of payment.</li>
+              <li><strong className="text-foreground">Freelancer payouts:</strong> Funds are paid out to the freelancer&apos;s connected bank account via Stripe. Payout timing is subject to Stripe&apos;s standard settlement schedule (typically 2 business days after the first payout verification period).</li>
+              <li><strong className="text-foreground">Agreed price:</strong> Once a client and freelancer have agreed a project price through the platform, that amount is fixed. Clients are charged exactly the agreed amount; no additional amounts may be input at checkout.</li>
+              <li><strong className="text-foreground">Refunds:</strong> Viewrr does not guarantee refunds for completed work. Disputes should be raised with Viewrr at <span className="text-primary">support@viewrr.co.uk</span> within 14 days of payment. Viewrr reserves the right to mediate disputes at its sole discretion.</li>
+              <li><strong className="text-foreground">No surcharging:</strong> Viewrr does not apply additional charges for specific card types, in compliance with the Payment Services Regulations 2017.</li>
+            </ul>
           </section>
 
+          <section>
+            <h2 className="text-xl font-semibold mb-3">14. Complaints</h2>
+            <p className="text-muted-foreground leading-relaxed">If you have a complaint about our service, please contact us in the first instance at <span className="text-primary">support@viewrr.co.uk</span>. We aim to acknowledge all complaints within 2 business days and resolve them within 14 business days. If you are unsatisfied with our response, and your complaint relates to a payment, you may escalate to Stripe directly via their <a href="https://stripe.com/gb/contact" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">support page</a>.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-semibold mb-3">15. Contact</h2>
+            <p className="text-muted-foreground leading-relaxed">If you have any questions about these Terms &amp; Conditions, please contact us at <span className="text-primary">support@viewrr.co.uk</span>.</p>
+          </section>
+
+        </div>
+        <div className="mt-12 pt-6 border-t border-border">
+          <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
+            Viewrr Ltd &mdash; Registered in England &amp; Wales &mdash; Company No. 17196781 &mdash; Registered office: 2 The Mill, Stane Street, Maudlin, Chichester, England, PO18 0FF
+          </p>
         </div>
       </div>
     </div>

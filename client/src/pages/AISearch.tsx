@@ -4,14 +4,23 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest } from "@/lib/queryClient";
 import FreelancerCard from "@/components/FreelancerCard";
+import { useAuth } from "@/components/AuthProvider";
 import type { ProfileWithUser } from "../../../server/storage";
 
-const EXAMPLE_PROMPTS = [
+const CLIENT_PROMPTS = [
   "I need a videographer in London for a luxury fashion brand film. Budget around £1,500/day.",
   "Looking for a social media marketer who specialises in TikTok for a fitness brand",
   "We need a colour grader with experience in commercial food & beverage content",
   "Find me a drone operator available this month in the UK",
   "I need a product photographer for an e-commerce skincare brand launch",
+];
+
+const FREELANCER_PROMPTS = [
+  "Brand film projects in London with budgets over £1,000",
+  "Social media content briefs for lifestyle or fitness brands",
+  "Remote video editing work, flexible hours, ongoing retainer",
+  "Wedding videography in the South of England",
+  "Photography briefs for e-commerce brands in the UK",
 ];
 
 interface AIResult {
@@ -22,6 +31,9 @@ interface AIResult {
 }
 
 export default function AISearch() {
+  const { user } = useAuth();
+  const isFreelancer = user?.role === "freelancer";
+  const EXAMPLE_PROMPTS = isFreelancer ? FREELANCER_PROMPTS : CLIENT_PROMPTS;
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AIResult | null>(null);
@@ -54,12 +66,17 @@ export default function AISearch() {
             AI-powered matching
           </div>
           <h1 className="text-4xl md:text-5xl font-bold mb-4">
-            Describe your brief.<br />
-            <span className="gradient-text">Find your creative.</span>
+            {isFreelancer ? (
+              <>Find your next<br /><span className="gradient-text">perfect brief.</span></>
+            ) : (
+              <>Describe your brief.<br /><span className="gradient-text">Find your creative.</span></>
+            )}
           </h1>
           <p className="text-muted-foreground text-lg max-w-lg mx-auto">
-            Tell us what you're looking for in plain English — specialism, style, budget, location.
-            Our AI does the rest.
+            {isFreelancer
+              ? "Tell us what kind of work you're looking for — style, budget, location, industry. Our AI finds the best matching briefs."
+              : "Tell us what you're looking for in plain English — specialism, style, budget, location. Our AI does the rest."
+            }
           </p>
         </div>
 

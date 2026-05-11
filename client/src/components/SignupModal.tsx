@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useLocation } from "wouter";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,7 @@ import {
   Trash2, GripVertical, Banknote, ShieldCheck, Zap,
 } from "lucide-react";
 
-type Step = "role" | "client-details" | "client-verify" | "freelancer-details" | "freelancer-verify" | "freelancer-portfolio" | "freelancer-payouts" | "done";
+type Step = "role" | "client-details" | "client-verify" | "freelancer-type" | "freelancer-details" | "freelancer-verify" | "freelancer-portfolio" | "freelancer-payouts" | "agency-setup" | "done";
 type VerifyMethod = "email" | "phone";
 type PortfolioItem = { url: string; title: string };
 
@@ -41,6 +42,7 @@ function experienceToYears(lvl: string): number {
 }
 
 export default function SignupModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [, navigate] = useLocation();
   const { login } = useAuth();
   const { toast } = useToast();
   const [step, setStep] = useState<Step>("role");
@@ -67,6 +69,14 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const [experience, setExperience] = useState("");
   const [equipment, setEquipment] = useState<string[]>([]);
   const [bio, setBio] = useState("");
+
+  // Agency fields (for Creative Agency account type)
+  const [accountSubtype, setAccountSubtype] = useState<"sole" | "agency_owner">("sole");
+  const [agencyName, setAgencyName] = useState("");
+  const [agencyBio, setAgencyBio] = useState("");
+  const [agencySpecialisms, setAgencySpecialisms] = useState<string[]>([]);
+  const [agencyReelUrl, setAgencyReelUrl] = useState("");
+  const [agencyCreating, setAgencyCreating] = useState(false);
 
   // Tracks the newly created freelancer's profile ID so we can PATCH it
   const [newProfileId, setNewProfileId] = useState<number | null>(null);
@@ -104,6 +114,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     setPortfolioItems([{ url: "", title: "" }]);
     setNewProfileId(null);
     setShowPassword(false); setShowFreePassword(false);
+    setAccountSubtype("sole"); setAgencyName(""); setAgencyBio(""); setAgencySpecialisms([]); setAgencyReelUrl("");
   }
 
   function handleClose() { reset(); onClose(); }
@@ -299,6 +310,8 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     }
 
     // Save profile details (specialisms, skills, experience, bio) right after registration
+    // Small delay to ensure profile row is committed before PATCH
+    await new Promise(r => setTimeout(r, 600));
     if (profileId) {
       setNewProfileId(profileId);
       try {
@@ -399,7 +412,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 <div><p className="font-semibold text-sm">I'm a Client</p><p className="text-xs text-muted-foreground mt-0.5 leading-snug">I want to hire creative talent for my projects</p></div>
                 <ChevronRight size={14} className="text-muted-foreground group-hover:text-primary mt-auto ml-auto transition-colors" />
               </button>
-              <button onClick={() => { setRole("freelancer"); setStep("freelancer-details"); }} className="group flex flex-col items-center gap-3 p-5 rounded-2xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-all text-left">
+              <button onClick={() => { setRole("freelancer"); setStep("freelancer-type"); }} className="group flex flex-col items-center gap-3 p-5 rounded-2xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-all text-left">
                 <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors"><UserCircle size={22} className="text-primary" /></div>
                 <div><p className="font-semibold text-sm">I'm a Freelancer</p><p className="text-xs text-muted-foreground mt-0.5 leading-snug">I want to showcase my work and find clients</p></div>
                 <ChevronRight size={14} className="text-muted-foreground group-hover:text-primary mt-auto ml-auto transition-colors" />
@@ -407,6 +420,45 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
             </div>
             <div className="mt-5 pt-4 border-t border-border">
               <p className="text-xs text-muted-foreground text-center">Already have an account? <button className="text-primary font-medium hover:underline" onClick={handleClose}>Sign in</button></p>
+            </div>
+          </>
+        )}
+
+        {/* ── STEP: Freelancer type — Sole vs Agency ── */}
+        {step === "freelancer-type" && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">{viewrrLogo} How do you work?</DialogTitle>
+            </DialogHeader>
+            <button onClick={() => setStep("role")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
+            <p className="text-sm text-muted-foreground mb-4">Choose the account type that best fits how you operate.</p>
+            <div className="grid grid-cols-1 gap-3">
+              <button
+                onClick={() => { setAccountSubtype("sole"); setStep("freelancer-details"); }}
+                className="group flex items-start gap-4 p-5 rounded-2xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-all text-left"
+              >
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/20 transition-colors">
+                  <UserCircle size={22} className="text-primary" />
+                </div>
+                <div className="flex-1">
+                  <p className="font-semibold text-sm">Sole Freelancer</p>
+                  <p className="text-xs text-muted-foreground mt-1 leading-relaxed">You work independently. Your profile represents you alone.</p>
+                </div>
+                <ChevronRight size={14} className="text-muted-foreground group-hover:text-primary mt-1 transition-colors" />
+              </button>
+              <button
+                onClick={() => { setAccountSubtype("agency_owner"); setStep("freelancer-details"); }}
+                className="group flex items-start gap-4 p-5 rounded-2xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-all text-left"
+              >
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/20 transition-colors">
+                  <Building2 size={22} className="text-primary" />
+                </div>
+                <div className="flex-1">
+                  <p className="font-semibold text-sm">Creative Agency</p>
+                  <p className="text-xs text-muted-foreground mt-1 leading-relaxed">You run a team. Invite other freelancers to join your agency — each keeps their own profile.</p>
+                </div>
+                <ChevronRight size={14} className="text-muted-foreground group-hover:text-primary mt-1 transition-colors" />
+              </button>
             </div>
           </>
         )}
@@ -732,7 +784,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                     onClick={() => {
                       setStep("done");
                       toast({ title: `Welcome to Viewrr, ${freeFirstName}!` });
-                      setTimeout(() => handleClose(), 1800);
+                      setTimeout(() => { handleClose(); navigate("/dashboard"); }, 1800);
                     }}
                   >
                     Go to my dashboard →
@@ -812,15 +864,114 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                   <button
                     className="w-full text-xs text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
                     onClick={() => {
-                      setStep("done");
-                      toast({ title: `Welcome to Viewrr, ${freeFirstName}!`, description: "You can add bank details anytime from Your Work." });
-                      setTimeout(() => handleClose(), 1800);
+                      if (accountSubtype === "agency_owner") {
+                        setStep("agency-setup");
+                      } else {
+                        setStep("done");
+                        toast({ title: `Welcome to Viewrr, ${freeFirstName}!`, description: "You can add bank details anytime from Your Work." });
+                        setTimeout(() => { handleClose(); navigate("/dashboard"); }, 1800);
+                      }
                     }}
                   >
-                    Skip for now — I'll do this later
+                    {accountSubtype === "agency_owner" ? "Continue to agency setup →" : "Skip for now — I'll do this later"}
                   </button>
                 </>
               )}
+            </div>
+          </>
+        )}
+
+        {/* ── STEP: Agency Setup ── */}
+        {step === "agency-setup" && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">{viewrrLogo} Set up your agency</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground -mt-1 mb-4">Give your agency a name and a few details. You can edit everything later from your dashboard.</p>
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <Label>Agency Name <span className="text-destructive">*</span></Label>
+                <Input placeholder="e.g. Spark Films" value={agencyName} onChange={e => setAgencyName(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>About your agency <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Textarea
+                  placeholder="What kind of work do you take on? What makes your team different?"
+                  value={agencyBio}
+                  onChange={e => setAgencyBio(e.target.value)}
+                  rows={3}
+                  className="resize-none"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Specialisms</Label>
+                <div className="flex flex-wrap gap-2">
+                  {SPECIALISMS.map(s => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setAgencySpecialisms(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
+                      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                        agencySpecialisms.includes(s.id)
+                          ? "bg-primary text-white border-primary"
+                          : "border-border hover:border-primary hover:text-primary"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Showreel URL <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input placeholder="YouTube or Vimeo link" value={agencyReelUrl} onChange={e => setAgencyReelUrl(e.target.value)} />
+              </div>
+
+              <Button
+                className="w-full bg-primary hover:bg-primary/90 text-white rounded-full"
+                disabled={!agencyName.trim() || agencyCreating}
+                onClick={async () => {
+                  if (!newUserId) return;
+                  setAgencyCreating(true);
+                  try {
+                    const res = await fetch("/api/agencies", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        ownerUserId: newUserId,
+                        name: agencyName.trim(),
+                        bio: agencyBio.trim(),
+                        specialisms: agencySpecialisms,
+                        reelUrl: agencyReelUrl.trim() || undefined,
+                      }),
+                    });
+                    if (!res.ok) {
+                      const err = await res.json();
+                      toast({ title: "Couldn't create agency", description: err.error ?? "Please try again.", variant: "destructive" });
+                      return;
+                    }
+                    setStep("done");
+                    toast({ title: `Agency "${agencyName}" created!`, description: "Your invite link is ready in your dashboard." });
+                    setTimeout(() => { handleClose(); navigate("/dashboard"); }, 1800);
+                  } catch {
+                    toast({ title: "Something went wrong", variant: "destructive" });
+                  } finally {
+                    setAgencyCreating(false);
+                  }
+                }}
+              >
+                {agencyCreating ? "Creating agency…" : "Create agency →"}
+              </Button>
+              <button
+                className="w-full text-xs text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
+                onClick={() => {
+                  setStep("done");
+                  toast({ title: `Welcome to Viewrr, ${freeFirstName}!`, description: "You can set up your agency anytime from your dashboard." });
+                  setTimeout(() => { handleClose(); navigate("/dashboard"); }, 1800);
+                }}
+              >
+                Skip — I'll do this later
+              </button>
             </div>
           </>
         )}

@@ -935,16 +935,30 @@ export default function Feed() {
               </Button>
             </div>
 
-            {/* Browse talent CTA */}
-            <div className="bg-card border border-border rounded-2xl p-5">
-              <h3 className="font-semibold text-sm mb-2">Looking to hire?</h3>
-              <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
-                Browse 2,400+ verified videographers, editors, photographers, and marketers ready to work.
-              </p>
-              <Button asChild variant="outline" className="w-full text-sm">
-                <Link href="/marketplace">Browse talent →</Link>
-              </Button>
-            </div>
+            {/* Browse talent CTA — clients only */}
+            {(!user || user.role === "client") && (
+              <div className="bg-card border border-border rounded-2xl p-5">
+                <h3 className="font-semibold text-sm mb-2">Looking to hire?</h3>
+                <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
+                  Browse 2,400+ verified videographers, editors, photographers, and marketers ready to work.
+                </p>
+                <Button asChild variant="outline" className="w-full text-sm">
+                  <Link href="/marketplace">Browse talent →</Link>
+                </Button>
+              </div>
+            )}
+            {/* Freelancer: find briefs CTA */}
+            {user?.role === "freelancer" && (
+              <div className="bg-card border border-border rounded-2xl p-5">
+                <h3 className="font-semibold text-sm mb-2">Find your next brief</h3>
+                <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
+                  Browse live briefs from clients looking for exactly your skills.
+                </p>
+                <Button asChild variant="outline" className="w-full text-sm">
+                  <Link href="/briefs">View open briefs →</Link>
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -76,7 +76,10 @@ export default function NotificationBell() {
   const DEMO_IDS = new Set([1, 2, 3]);
   const isDemo = user && DEMO_IDS.has(user.id);
 
-  const unreadCount = notifications.filter(n => n.read === 0).length;
+  const [serverUnreadCount, setServerUnreadCount] = useState(0);
+  // Derive from local state for instant UI updates after markRead; fall back to server count
+  const localUnread = notifications.filter(n => n.read === 0).length;
+  const unreadCount = notifications.length > 0 ? localUnread : serverUnreadCount;
 
   // Load notifications on open
   async function fetchNotifs() {
@@ -101,10 +104,11 @@ export default function NotificationBell() {
         const res = await fetch(`/api/notifications/${user!.id}/unread-count`);
         if (res.ok && mounted) {
           const { count } = await res.json();
-          // Only refetch full list if count changed (avoid unnecessary re-renders)
+          setServerUnreadCount(count);
+          // Refetch full list only if server says there are new ones we don't have yet
           setNotifications(prev => {
             const prevUnread = prev.filter(n => n.read === 0).length;
-            if (count !== prevUnread && count > 0) fetchNotifs();
+            if (count > prevUnread) fetchNotifs();
             return prev;
           });
         }
@@ -156,6 +160,7 @@ export default function NotificationBell() {
   async function markAllRead() {
     if (!user) return;
     setNotifications(prev => prev.map(n => ({ ...n, read: 1 })));
+    setServerUnreadCount(0);
     await fetch(`/api/notifications/user/${user.id}/read-all`, { method: "PATCH" });
   }
 

@@ -251,6 +251,114 @@ await sql`
     UNIQUE(sender_id, recipient_id)
   )
 `;
+// ─── Agency columns on users ─────────────────────────────────────────────────
+try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS account_subtype TEXT DEFAULT 'sole'`; } catch {}
+try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS agency_id INTEGER`; } catch {}
+// ─── Agencies table ───────────────────────────────────────────────────────────
+await sql`
+  CREATE TABLE IF NOT EXISTS agencies (
+    id SERIAL PRIMARY KEY,
+    owner_user_id INTEGER NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    bio TEXT NOT NULL DEFAULT '',
+    logo TEXT,
+    banner TEXT,
+    location TEXT,
+    website TEXT,
+    specialisms TEXT NOT NULL DEFAULT '[]',
+    reel_url TEXT,
+    invite_code TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+// ─── Agency members table ─────────────────────────────────────────────────────
+await sql`
+  CREATE TABLE IF NOT EXISTS agency_members (
+    id SERIAL PRIMARY KEY,
+    agency_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    joined_at TEXT,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+// ─── Agency member rate cards + role ──────────────────────────────────────────
+try { await sql`ALTER TABLE agency_members ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'member'`; } catch {}
+try { await sql`ALTER TABLE agency_members ADD COLUMN IF NOT EXISTS day_rate_pence INTEGER`; } catch {}
+try { await sql`ALTER TABLE agency_members ADD COLUMN IF NOT EXISTS hourly_rate_pence INTEGER`; } catch {}
+// ─── Agency featured work + testimonials ──────────────────────────────────────
+try { await sql`ALTER TABLE agencies ADD COLUMN IF NOT EXISTS featured_work TEXT NOT NULL DEFAULT '[]'`; } catch {}
+try { await sql`ALTER TABLE agencies ADD COLUMN IF NOT EXISTS testimonials TEXT NOT NULL DEFAULT '[]'`; } catch {}
+// ─── Time Entries table ───────────────────────────────────────────────────────
+await sql`
+  CREATE TABLE IF NOT EXISTS time_entries (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    agency_id INTEGER,
+    description TEXT NOT NULL DEFAULT '',
+    minutes INTEGER NOT NULL,
+    billable BOOLEAN NOT NULL DEFAULT TRUE,
+    logged_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+// ─── Agency Briefs table ──────────────────────────────────────────────────────
+await sql`
+  CREATE TABLE IF NOT EXISTS agency_briefs (
+    id SERIAL PRIMARY KEY,
+    agency_id INTEGER NOT NULL,
+    client_id INTEGER NOT NULL,
+    client_name TEXT NOT NULL,
+    client_avatar TEXT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    budget_min INTEGER,
+    budget_max INTEGER,
+    start_date TEXT,
+    duration TEXT,
+    requirements TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'incoming',
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+// ─── Agency Proposals table ───────────────────────────────────────────────────
+await sql`
+  CREATE TABLE IF NOT EXISTS agency_proposals (
+    id SERIAL PRIMARY KEY,
+    agency_brief_id INTEGER NOT NULL UNIQUE,
+    agency_id INTEGER NOT NULL,
+    quoted_amount_pence INTEGER NOT NULL,
+    cover_note TEXT NOT NULL DEFAULT '',
+    timeline TEXT NOT NULL DEFAULT '',
+    team_member_ids TEXT NOT NULL DEFAULT '[]',
+    breakdown TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'sent',
+    sent_at TEXT NOT NULL DEFAULT NOW()::text,
+    responded_at TEXT,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+// ─── Agency Activity table ────────────────────────────────────────────────────
+await sql`
+  CREATE TABLE IF NOT EXISTS agency_activity (
+    id SERIAL PRIMARY KEY,
+    agency_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    entity_type TEXT,
+    entity_id INTEGER,
+    actor_id INTEGER,
+    actor_name TEXT,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+// ─── Agency member project columns ───────────────────────────────────────────
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agency_id INTEGER`; } catch {}
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agency_brief_id INTEGER`; } catch {}
 }
 
 export interface IStorage {
@@ -260,6 +368,7 @@ export interface IStorage {
   updateUserPassword(id: number, passwordHash: string): Promise<void>;
   updateUser(id: number, data: Partial<Pick<schema.User, 'name' | 'email' | 'bio' | 'avatar' | 'banner' | 'headline' | 'location'>>): Promise<schema.User>;
   updateStripeAccount(userId: number, data: { stripeAccountId?: string; stripeOnboarded?: number; stripePendingPence?: number }): Promise<void>;
+  updateUserAgencyFields(userId: number, data: { accountSubtype?: string; agencyId?: number | null }): Promise<void>;
   createUser(data: schema.InsertUser): Promise<schema.User>;
 
   // Profiles
@@ -373,6 +482,43 @@ export interface IStorage {
   getConnectionUserIds(userId: number): Promise<number[]>;
   isConnected(userA: number, userB: number): Promise<boolean>;
   removeConnection(userA: number, userB: number): Promise<void>;
+
+  // Time Entries
+  createTimeEntry(data: schema.InsertTimeEntry): Promise<schema.TimeEntry>;
+  getTimeEntriesByProject(projectId: number): Promise<schema.TimeEntry[]>;
+  getTimeEntriesByUser(userId: number): Promise<schema.TimeEntry[]>;
+  getTimeEntriesByAgency(agencyId: number): Promise<schema.TimeEntry[]>;
+  updateTimeEntry(id: number, userId: number, data: Partial<schema.InsertTimeEntry>): Promise<schema.TimeEntry | undefined>;
+  deleteTimeEntry(id: number, userId: number): Promise<boolean>;
+
+  // Agencies
+  createAgency(data: schema.InsertAgency): Promise<schema.Agency>;
+  updateAgencyMemberRate(memberId: number, agencyId: number, data: { role?: string; dayRatePence?: number | null; hourlyRatePence?: number | null }): Promise<schema.AgencyMember | undefined>;
+  getAgency(id: number): Promise<schema.Agency | undefined>;
+  getAgencyBySlug(slug: string): Promise<schema.Agency | undefined>;
+  getAgencyByInviteCode(code: string): Promise<schema.Agency | undefined>;
+  getAgencyByOwner(ownerUserId: number): Promise<schema.Agency | undefined>;
+  updateAgency(id: number, data: Partial<schema.InsertAgency>): Promise<schema.Agency | undefined>;
+  getAgencyMembers(agencyId: number): Promise<AgencyMemberWithUser[]>;
+  addAgencyMember(data: schema.InsertAgencyMember): Promise<schema.AgencyMember>;
+  approveAgencyMember(memberId: number): Promise<void>;
+  removeAgencyMember(agencyId: number, userId: number): Promise<void>;
+  getAgencyMemberByUser(userId: number): Promise<schema.AgencyMember | undefined>;
+  getAgencyMemberByUserId(userId: number): Promise<schema.AgencyMember | undefined>;
+  getAgencyDashboard(agencyId: number): Promise<AgencyDashboard>;
+  // Agency Briefs
+  createAgencyBrief(data: schema.InsertAgencyBrief): Promise<schema.AgencyBrief>;
+  getAgencyBriefs(agencyId: number): Promise<schema.AgencyBrief[]>;
+  getAgencyBrief(id: number): Promise<schema.AgencyBrief | undefined>;
+  updateAgencyBriefStatus(id: number, status: string): Promise<schema.AgencyBrief | undefined>;
+  // Agency Proposals
+  createAgencyProposal(data: schema.InsertAgencyProposal): Promise<schema.AgencyProposal>;
+  getAgencyProposal(briefId: number): Promise<schema.AgencyProposal | undefined>;
+  updateAgencyProposalStatus(id: number, status: string): Promise<schema.AgencyProposal | undefined>;
+  getAgencyProposals(agencyId: number): Promise<schema.AgencyProposal[]>;
+  // Agency Activity
+  createAgencyActivity(data: schema.InsertAgencyActivity): Promise<schema.AgencyActivity>;
+  getAgencyActivity(agencyId: number, limit?: number): Promise<schema.AgencyActivity[]>;
 }
 
 export interface ProfileWithUser {
@@ -403,6 +549,35 @@ export interface ProjectUpdateWithAuthor {
   author: schema.User;
 }
 
+export interface AgencyMemberWithUser {
+  member: schema.AgencyMember;
+  user: schema.User;
+  profile: schema.Profile | null;
+}
+
+export interface AgencyProjectFinancial {
+  projectId: number;
+  title: string;
+  freelancerId: number;
+  freelancerName: string;
+  clientName: string;
+  agreedAmountPence: number | null;
+  paymentStatus: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface AgencyDashboard {
+  agency: schema.Agency;
+  members: AgencyMemberWithUser[];
+  totalEarnedPence: number;      // sum of paid project agreedAmountPence across all members
+  totalInvoicedPence: number;    // sum of all projects with agreedAmountPence (paid + unpaid)
+  totalOutstandingPence: number; // unpaid projects with agreedAmountPence
+  activeProjectCount: number;
+  recentProjects: ProjectWithDetails[];
+  financials: AgencyProjectFinancial[]; // all projects with financial data
+}
+
 export interface ConversationSummary {
   otherId: number;
   otherName: string;
@@ -425,6 +600,10 @@ class Storage implements IStorage {
 
   async updateUserPassword(id: number, passwordHash: string): Promise<void> {
     await db.update(schema.users).set({ passwordHash }).where(eq(schema.users.id, id));
+  }
+
+  async updateUserAgencyFields(userId: number, data: { accountSubtype?: string; agencyId?: number | null }): Promise<void> {
+    await db.update(schema.users).set(data as any).where(eq(schema.users.id, userId));
   }
 
   async updateStripeAccount(userId: number, data: { stripeAccountId?: string; stripeOnboarded?: number; stripePendingPence?: number }): Promise<void> {
@@ -1416,6 +1595,284 @@ class Storage implements IStorage {
           and(eq(schema.connectionRequests.senderId, userB), eq(schema.connectionRequests.recipientId, userA))
         )
       );
+  }
+
+  // ─── Agencies ──────────────────────────────────────────────────
+
+  // Time Entries ─────────────────────────────────────────────────────────────
+
+  async createTimeEntry(data: schema.InsertTimeEntry): Promise<schema.TimeEntry> {
+    const r = await db.insert(schema.timeEntries).values(data).returning();
+    return r[0];
+  }
+
+  async getTimeEntriesByProject(projectId: number): Promise<schema.TimeEntry[]> {
+    return await db
+      .select()
+      .from(schema.timeEntries)
+      .where(drizzleSql`${schema.timeEntries.projectId} = ${projectId}`)
+      .orderBy(drizzleSql`${schema.timeEntries.loggedAt} DESC, ${schema.timeEntries.id} DESC`);
+  }
+
+  async getTimeEntriesByUser(userId: number): Promise<schema.TimeEntry[]> {
+    return await db
+      .select()
+      .from(schema.timeEntries)
+      .where(drizzleSql`${schema.timeEntries.userId} = ${userId}`)
+      .orderBy(drizzleSql`${schema.timeEntries.loggedAt} DESC, ${schema.timeEntries.id} DESC`);
+  }
+
+  async getTimeEntriesByAgency(agencyId: number): Promise<schema.TimeEntry[]> {
+    return await db
+      .select()
+      .from(schema.timeEntries)
+      .where(drizzleSql`${schema.timeEntries.agencyId} = ${agencyId}`)
+      .orderBy(drizzleSql`${schema.timeEntries.loggedAt} DESC, ${schema.timeEntries.id} DESC`);
+  }
+
+  async updateTimeEntry(id: number, userId: number, data: Partial<schema.InsertTimeEntry>): Promise<schema.TimeEntry | undefined> {
+    const r = await db
+      .update(schema.timeEntries)
+      .set(data)
+      .where(drizzleSql`${schema.timeEntries.id} = ${id} AND ${schema.timeEntries.userId} = ${userId}`)
+      .returning();
+    return r[0];
+  }
+
+  async deleteTimeEntry(id: number, userId: number): Promise<boolean> {
+    const r = await db
+      .delete(schema.timeEntries)
+      .where(drizzleSql`${schema.timeEntries.id} = ${id} AND ${schema.timeEntries.userId} = ${userId}`)
+      .returning();
+    return r.length > 0;
+  }
+
+  async createAgency(data: schema.InsertAgency): Promise<schema.Agency> {
+    const r = await db.insert(schema.agencies).values(data).returning();
+    return r[0];
+  }
+
+  async getAgency(id: number): Promise<schema.Agency | undefined> {
+    const r = await db.select().from(schema.agencies).where(eq(schema.agencies.id, id));
+    return r[0];
+  }
+
+  async getAgencyBySlug(slug: string): Promise<schema.Agency | undefined> {
+    const r = await db.select().from(schema.agencies).where(eq(schema.agencies.slug, slug));
+    return r[0];
+  }
+
+  async getAgencyByInviteCode(code: string): Promise<schema.Agency | undefined> {
+    const r = await db.select().from(schema.agencies).where(eq(schema.agencies.inviteCode, code));
+    return r[0];
+  }
+
+  async getAgencyByOwner(ownerUserId: number): Promise<schema.Agency | undefined> {
+    const r = await db.select().from(schema.agencies).where(eq(schema.agencies.ownerUserId, ownerUserId));
+    return r[0];
+  }
+
+  async updateAgency(id: number, data: Partial<schema.InsertAgency>): Promise<schema.Agency | undefined> {
+    const r = await db.update(schema.agencies).set(data).where(eq(schema.agencies.id, id)).returning();
+    return r[0];
+  }
+
+  async getAgencyMembers(agencyId: number): Promise<AgencyMemberWithUser[]> {
+    const members = await db.select().from(schema.agencyMembers)
+      .where(eq(schema.agencyMembers.agencyId, agencyId));
+    const result: AgencyMemberWithUser[] = [];
+    for (const member of members) {
+      const uRows = await db.select().from(schema.users).where(eq(schema.users.id, member.userId));
+      const user = uRows[0];
+      if (!user) continue;
+      const pRows = await db.select().from(schema.profiles).where(eq(schema.profiles.userId, member.userId));
+      const profile = pRows[0] ?? null;
+      result.push({ member, user, profile });
+    }
+    return result;
+  }
+
+  async addAgencyMember(data: schema.InsertAgencyMember): Promise<schema.AgencyMember> {
+    const r = await db.insert(schema.agencyMembers).values(data).returning();
+    return r[0];
+  }
+
+  async approveAgencyMember(memberId: number): Promise<void> {
+    await db.update(schema.agencyMembers)
+      .set({ status: 'active', joinedAt: new Date().toISOString() })
+      .where(eq(schema.agencyMembers.id, memberId));
+  }
+
+  async removeAgencyMember(agencyId: number, userId: number): Promise<void> {
+    await db.delete(schema.agencyMembers)
+      .where(and(eq(schema.agencyMembers.agencyId, agencyId), eq(schema.agencyMembers.userId, userId)));
+    // Reset the user's accountSubtype back to sole
+    await db.update(schema.users)
+      .set({ accountSubtype: 'sole', agencyId: null })
+      .where(eq(schema.users.id, userId));
+  }
+
+  async getAgencyMemberByUser(userId: number): Promise<schema.AgencyMember | undefined> {
+    const r = await db.select().from(schema.agencyMembers).where(eq(schema.agencyMembers.userId, userId));
+    return r[0];
+  }
+
+  async getAgencyMemberByUserId(userId: number): Promise<schema.AgencyMember | undefined> {
+    const r = await db.select().from(schema.agencyMembers).where(eq(schema.agencyMembers.userId, userId));
+    return r[0];
+  }
+
+  async updateAgencyMemberRate(memberId: number, agencyId: number, data: { role?: string; dayRatePence?: number | null; hourlyRatePence?: number | null }): Promise<schema.AgencyMember | undefined> {
+    const r = await db
+      .update(schema.agencyMembers)
+      .set(data as any)
+      .where(drizzleSql`${schema.agencyMembers.id} = ${memberId} AND ${schema.agencyMembers.agencyId} = ${agencyId}`)
+      .returning();
+    return r[0];
+  }
+
+  async getAgencyDashboard(agencyId: number): Promise<AgencyDashboard> {
+    const agency = await this.getAgency(agencyId);
+    if (!agency) throw new Error('Agency not found');
+    const members = await this.getAgencyMembers(agencyId);
+    // Collect all projects for all members
+    const allProjects: ProjectWithDetails[] = [];
+    let totalEarnedPence = 0;
+    let totalInvoicedPence = 0;
+    let totalOutstandingPence = 0;
+    const financials: AgencyProjectFinancial[] = [];
+
+    for (const { user } of members) {
+      if (user) {
+        const projects = await this.getProjectsForUser(user.id);
+        for (const pd of projects) {
+          if (pd.project.freelancerId === user.id) {
+            allProjects.push(pd);
+            if (pd.project.agreedAmountPence) {
+              totalInvoicedPence += pd.project.agreedAmountPence;
+              if (pd.project.paymentStatus === 'paid') {
+                totalEarnedPence += pd.project.agreedAmountPence;
+              } else {
+                totalOutstandingPence += pd.project.agreedAmountPence;
+              }
+            }
+            // All projects with any financial data go into financials
+            financials.push({
+              projectId: pd.project.id,
+              title: pd.project.title,
+              freelancerId: pd.project.freelancerId,
+              freelancerName: pd.freelancer?.name ?? 'Unknown',
+              clientName: pd.client?.name ?? 'Unknown',
+              agreedAmountPence: pd.project.agreedAmountPence ?? null,
+              paymentStatus: pd.project.paymentStatus ?? 'unpaid',
+              status: pd.project.status,
+              createdAt: pd.project.createdAt,
+            });
+          }
+        }
+      }
+    }
+
+    const activeProjectCount = allProjects.filter(p => p.project.status === 'active').length;
+    const recentProjects = allProjects
+      .sort((a, b) => new Date(b.project.createdAt).getTime() - new Date(a.project.createdAt).getTime())
+      .slice(0, 10);
+
+    return {
+      agency,
+      members,
+      totalEarnedPence,
+      totalInvoicedPence,
+      totalOutstandingPence,
+      activeProjectCount,
+      recentProjects,
+      financials,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Agency Briefs
+  // ─────────────────────────────────────────────────────────────
+
+  async createAgencyBrief(data: schema.InsertAgencyBrief): Promise<schema.AgencyBrief> {
+    const result = await db.insert(schema.agencyBriefs).values({
+      ...data,
+      createdAt: new Date().toISOString(),
+    }).returning().get();
+    return result;
+  }
+
+  async getAgencyBriefs(agencyId: number): Promise<schema.AgencyBrief[]> {
+    return db.select().from(schema.agencyBriefs)
+      .where(eq(schema.agencyBriefs.agencyId, agencyId))
+      .orderBy(desc(schema.agencyBriefs.createdAt))
+      .all();
+  }
+
+  async getAgencyBrief(id: number): Promise<schema.AgencyBrief | undefined> {
+    return db.select().from(schema.agencyBriefs)
+      .where(eq(schema.agencyBriefs.id, id))
+      .get();
+  }
+
+  async updateAgencyBriefStatus(id: number, status: string): Promise<schema.AgencyBrief | undefined> {
+    return db.update(schema.agencyBriefs)
+      .set({ status })
+      .where(eq(schema.agencyBriefs.id, id))
+      .returning().get();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Agency Proposals
+  // ─────────────────────────────────────────────────────────────
+
+  async createAgencyProposal(data: schema.InsertAgencyProposal): Promise<schema.AgencyProposal> {
+    const result = await db.insert(schema.agencyProposals).values({
+      ...data,
+      sentAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    }).returning().get();
+    return result;
+  }
+
+  async getAgencyProposal(briefId: number): Promise<schema.AgencyProposal | undefined> {
+    return db.select().from(schema.agencyProposals)
+      .where(eq(schema.agencyProposals.agencyBriefId, briefId))
+      .get();
+  }
+
+  async getAgencyProposals(agencyId: number): Promise<schema.AgencyProposal[]> {
+    return db.select().from(schema.agencyProposals)
+      .where(eq(schema.agencyProposals.agencyId, agencyId))
+      .orderBy(desc(schema.agencyProposals.createdAt))
+      .all();
+  }
+
+  async updateAgencyProposalStatus(id: number, status: string): Promise<schema.AgencyProposal | undefined> {
+    return db.update(schema.agencyProposals)
+      .set({ status, respondedAt: new Date().toISOString() })
+      .where(eq(schema.agencyProposals.id, id))
+      .returning().get();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Agency Activity Feed
+  // ─────────────────────────────────────────────────────────────
+
+  async createAgencyActivity(data: schema.InsertAgencyActivity): Promise<schema.AgencyActivity> {
+    const result = await db.insert(schema.agencyActivity).values({
+      ...data,
+      createdAt: new Date().toISOString(),
+    }).returning().get();
+    return result;
+  }
+
+  async getAgencyActivity(agencyId: number, limit = 50): Promise<schema.AgencyActivity[]> {
+    return db.select().from(schema.agencyActivity)
+      .where(eq(schema.agencyActivity.agencyId, agencyId))
+      .orderBy(desc(schema.agencyActivity.createdAt))
+      .limit(limit)
+      .all();
   }
 }
 

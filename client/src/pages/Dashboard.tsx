@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid, Plus, Trash2, GripVertical, FolderOpen, ShieldAlert, Eye } from "lucide-react";
+import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid, Plus, Trash2, GripVertical, FolderOpen, ShieldAlert, Eye, Building2, Copy, Link as LinkIcon, PoundSterling, UserPlus, BarChart2, CalendarClock, GitBranch, Timer, Plane, Database, ExternalLink, ChevronDown, ChevronUp, Mail } from "lucide-react";
 import VideoEmbed from "@/components/VideoEmbed";
 import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -18,7 +18,7 @@ import ProfilePreviewModal from "@/components/ProfilePreviewModal";
 import MeetingSection from "@/components/MeetingSection";
 import { useAuth } from "@/components/AuthProvider";
 import { useToast } from "@/hooks/use-toast";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { connectionCount } from "@/lib/storage";
 
 type ProfileWithUser = { profile: any; user: any };
@@ -442,11 +442,18 @@ function PortfolioEditor({ profileId, currentItems, currentReelUrl }: {
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
+  const [, navigate] = useLocation();
   const [activeConv, setActiveConv] = useState<{ id: number; name: string; avatar?: string } | null>(null);
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [editProfileOpen, setEditProfileOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<string | null>(null); // null = nothing selected yet
+  // Open a specific tab if URL has ?tab=xyz (e.g. from "My Agency" nav link)
+  const [activeTab, setActiveTab] = useState<string | null>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("tab");
+    } catch { return null; }
+  });
 
   // Must be defined before any query that references it
   const isFreelancer = user?.role === "freelancer";
@@ -597,6 +604,21 @@ export default function Dashboard() {
     refetchInterval: 15000,
   });
 
+  // Client briefs count (for "Projects posted" stat)
+  const { data: clientBriefs = [] } = useQuery<any[]>({
+    queryKey: ["/api/briefs/mine", user?.id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/briefs?clientId=${user!.id}`);
+        if (!res.ok) return [];
+        const all = await res.json();
+        return Array.isArray(all) ? all.filter((b: any) => b.clientId === user!.id) : [];
+      } catch { return []; }
+    },
+    enabled: !!user && !isFreelancer,
+    refetchInterval: 20000,
+  });
+
   // Projects — live active projects for this user (both client + freelancer)
   const { data: projects = [], refetch: refetchProjects } = useQuery<any[]>({
     queryKey: ["/api/projects", user?.id],
@@ -612,6 +634,54 @@ export default function Dashboard() {
     enabled: !!user,
     refetchInterval: 20000,
   });
+
+  // Agency data — for agency_owner freelancers
+  const isAgencyOwner = isFreelancer && (user as any)?.accountSubtype === "agency_owner";
+  const { data: agencyData, refetch: refetchAgency } = useQuery<any>({
+    queryKey: ["/api/agencies/mine", user?.id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/agencies/mine/${user!.id}`);
+        if (!res.ok) return null;
+        return res.json();
+      } catch { return null; }
+    },
+    enabled: !!user && isAgencyOwner,
+  });
+
+  const { data: agencyDashData } = useQuery<any>({
+    queryKey: ["/api/agencies/dashboard", agencyData?.id],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`/api/agencies/${agencyData!.id}/dashboard`);
+        if (!res.ok) return null;
+        return res.json();
+      } catch { return null; }
+    },
+    enabled: !!agencyData?.id,
+    refetchInterval: 30000,
+  });
+
+  // Agency proposals (for clients)
+  const { data: agencyProposals = [], isLoading: proposalsLoading } = useQuery<any[]>({
+    queryKey: ['/api/agencies/my-proposals'],
+    queryFn: () => apiRequest('GET', '/api/agencies/my-proposals').then(r => r.json()),
+    enabled: !!user && !isFreelancer,
+  });
+
+  const respondToProposalMutation = useMutation({
+    mutationFn: ({ proposalId, status }: { proposalId: number; status: string }) =>
+      apiRequest('PATCH', `/api/agencies/proposals/${proposalId}/status`, { status }).then(r => r.json()),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/agencies/my-proposals'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/projects', user?.id] });
+      toast({ title: vars.status === 'accepted' ? 'Proposal accepted — project created!' : 'Proposal declined' });
+    },
+  });
+
+  // Agency HQ sub-tab
+  const [agencyHqTab, setAgencyHqTab] = useState<"overview" | "team" | "jobs" | "invite">("overview");
+  const [expandedMember, setExpandedMember] = useState<number | null>(null);
 
   if (!user) return <NotLoggedIn />;
 
@@ -662,6 +732,16 @@ export default function Dashboard() {
                       {availLabel[ownProfile.availability] ?? "Available for work"}
                     </span>
                   )}
+                  {isAgencyOwner && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => navigate("/agency-hq")}
+                      className="gap-2 text-primary border-primary/30 hover:bg-primary/5"
+                    >
+                      <Building2 size={14} /> My Agency
+                    </Button>
+                  )}
                   <Button variant="outline" size="sm" onClick={logout} className="gap-2 text-muted-foreground">
                     <LogOut size={14} /> Sign out
                   </Button>
@@ -710,19 +790,21 @@ export default function Dashboard() {
         </div>
 
         {/* Stats strip — each card is clickable and opens the relevant tab */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+        <div className={`grid gap-4 mb-8 ${isFreelancer ? 'grid-cols-2 md:grid-cols-5' : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-6'}`}>
           {(isFreelancer ? [
             { label: "Profile views",  value: String(profileViewCount),      icon: TrendingUp,   tab: "profile-views" },
             { label: "Messages",       value: String(conversations.length),   icon: MessageSquare, tab: "messages" },
             { label: "Interests sent", value: String(interests.length),       icon: FileText,     tab: "interests" },
             { label: "Projects",       value: String(projects.length),        icon: Briefcase,    tab: "projects" },
             { label: "Connections",    value: String(ownConnCount) + (pendingRequests.length > 0 ? ` (+${pendingRequests.length})` : ""), icon: Users, tab: "connections" },
+
           ] : [
             { label: "Saved creatives",    value: String(savedProfiles.length), icon: Bookmark,      tab: "saved" },
             { label: "Messages",           value: String(conversations.length), icon: MessageSquare, tab: "messages" },
             { label: "Interests received", value: String(interests.length),     icon: FileText,      tab: "interests" },
-            { label: "Projects posted",    value: String(projects.length),      icon: Briefcase,     tab: "projects" },
+            { label: "Briefs posted",      value: String(clientBriefs.length),  icon: Briefcase,     tab: "projects" },
             { label: "Connections",        value: String(ownConnCount) + (pendingRequests.length > 0 ? ` (+${pendingRequests.length})` : ""), icon: Users, tab: "connections" },
+            { label: "Agency Proposals",   value: String(agencyProposals.length) + (agencyProposals.filter((p: any) => p.proposal?.status === 'sent').length > 0 ? ` (${agencyProposals.filter((p: any) => p.proposal?.status === 'sent').length} new)` : ""), icon: Building2, tab: "agency-proposals" },
           ]).map(({ label, value, icon: Icon, tab }) => (
             <button
               key={label}
@@ -1123,6 +1205,650 @@ export default function Dashboard() {
                     </div>
                   </div>
                 ) : null}
+              </div>
+            )}
+
+            {/* ── Agency HQ tab ── */}
+            {/* Agency Proposals inbox — for clients */}
+            {activeTab === "agency-proposals" && !isFreelancer && (
+              <div className="p-5">
+                <div className="flex items-center gap-3 mb-5">
+                  <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+                    <Building2 size={16} className="text-primary" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base">Agency Proposals</h3>
+                    <p className="text-xs text-muted-foreground">Proposals sent to you by agencies</p>
+                  </div>
+                  {agencyProposals.filter((p: any) => p.proposal?.status === 'sent').length > 0 && (
+                    <span className="ml-auto text-xs font-semibold px-2 py-0.5 rounded-full bg-primary text-white">
+                      {agencyProposals.filter((p: any) => p.proposal?.status === 'sent').length} pending
+                    </span>
+                  )}
+                </div>
+                {proposalsLoading ? (
+                  <div className="text-center py-8 text-muted-foreground text-sm">Loading proposals...</div>
+                ) : agencyProposals.length === 0 ? (
+                  <div className="text-center py-10">
+                    <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-4">
+                      <Building2 size={22} className="text-muted-foreground/50" />
+                    </div>
+                    <p className="font-semibold text-foreground mb-1">No agency proposals yet</p>
+                    <p className="text-sm text-muted-foreground">When an agency sends you a proposal, it will appear here.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {agencyProposals.map((item: any) => {
+                      const proposal = item.proposal;
+                      const agency = item.agency;
+                      const isPending = proposal?.status === 'sent';
+                      const isAccepted = proposal?.status === 'accepted';
+                      const isDeclined = proposal?.status === 'declined';
+                      return (
+                        <div key={item.id} className={`rounded-2xl border p-5 transition-all ${
+                          isPending ? 'border-primary/30 bg-primary/5' : 'border-border bg-card'
+                        }`}>
+                          <div className="flex items-start gap-4">
+                            <Avatar className="w-11 h-11 flex-shrink-0">
+                              <AvatarImage src={agency?.logoUrl || undefined} />
+                              <AvatarFallback className="bg-primary/10 text-primary font-bold text-sm">
+                                {(agency?.name || 'AG').slice(0, 2).toUpperCase()}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-2 flex-wrap">
+                                <div>
+                                  <p className="font-bold text-sm">{agency?.name || 'Agency'}</p>
+                                  <p className="text-xs text-muted-foreground truncate max-w-xs">{item.title}</p>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  {isPending && (
+                                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">Pending</span>
+                                  )}
+                                  {isAccepted && (
+                                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">Accepted</span>
+                                  )}
+                                  {isDeclined && (
+                                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">Declined</span>
+                                  )}
+                                </div>
+                              </div>
+                              {proposal && (
+                                <div className="mt-3 space-y-2">
+                                  <div className="flex flex-wrap gap-4">
+                                    {proposal.quotedAmountPence && (
+                                      <div className="flex items-center gap-1.5 text-sm">
+                                        <PoundSterling size={13} className="text-emerald-500" />
+                                        <span className="font-semibold">£{(proposal.quotedAmountPence / 100).toFixed(0)}</span>
+                                        <span className="text-muted-foreground text-xs">quoted</span>
+                                      </div>
+                                    )}
+                                    {proposal.timeline && (
+                                      <div className="flex items-center gap-1.5 text-sm">
+                                        <CalendarClock size={13} className="text-blue-500" />
+                                        <span className="text-muted-foreground text-xs">{proposal.timeline}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                  {proposal.coverNote && (
+                                    <p className="text-sm text-muted-foreground line-clamp-3 leading-relaxed">{proposal.coverNote}</p>
+                                  )}
+                                </div>
+                              )}
+                              {isPending && proposal && (
+                                <div className="flex gap-2 mt-4">
+                                  <Button
+                                    size="sm"
+                                    className="bg-primary hover:bg-primary/90 text-white text-xs h-8 px-4 rounded-xl"
+                                    disabled={respondToProposalMutation.isPending}
+                                    onClick={() => respondToProposalMutation.mutate({ proposalId: proposal.id, status: 'accepted' })}
+                                  >
+                                    <CheckCircle2 size={12} className="mr-1.5" /> Accept
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-xs h-8 px-4 rounded-xl border-destructive/40 text-destructive hover:bg-destructive/5"
+                                    disabled={respondToProposalMutation.isPending}
+                                    onClick={() => respondToProposalMutation.mutate({ proposalId: proposal.id, status: 'declined' })}
+                                  >
+                                    <XCircle size={12} className="mr-1.5" /> Decline
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === "agency" && isAgencyOwner && (
+              <div>
+                {/* ── Agency HQ Header ── */}
+                <div className="px-6 pt-6 pb-0">
+                  <div className="flex items-start justify-between gap-4 flex-wrap mb-5">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+                        <Building2 size={20} className="text-primary" />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-lg leading-tight">{agencyData?.name ?? "Agency HQ"}</h3>
+                        <p className="text-xs text-muted-foreground mt-0.5">Agency dashboard</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {agencyData && (
+                        <button
+                          className="flex items-center gap-1.5 text-xs font-medium border border-border rounded-lg px-3 py-1.5 hover:bg-muted transition-colors"
+                          onClick={() => {
+                            const link = `${window.location.origin}/#/join/${agencyData.inviteCode}`;
+                            navigator.clipboard?.writeText(link).then(() => toast({ title: "Invite link copied!", description: "Share it with freelancers you want to invite." }));
+                          }}
+                        >
+                          <Copy size={12} /> Copy invite link
+                        </button>
+                      )}
+                      {agencyData?.slug && (
+                        <a
+                          href={`/#/agency/${agencyData.slug}`}
+                          target="_blank"
+                          className="flex items-center gap-1.5 text-xs font-medium border border-border rounded-lg px-3 py-1.5 hover:bg-muted transition-colors"
+                        >
+                          <ExternalLink size={12} /> View public page
+                        </a>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* KPI strip */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+                    {[
+                      { label: "Total earned", value: `£${((agencyDashData?.totalEarnedPence ?? 0) / 100).toFixed(0)}`, icon: PoundSterling, color: "text-emerald-600" },
+                      { label: "Active jobs", value: String(agencyDashData?.activeProjectCount ?? 0), icon: Briefcase, color: "text-blue-500" },
+                      { label: "Team members", value: String((agencyDashData?.members ?? []).filter((m: any) => m.member.status === "active").length), icon: Users, color: "text-primary" },
+                      { label: "Pending approvals", value: String((agencyDashData?.members ?? []).filter((m: any) => m.member.status === "pending").length), icon: Clock, color: "text-amber-500" },
+                    ].map(({ label, value, icon: Icon, color }) => (
+                      <div key={label} className="bg-muted/40 border border-border/60 rounded-xl p-3.5">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs text-muted-foreground">{label}</p>
+                          <Icon size={14} className={color} />
+                        </div>
+                        <p className="text-xl font-bold">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Sub-nav tabs */}
+                  <div className="flex gap-1 border-b border-border -mx-6 px-6">
+                    {([
+                      { id: "overview", label: "Overview", icon: LayoutGrid },
+                      { id: "team", label: "Team", icon: Users },
+                      { id: "jobs", label: "Active Jobs", icon: Briefcase },
+                      { id: "invite", label: "Invite & Manage", icon: UserPlus },
+                    ] as { id: "overview" | "team" | "jobs" | "invite"; label: string; icon: any }[]).map(({ id, label, icon: Icon }) => (
+                      <button
+                        key={id}
+                        onClick={() => setAgencyHqTab(id)}
+                        className={`flex items-center gap-1.5 text-sm font-medium px-3 py-2.5 border-b-2 transition-colors ${
+                          agencyHqTab === id
+                            ? "border-primary text-primary"
+                            : "border-transparent text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <Icon size={13} />{label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* ── OVERVIEW tab ── */}
+                {agencyHqTab === "overview" && (
+                  <div className="p-6">
+                    <div className="grid md:grid-cols-2 gap-5">
+
+                      {/* Recent jobs */}
+                      <div>
+                        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Recent jobs</h4>
+                        {(agencyDashData?.recentProjects ?? []).length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                            No jobs yet — they'll appear here once team members start working.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {(agencyDashData.recentProjects ?? []).slice(0, 5).map((pd: any) => (
+                              <div key={pd.project.id} className="flex items-center gap-3 rounded-xl border border-border p-3 text-sm">
+                                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                  <Briefcase size={13} className="text-primary" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium truncate text-sm">{pd.project.title}</p>
+                                  <p className="text-xs text-muted-foreground truncate">{pd.freelancer?.name ?? "—"} · {pd.client?.name ?? "—"}</p>
+                                </div>
+                                <div className="flex flex-col items-end gap-1 shrink-0">
+                                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                    pd.project.status === "active" ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" :
+                                    pd.project.status === "completed" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" :
+                                    "bg-muted text-muted-foreground"
+                                  }`}>{pd.project.status}</span>
+                                  {pd.project.agreedAmountPence && (
+                                    <span className="text-xs font-bold text-foreground">£{(pd.project.agreedAmountPence / 100).toFixed(0)}</span>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Team snapshot */}
+                      <div>
+                        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Team snapshot</h4>
+                        {(agencyDashData?.members ?? []).length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                            No team members yet. Use the Invite tab to add your first creative.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {(agencyDashData.members ?? []).slice(0, 5).map((mwu: any) => {
+                              const { member, user: mUser, profile } = mwu;
+                              const specialisms: string[] = JSON.parse(profile?.specialisms ?? "[]");
+                              const isOwnerMember = mUser.id === agencyData?.ownerUserId;
+                              return (
+                                <div key={member.id} className="flex items-center gap-3 rounded-xl border border-border p-3">
+                                  <Avatar className="w-8 h-8 flex-shrink-0">
+                                    <AvatarImage src={mUser.avatar} />
+                                    <AvatarFallback className="bg-primary/10 text-primary text-xs">{(mUser.name || "?").slice(0, 2).toUpperCase()}</AvatarFallback>
+                                  </Avatar>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-medium text-sm truncate">{mUser.name}</p>
+                                    <p className="text-xs text-muted-foreground truncate">{specialisms.slice(0, 2).join(", ") || "No specialisms"}</p>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    {isOwnerMember && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary">Owner</span>}
+                                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                      member.status === "active"
+                                        ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                        : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                                    }`}>{member.status === "active" ? "Active" : "Pending"}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Roadmap coming-soon cards */}
+                    <div className="mt-6">
+                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Coming soon</h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {[
+                          { icon: Timer, label: "Time Tracking", desc: "Log hours per project" },
+                          { icon: GitBranch, label: "Project Management", desc: "Gantt charts & tasks" },
+                          { icon: Plane, label: "Time Off", desc: "Holiday & leave requests" },
+                          { icon: Database, label: "Sales CRM", desc: "Leads & client pipeline" },
+                        ].map(({ icon: Icon, label, desc }) => (
+                          <div key={label} className="rounded-xl border border-dashed border-border p-4 opacity-60">
+                            <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center mb-2">
+                              <Icon size={15} className="text-muted-foreground" />
+                            </div>
+                            <p className="text-sm font-semibold">{label}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+                            <span className="inline-block mt-2 text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground uppercase tracking-wide">Roadmap</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── TEAM tab ── */}
+                {agencyHqTab === "team" && (
+                  <div className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">All team members ({(agencyDashData?.members ?? []).length})</h4>
+                    </div>
+                    {(agencyDashData?.members ?? []).length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+                        <Users size={28} className="mx-auto mb-3 opacity-30" />
+                        <p className="font-semibold text-foreground mb-1">No team members yet</p>
+                        <p>Copy your invite link and share it with freelancers to get started.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {(agencyDashData.members ?? []).map((mwu: any) => {
+                          const { member, user: mUser, profile } = mwu;
+                          const specialisms: string[] = JSON.parse(profile?.specialisms ?? "[]");
+                          const isOwnerMember = mUser.id === agencyData?.ownerUserId;
+                          const isPending = member.status === "pending";
+                          const isExpanded = expandedMember === member.id;
+                          // Revenue for this member from agencyDashData
+                          const memberRevenue = (agencyDashData?.memberRevenue ?? {})[mUser.id] ?? 0;
+                          const memberProjects = (agencyDashData?.recentProjects ?? []).filter((pd: any) => pd.freelancer?.id === mUser.id);
+                          return (
+                            <div key={member.id} className="rounded-xl border border-border overflow-hidden">
+                              {/* Row */}
+                              <div
+                                className="flex items-center gap-3 p-4 cursor-pointer hover:bg-muted/30 transition-colors"
+                                onClick={() => setExpandedMember(isExpanded ? null : member.id)}
+                              >
+                                <Avatar className="w-10 h-10 flex-shrink-0">
+                                  <AvatarImage src={mUser.avatar} />
+                                  <AvatarFallback className="bg-primary/10 text-primary text-sm font-bold">{(mUser.name || "?").slice(0, 2).toUpperCase()}</AvatarFallback>
+                                </Avatar>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-semibold text-sm">{mUser.name}</p>
+                                    {isOwnerMember && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-primary/10 text-primary">Owner</span>}
+                                    {profile?.isPro === 1 && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">PRO</span>}
+                                  </div>
+                                  <div className="flex flex-wrap gap-1 mt-1">
+                                    {specialisms.slice(0, 3).map((s: string) => (
+                                      <span key={s} className="text-[10px] px-1.5 py-0.5 rounded bg-primary/5 text-primary/80 font-medium">{s}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0">
+                                  <div className="text-right hidden sm:block">
+                                    <p className="text-xs text-muted-foreground">Earned</p>
+                                    <p className="text-sm font-bold">£{(memberRevenue / 100).toFixed(0)}</p>
+                                  </div>
+                                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                    isPending ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" : "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                  }`}>{isPending ? "Pending" : "Active"}</span>
+                                  {isExpanded ? <ChevronUp size={14} className="text-muted-foreground" /> : <ChevronDown size={14} className="text-muted-foreground" />}
+                                </div>
+                              </div>
+
+                              {/* Expanded detail */}
+                              {isExpanded && (
+                                <div className="border-t border-border bg-muted/20 p-4">
+                                  <div className="grid grid-cols-3 gap-3 mb-4">
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Location</p>
+                                      <p className="text-sm font-medium mt-0.5">{mUser.location || "—"}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Day rate</p>
+                                      <p className="text-sm font-medium mt-0.5">{profile?.dayRate ? `£${profile.dayRate}` : "—"}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Projects</p>
+                                      <p className="text-sm font-medium mt-0.5">{profile?.projectCount ?? 0}</p>
+                                    </div>
+                                  </div>
+                                  <div className="mb-4">
+                                    <p className="text-xs text-muted-foreground mb-1">Rating</p>
+                                    <div className="flex items-center gap-1.5">
+                                      <Stars rating={profile?.rating ?? 0} />
+                                      <span className="text-xs text-muted-foreground">({profile?.reviewCount ?? 0} reviews)</span>
+                                    </div>
+                                  </div>
+                                  {memberProjects.length > 0 && (
+                                    <div className="mb-4">
+                                      <p className="text-xs text-muted-foreground mb-2">Their recent projects</p>
+                                      <div className="space-y-1.5">
+                                        {memberProjects.slice(0, 3).map((pd: any) => (
+                                          <div key={pd.project.id} className="flex items-center justify-between text-xs rounded-lg bg-background border border-border px-3 py-2">
+                                            <span className="font-medium truncate">{pd.project.title}</span>
+                                            <span className={`ml-2 shrink-0 font-semibold px-1.5 py-0.5 rounded ${
+                                              pd.project.status === "active" ? "bg-green-100 text-green-700" : "bg-muted text-muted-foreground"
+                                            }`}>{pd.project.status}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  <div className="flex items-center gap-2">
+                                    {isPending && (
+                                      <Button
+                                        size="sm"
+                                        className="rounded-full text-xs h-7 px-3 bg-primary hover:bg-primary/90 text-white"
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          try {
+                                            await apiRequest("POST", `/api/agencies/members/${member.id}/approve`, { userId: mUser.id });
+                                            queryClient.invalidateQueries({ queryKey: ["/api/agencies/dashboard", agencyData.id] });
+                                            toast({ title: `${mUser.name} approved!` });
+                                          } catch { toast({ title: "Something went wrong", variant: "destructive" }); }
+                                        }}
+                                      >
+                                        <CheckCircle2 size={11} className="mr-1" /> Approve
+                                      </Button>
+                                    )}
+                                    {!isOwnerMember && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="rounded-full text-xs h-7 px-3 text-destructive border-destructive/30 hover:bg-destructive/5"
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          if (!confirm(`Remove ${mUser.name} from your agency?`)) return;
+                                          try {
+                                            await apiRequest("DELETE", `/api/agencies/${agencyData.id}/members/${mUser.id}`);
+                                            queryClient.invalidateQueries({ queryKey: ["/api/agencies/dashboard", agencyData.id] });
+                                            toast({ title: `${mUser.name} removed` });
+                                            setExpandedMember(null);
+                                          } catch { toast({ title: "Something went wrong", variant: "destructive" }); }
+                                        }}
+                                      >
+                                        <XCircle size={11} className="mr-1" /> Remove
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── ACTIVE JOBS tab ── */}
+                {agencyHqTab === "jobs" && (
+                  <div className="p-6">
+                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-4">All agency jobs ({(agencyDashData?.recentProjects ?? []).length})</h4>
+                    {(agencyDashData?.recentProjects ?? []).length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+                        <Briefcase size={28} className="mx-auto mb-3 opacity-30" />
+                        <p className="font-semibold text-foreground mb-1">No jobs yet</p>
+                        <p>Jobs assigned to your team members will appear here.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {(agencyDashData.recentProjects ?? []).map((pd: any) => (
+                          <div key={pd.project.id} className="rounded-xl border border-border p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1 min-w-0">
+                                <p className="font-semibold text-sm">{pd.project.title}</p>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
+                                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                                    <User size={11} /> {pd.freelancer?.name ?? "—"}
+                                  </span>
+                                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                                    <Briefcase size={11} /> {pd.client?.name ?? "—"}
+                                  </span>
+                                  {pd.project.createdAt && (
+                                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                                      <CalendarClock size={11} /> {new Date(pd.project.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                  pd.project.status === "active" ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" :
+                                  pd.project.status === "completed" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" :
+                                  pd.project.status === "pending" ? "bg-amber-100 text-amber-700" :
+                                  "bg-muted text-muted-foreground"
+                                }`}>{pd.project.status}</span>
+                                {pd.project.agreedAmountPence ? (
+                                  <span className="text-sm font-bold text-foreground">£{(pd.project.agreedAmountPence / 100).toFixed(0)}</span>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">TBC</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── INVITE & MANAGE tab ── */}
+                {agencyHqTab === "invite" && (
+                  <div className="p-6">
+                    <div className="grid md:grid-cols-2 gap-6">
+
+                      {/* Invite link */}
+                      <div>
+                        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Your invite link</h4>
+                        <div className="rounded-xl border border-border bg-muted/30 p-4">
+                          <p className="text-sm text-muted-foreground mb-3">Share this link with freelancers you want to join your agency. Once they accept, you'll see a pending request here to approve.</p>
+                          {agencyData && (
+                            <div className="bg-background border border-border rounded-lg px-3 py-2 flex items-center gap-2 mb-3">
+                              <p className="text-xs font-mono text-muted-foreground flex-1 truncate">
+                                {window.location.origin}/#/join/{agencyData.inviteCode}
+                              </p>
+                              <button
+                                className="shrink-0 text-primary hover:text-primary/80 transition-colors"
+                                onClick={() => {
+                                  const link = `${window.location.origin}/#/join/${agencyData.inviteCode}`;
+                                  navigator.clipboard?.writeText(link).then(() => toast({ title: "Invite link copied!" }));
+                                }}
+                              >
+                                <Copy size={14} />
+                              </button>
+                            </div>
+                          )}
+                          <Button
+                            className="w-full bg-primary hover:bg-primary/90 text-white text-sm"
+                            onClick={() => {
+                              if (!agencyData) return;
+                              const link = `${window.location.origin}/#/join/${agencyData.inviteCode}`;
+                              navigator.clipboard?.writeText(link).then(() => toast({ title: "Invite link copied!", description: "Share it with freelancers you want to invite." }));
+                            }}
+                          >
+                            <Copy size={14} className="mr-2" /> Copy invite link
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Pending approvals */}
+                      <div>
+                        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Pending approvals</h4>
+                        {(agencyDashData?.members ?? []).filter((m: any) => m.member.status === "pending").length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                            No pending requests right now.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {(agencyDashData.members ?? []).filter((m: any) => m.member.status === "pending").map((mwu: any) => {
+                              const { member, user: mUser, profile } = mwu;
+                              const specialisms: string[] = JSON.parse(profile?.specialisms ?? "[]");
+                              return (
+                                <div key={member.id} className="flex items-center gap-3 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/50 dark:bg-amber-900/10 p-3">
+                                  <Avatar className="w-9 h-9 flex-shrink-0">
+                                    <AvatarImage src={mUser.avatar} />
+                                    <AvatarFallback className="bg-amber-100 text-amber-700 text-xs font-bold">{(mUser.name || "?").slice(0, 2).toUpperCase()}</AvatarFallback>
+                                  </Avatar>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-semibold text-sm">{mUser.name}</p>
+                                    <p className="text-xs text-muted-foreground">{specialisms.slice(0, 2).join(", ") || "—"}</p>
+                                  </div>
+                                  <div className="flex gap-2 shrink-0">
+                                    <Button
+                                      size="sm"
+                                      className="rounded-full text-xs h-7 px-3 bg-primary hover:bg-primary/90 text-white"
+                                      onClick={async () => {
+                                        try {
+                                          await apiRequest("POST", `/api/agencies/members/${member.id}/approve`, { userId: mUser.id });
+                                          queryClient.invalidateQueries({ queryKey: ["/api/agencies/dashboard", agencyData.id] });
+                                          toast({ title: `${mUser.name} approved!` });
+                                        } catch { toast({ title: "Something went wrong", variant: "destructive" }); }
+                                      }}
+                                    >
+                                      <CheckCircle2 size={11} className="mr-1" /> Approve
+                                    </Button>
+                                    <button
+                                      className="text-muted-foreground hover:text-destructive transition-colors"
+                                      title="Decline"
+                                      onClick={async () => {
+                                        if (!confirm(`Decline ${mUser.name}'s request?`)) return;
+                                        try {
+                                          await apiRequest("DELETE", `/api/agencies/${agencyData.id}/members/${mUser.id}`);
+                                          queryClient.invalidateQueries({ queryKey: ["/api/agencies/dashboard", agencyData.id] });
+                                          toast({ title: `${mUser.name}'s request declined` });
+                                        } catch { toast({ title: "Something went wrong", variant: "destructive" }); }
+                                      }}
+                                    >
+                                      <XCircle size={16} />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Active members — remove control */}
+                    <div className="mt-6">
+                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Active members</h4>
+                      {(agencyDashData?.members ?? []).filter((m: any) => m.member.status === "active").length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                          No active members yet.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {(agencyDashData.members ?? []).filter((m: any) => m.member.status === "active").map((mwu: any) => {
+                            const { member, user: mUser } = mwu;
+                            const isOwnerMember = mUser.id === agencyData?.ownerUserId;
+                            return (
+                              <div key={member.id} className="flex items-center gap-3 rounded-xl border border-border p-3">
+                                <Avatar className="w-8 h-8 flex-shrink-0">
+                                  <AvatarImage src={mUser.avatar} />
+                                  <AvatarFallback className="bg-primary/10 text-primary text-xs">{(mUser.name || "?").slice(0, 2).toUpperCase()}</AvatarFallback>
+                                </Avatar>
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium text-sm truncate">{mUser.name}</p>
+                                  <p className="text-xs text-muted-foreground">{mUser.email}</p>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  {isOwnerMember && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary">Owner</span>}
+                                  {!isOwnerMember && (
+                                    <button
+                                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive transition-colors"
+                                      onClick={async () => {
+                                        if (!confirm(`Remove ${mUser.name} from your agency?`)) return;
+                                        try {
+                                          await apiRequest("DELETE", `/api/agencies/${agencyData.id}/members/${mUser.id}`);
+                                          queryClient.invalidateQueries({ queryKey: ["/api/agencies/dashboard", agencyData.id] });
+                                          toast({ title: `${mUser.name} removed` });
+                                        } catch { toast({ title: "Something went wrong", variant: "destructive" }); }
+                                      }}
+                                    >
+                                      <XCircle size={13} /> Remove
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

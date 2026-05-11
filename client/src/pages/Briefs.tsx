@@ -242,10 +242,19 @@ function BriefDetail({ brief, onClose, onApply, onCloseBrief, isOwned }: { brief
         <h2 className="text-xl font-bold mt-3 leading-snug">{brief.title}</h2>
         <p className="text-sm text-muted-foreground mt-1">{brief.clientName} · {timeAgo(brief.createdAt)}</p>
 
-        <Button onClick={onApply} className="w-full mt-5 bg-primary hover:bg-primary/90 text-white rounded-full font-semibold">
-          Express Interest
-        </Button>
-        <p className="text-xs text-center text-muted-foreground mt-2">Your profile will be shared with the client</p>
+        {isOwned ? (
+          <div className="mt-5 rounded-xl border border-border bg-muted/40 px-4 py-3 text-center">
+            <p className="text-xs font-semibold text-muted-foreground">This is your brief</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">Go to your Dashboard to view applications.</p>
+          </div>
+        ) : (
+          <>
+            <Button onClick={onApply} className="w-full mt-5 bg-primary hover:bg-primary/90 text-white rounded-full font-semibold">
+              Express Interest
+            </Button>
+            <p className="text-xs text-center text-muted-foreground mt-2">Your profile will be shared with the client</p>
+          </>
+        )}
       </div>
 
       {/* Detail body */}
@@ -273,7 +282,11 @@ function BriefDetail({ brief, onClose, onApply, onCloseBrief, isOwned }: { brief
             <div className="bg-muted/50 rounded-xl p-3">
               <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1"><Calendar size={11} /> Start date</p>
               <p className="text-sm font-medium">
-                {new Date(brief.startDate).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}
+                {/* Parse as local date (YYYY-MM-DD) to avoid UTC midnight → BST day-shift */}
+                {brief.startDate.includes("T")
+                  ? new Date(brief.startDate).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "Europe/London" })
+                  : (() => { const [y,m,d] = brief.startDate.split("-"); return new Date(+y,+m-1,+d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }); })()
+                }
               </p>
             </div>
           )}
@@ -305,9 +318,11 @@ function BriefDetail({ brief, onClose, onApply, onCloseBrief, isOwned }: { brief
         )}
 
         {/* Bottom CTA */}
-        <Button onClick={onApply} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full font-semibold">
-          Express Interest
-        </Button>
+        {!isOwned && (
+          <Button onClick={onApply} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full font-semibold">
+            Express Interest
+          </Button>
+        )}
         {isOwned && onCloseBrief && (
           <button
             onClick={onCloseBrief}
@@ -487,6 +502,7 @@ function ExpressInterestModal({ brief, open, onClose }: { brief: Brief | null; o
 }
 
 export default function Briefs() {
+  const { user } = useAuth();
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Brief | null>(null);
@@ -558,12 +574,14 @@ export default function Briefs() {
               <h1 className="text-xl font-bold">Briefs Board</h1>
               <p className="text-xs text-muted-foreground mt-0.5">{briefs.length} open brief{briefs.length !== 1 ? "s" : ""}</p>
             </div>
-            <Link href="/briefs/new">
-              <Button className="bg-primary hover:bg-primary/90 text-white rounded-full px-4 gap-1.5 text-sm shrink-0">
-                <Plus size={15} />
-                Post a Brief
-              </Button>
-            </Link>
+            {(!user || user.role === "client") && (
+              <Link href="/briefs/new">
+                <Button className="bg-primary hover:bg-primary/90 text-white rounded-full px-4 gap-1.5 text-sm shrink-0">
+                  <Plus size={15} />
+                  Post a Brief
+                </Button>
+              </Link>
+            )}
           </div>
 
           {/* ✅ Item 11 — Search bar */}
@@ -607,10 +625,12 @@ export default function Briefs() {
         {briefs.length === 0 ? (
           <div className="text-center py-24">
             <Briefcase size={40} className="mx-auto text-muted-foreground mb-4 opacity-40" />
-            <p className="text-muted-foreground mb-4">No briefs in this category yet.</p>
-            <Link href="/briefs/new">
-              <Button className="rounded-full bg-primary text-white hover:bg-primary/90">Post the first brief</Button>
-            </Link>
+            <p className="text-muted-foreground mb-4">{search.trim() ? "No briefs match your search." : "No briefs in this category yet."}</p>
+            {(!user || user.role === "client") && (
+              <Link href="/briefs/new">
+                <Button className="rounded-full bg-primary text-white hover:bg-primary/90">Post the first brief</Button>
+              </Link>
+            )}
           </div>
         ) : (
           <div className="flex gap-4 items-start">
@@ -633,7 +653,7 @@ export default function Briefs() {
                   brief={selected}
                   onClose={() => setSelected(null)}
                   onApply={() => setApplyOpen(true)}
-                  isOwned={false}
+                  isOwned={!!(user && selected?.clientId === user.id)}
                 />
               </div>
             )}
@@ -647,7 +667,7 @@ export default function Briefs() {
               brief={selected}
               onClose={() => setSelected(null)}
               onApply={() => setApplyOpen(true)}
-              isOwned={false}
+              isOwned={!!(user && selected?.clientId === user.id)}
             />
           </div>
         )}

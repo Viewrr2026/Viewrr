@@ -26,7 +26,7 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 
 // In-memory store for verification codes (email -> { code, expires })
 const verificationCodes = new Map<string, { code: string; expires: number }>();
-import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema, insertBriefInterestSchema } from "@shared/schema";
+import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema, insertBriefInterestSchema, insertAgencySchema, insertAgencyMemberSchema } from "@shared/schema";
 
 // Helper: fire-and-forget notification (never throws)
 async function notify(data: Parameters<typeof storage.createNotification>[0]) {
@@ -34,6 +34,9 @@ async function notify(data: Parameters<typeof storage.createNotification>[0]) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
+  // ─── Version / health ─────────────────────────────────────────────────────
+  app.get("/api/version", (_req, res) => res.json({ version: "2026-05-11-agency", features: ["agency", "accountSubtype"] }));
+
   // ─── Auth (simple demo auth by email) ─────────────────────────────────────
   app.post("/api/auth/login", async (req, res) => {
     const { email, password } = req.body;
@@ -1187,12 +1190,93 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json({ success: true });
   });
 
+  // ─── Time Entries ───────────────────────────────────────────────────────
+
+  // GET /api/projects/:id/time-entries — list all entries for a project
+  app.get("/api/projects/:id/time-entries", async (req, res) => {
+    try {
+      const entries = await storage.getTimeEntriesByProject(Number(req.params.id));
+      res.json(entries);
+    } catch (e) {
+      res.status(500).json({ error: "Failed to load time entries" });
+    }
+  });
+
+  // POST /api/projects/:id/time-entries — log a new time entry
+  app.post("/api/projects/:id/time-entries", async (req, res) => {
+    try {
+      const { userId, agencyId, description, minutes, billable, loggedAt } = req.body;
+      if (!userId || !minutes || !loggedAt) {
+        return res.status(400).json({ error: "userId, minutes, and loggedAt are required" });
+      }
+      const entry = await storage.createTimeEntry({
+        projectId: Number(req.params.id),
+        userId: Number(userId),
+        agencyId: agencyId ? Number(agencyId) : null,
+        description: description || "",
+        minutes: Number(minutes),
+        billable: billable !== false,
+        loggedAt: String(loggedAt),
+      });
+      res.json(entry);
+    } catch (e) {
+      res.status(500).json({ error: "Failed to log time entry" });
+    }
+  });
+
+  // PATCH /api/time-entries/:id — update a time entry (owner only)
+  app.patch("/api/time-entries/:id", async (req, res) => {
+    try {
+      const { userId, ...data } = req.body;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const updated = await storage.updateTimeEntry(Number(req.params.id), Number(userId), data);
+      if (!updated) return res.status(403).json({ error: "Not found or not allowed" });
+      res.json(updated);
+    } catch (e) {
+      res.status(500).json({ error: "Failed to update time entry" });
+    }
+  });
+
+  // DELETE /api/time-entries/:id — delete a time entry (owner only)
+  app.delete("/api/time-entries/:id", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const ok = await storage.deleteTimeEntry(Number(req.params.id), Number(userId));
+      if (!ok) return res.status(403).json({ error: "Not found or not allowed" });
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: "Failed to delete time entry" });
+    }
+  });
+
+  // GET /api/users/:id/time-entries — all entries for a user (agency reports)
+  app.get("/api/users/:id/time-entries", async (req, res) => {
+    try {
+      const entries = await storage.getTimeEntriesByUser(Number(req.params.id));
+      res.json(entries);
+    } catch (e) {
+      res.status(500).json({ error: "Failed to load time entries" });
+    }
+  });
+
+  // GET /api/agencies/:id/time-entries — all entries for an agency (agency reports)
+  app.get("/api/agencies/:id/time-entries", async (req, res) => {
+    try {
+      const entries = await storage.getTimeEntriesByAgency(Number(req.params.id));
+      res.json(entries);
+    } catch (e) {
+      res.status(500).json({ error: "Failed to load time entries" });
+    }
+  });
+
   // ─── Briefs ────────────────────────────────────────────────────────────────
   app.get("/api/briefs", async (req, res) => {
-    const { category, location } = req.query;
+    const { category, location, clientId } = req.query;
     let briefs = await storage.getBriefs();
     if (category && category !== "All") briefs = briefs.filter(b => b.category === category);
     if (location) briefs = briefs.filter(b => b.location.toLowerCase().includes(String(location).toLowerCase()));
+    if (clientId) briefs = briefs.filter(b => b.clientId === Number(clientId));
     res.json(briefs);
   });
 
@@ -1328,7 +1412,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             const brief = await storage.getBrief(interest.briefId);
             if (brief) { briefDesc = brief.description ?? ""; briefCategory = brief.category ?? ""; }
           } catch {}
-          await storage.createProject({
+          const project = await storage.createProject({
             clientId:       interest.briefClientId,
             freelancerId:   interest.freelancerId,
             title:          interest.briefTitle,
@@ -1342,6 +1426,27 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             briefCategory,
             agreedAmountPence: (interest as any).proposedPricePence ?? undefined,
           } as any);
+          // ── Agency member sourcing: tag project with agencyId ──────────────────────
+          try {
+            const agencyMembership = await storage.getAgencyMemberByUserId(interest.freelancerId);
+            if (agencyMembership) {
+              await db.update(schema.projects)
+                .set({ agencyId: agencyMembership.agencyId })
+                .where(eq(schema.projects.id, project.id));
+              // Log to agency activity feed
+              const briefForActivity = interest.briefId ? await storage.getBrief(interest.briefId).catch(() => null) : null;
+              await storage.createAgencyActivity({
+                agencyId: agencyMembership.agencyId,
+                type: 'brief_won',
+                title: `${interest.freelancerName || 'Team member'} landed a project`,
+                body: `Brief: ${briefForActivity?.title || interest.briefTitle || 'Untitled'} — accepted by client`,
+                entityType: 'project',
+                entityId: project.id,
+                actorId: interest.freelancerId,
+                actorName: interest.freelancerName || undefined,
+              });
+            }
+          } catch (e) { console.error('agency tagging error', e); }
           // Remove brief from the public board
           if (interest.briefId) {
             try { await storage.deactivateBrief(interest.briefId); } catch {}
@@ -1933,10 +2038,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const paymentType = intent.metadata?.payment_type;
 
       // Update project to completed + paid
-      await storage.updateProject(Number(projectId), {
-        status: "completed",
-        paymentStatus: "paid",
-      });
+      await storage.updateProjectStatus(Number(projectId), "completed", "paid");
 
       // If freelancer is fully onboarded, transfer immediately
       if (paymentType === "direct_transfer") {
@@ -2015,13 +2117,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             // Mark project as paid
             const projectId = Number(meta.projectId);
             if (projectId) {
-              await storage.updateProject(projectId, { status: "completed", paymentStatus: "paid" } as any);
+              await storage.updateProjectStatus(projectId, "completed", "paid");
             }
           } else if (meta.payment_type === "direct_transfer") {
             // Direct transfer — just mark project paid
             const projectId = Number(meta.projectId);
             if (projectId) {
-              await storage.updateProject(projectId, { status: "completed", paymentStatus: "paid" } as any);
+              await storage.updateProjectStatus(projectId, "completed", "paid");
             }
             console.log(`[webhook] Direct transfer complete for project ${meta.projectId}`);
           }
@@ -2060,25 +2162,63 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           if (!user) return res.json({ received: true });
 
           const pendingPence = user.stripePendingPence ?? 0;
+          const stripeAccountId = user.stripeAccountId!;
 
-          // Transfer any held earnings now they're verified
-          if (pendingPence > 0 && user.stripeAccountId) {
+          // ── Step 1: Set minimum payout delay (2 days) + daily schedule ──────
+          // This runs for ALL newly verified accounts, before anything else.
+          // delay_days_override = 2 is the UK minimum — cuts the rolling window
+          // from 7 days down to 2 business days for all future payouts.
+          try {
+            await stripe.accounts.update(stripeAccountId, {
+              settings: {
+                payouts: {
+                  schedule: { interval: "daily", delay_days: 2 },
+                },
+              },
+            });
+            console.log(`[webhook] Set payout delay to 2 days for account ${stripeAccountId}`);
+          } catch (err: any) {
+            // Non-fatal — log and continue
+            console.warn(`[webhook] Could not set delay_days for ${stripeAccountId}:`, err.message);
+          }
+
+          // ── Step 2: Pre-charge transfer to start the payout clock ────────────
+          // A £1 transfer from the Viewrr platform balance to the freelancer's
+          // connected account starts the 7-day first-payout clock immediately.
+          // This means by the time their first real client payment arrives,
+          // the waiting period is already counting down (or may already be done).
+          // Idempotency key ensures this only ever fires once per account.
+          const prechargeKey = `precharge_clock_${stripeAccountId}`;
+          try {
+            await stripe.transfers.create({
+              amount: 35, // £0.35 in pence
+              currency: "gbp",
+              destination: stripeAccountId,
+              description: "Viewrr welcome credit — starts your payout clock",
+              metadata: {
+                viewrr_user_id: String(viewrrUserId),
+                type: "payout_clock_starter",
+              },
+            }, { idempotencyKey: prechargeKey });
+            console.log(`[webhook] Pre-charge £1 sent to ${stripeAccountId} to start payout clock`);
+          } catch (err: any) {
+            // Non-fatal — if this fails (e.g. insufficient platform balance) log it
+            console.warn(`[webhook] Pre-charge transfer failed for ${stripeAccountId}:`, err.message);
+          }
+
+          // ── Step 3: Release any held earnings ────────────────────────────────
+          if (pendingPence > 0) {
             try {
               await stripe.transfers.create({
                 amount: pendingPence,
                 currency: "gbp",
-                destination: user.stripeAccountId,
+                destination: stripeAccountId,
                 description: `Viewrr held earnings release for user ${viewrrUserId}`,
                 metadata: { viewrr_user_id: String(viewrrUserId) },
               }, { idempotencyKey: `transfer_${viewrrUserId}_${Date.now()}` });
 
               await storage.updateStripeAccount(viewrrUserId, { stripeOnboarded: 1, stripePendingPence: 0 });
               console.log(`[webhook] Released ${pendingPence}p to user ${viewrrUserId}`);
-
-              // Switch to automatic daily payouts now they're verified
-              await stripe.accounts.update(user.stripeAccountId, {
-                settings: { payouts: { schedule: { interval: "daily" } } },
-              });
 
               await notify({
                 recipientId: viewrrUserId,
@@ -2096,9 +2236,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           } else {
             // No pending earnings — just mark as onboarded
             await storage.updateStripeAccount(viewrrUserId, { stripeOnboarded: 1 });
-            await stripe.accounts.update(user.stripeAccountId!, {
-              settings: { payouts: { schedule: { interval: "daily" } } },
-            });
           }
         }
 
@@ -2109,4 +2246,466 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
     }
   );
+
+  // ─── Agency Routes ────────────────────────────────────────────────────────────────
+
+  // POST /api/agencies — create a new agency (owner must be a freelancer with no existing agency)
+  app.post("/api/agencies", async (req, res) => {
+    try {
+      const { ownerUserId, name, bio, specialisms, reelUrl, location, website } = req.body;
+      if (!ownerUserId || !name) return res.status(400).json({ error: "ownerUserId and name are required" });
+
+      const owner = await storage.getUser(ownerUserId);
+      if (!owner) return res.status(404).json({ error: "User not found" });
+      if (owner.role !== "freelancer") return res.status(403).json({ error: "Only freelancers can create agencies" });
+
+      // Check they don't already own one
+      const existing = await storage.getAgencyByOwner(ownerUserId);
+      if (existing) return res.status(409).json({ error: "You already have an agency" });
+
+      // Generate slug from name
+      const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + "-" + Math.random().toString(36).slice(2, 6);
+      // Generate unique invite code
+      const inviteCode = crypto.randomBytes(12).toString("hex");
+
+      const agency = await storage.createAgency({
+        ownerUserId,
+        name,
+        slug,
+        bio: bio ?? "",
+        specialisms: specialisms ? JSON.stringify(specialisms) : "[]",
+        reelUrl: reelUrl ?? null,
+        location: location ?? null,
+        website: website ?? null,
+        inviteCode,
+      });
+
+      // Update owner's accountSubtype and agencyId
+      await storage.updateUserAgencyFields(ownerUserId, { accountSubtype: "agency_owner", agencyId: agency.id });
+
+      res.json(agency);
+    } catch (e: any) {
+      console.error("[POST /api/agencies]", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/agencies/mine — get the agency owned by the current user
+  app.get("/api/agencies/mine/:userId", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId);
+      const agency = await storage.getAgencyByOwner(userId);
+      if (!agency) return res.status(404).json({ error: "No agency found" });
+      res.json(agency);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/agencies/slug/:slug — public profile data
+  app.get("/api/agencies/slug/:slug", async (req, res) => {
+    try {
+      const agency = await storage.getAgencyBySlug(req.params.slug);
+      if (!agency) return res.status(404).json({ error: "Agency not found" });
+      const members = await storage.getAgencyMembers(agency.id);
+      res.json({ agency, members });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/agencies/join/:code — look up agency by invite code (no auth needed)
+  app.get("/api/agencies/join/:code", async (req, res) => {
+    try {
+      const agency = await storage.getAgencyByInviteCode(req.params.code);
+      if (!agency) return res.status(404).json({ error: "Invalid invite link" });
+      const owner = await storage.getUser(agency.ownerUserId);
+      res.json({ agency, ownerName: owner?.name ?? "Unknown" });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/agencies/:id/join — freelancer joins via invite (creates pending member record)
+  app.post("/api/agencies/:id/join", async (req, res) => {
+    try {
+      const agencyId = parseInt(req.params.id);
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+
+      const user = await storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.role !== "freelancer") return res.status(403).json({ error: "Only freelancers can join agencies" });
+
+      // Check already a member somewhere
+      const existingMembership = await storage.getAgencyMemberByUser(userId);
+      if (existingMembership) return res.status(409).json({ error: "You are already part of an agency" });
+
+      const agency = await storage.getAgency(agencyId);
+      if (!agency) return res.status(404).json({ error: "Agency not found" });
+      if (agency.ownerUserId === userId) return res.status(400).json({ error: "You own this agency" });
+
+      const member = await storage.addAgencyMember({ agencyId, userId, status: "pending" });
+
+      // Notify the owner
+      await notify({
+        recipientId: agency.ownerUserId,
+        actorId: userId,
+        actorName: user.name,
+        actorAvatar: user.avatar ?? null,
+        type: "agency_join_request",
+        message: `${user.name} wants to join your agency "${agency.name}".`,
+        link: "/dashboard",
+        read: 0,
+      });
+
+      res.json(member);
+    } catch (e: any) {
+      console.error("[POST /api/agencies/:id/join]", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/agencies/members/:memberId/approve — owner approves a pending member
+  app.post("/api/agencies/members/:memberId/approve", async (req, res) => {
+    try {
+      const memberId = parseInt(req.params.memberId);
+      const { userId } = req.body;
+
+      await storage.approveAgencyMember(memberId);
+
+      if (userId) {
+        const memberRecord = await storage.getAgencyMemberByUser(userId);
+        if (memberRecord) {
+          await storage.updateUserAgencyFields(userId, { accountSubtype: "agency_member", agencyId: memberRecord.agencyId });
+        }
+      }
+
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE /api/agencies/:agencyId/members/:userId — owner removes a member
+  app.delete("/api/agencies/:agencyId/members/:userId", async (req, res) => {
+    try {
+      const agencyId = parseInt(req.params.agencyId);
+      const userId = parseInt(req.params.userId);
+      await storage.removeAgencyMember(agencyId, userId);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/agencies/:id/dashboard — owner dashboard data
+  app.get("/api/agencies/:id/dashboard", async (req, res) => {
+    try {
+      const agencyId = parseInt(req.params.id);
+      const dashboard = await storage.getAgencyDashboard(agencyId);
+      res.json(dashboard);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/agencies/:id/members — get all members for an agency
+  app.get("/api/agencies/:id/members", async (req, res) => {
+    try {
+      const agencyId = parseInt(req.params.id);
+      const members = await storage.getAgencyMembers(agencyId);
+      res.json(members);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/agencies/membership/:userId — get a freelancer's agency membership
+  app.get("/api/agencies/membership/:userId", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId);
+      const member = await storage.getAgencyMemberByUser(userId);
+      if (!member) return res.json(null);
+      const agency = await storage.getAgency(member.agencyId);
+      res.json({ member, agency });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/agencies/:agencyId/members/:memberId/rate — owner sets member rate card
+  app.patch("/api/agencies/:agencyId/members/:memberId/rate", async (req, res) => {
+    try {
+      const agencyId = parseInt(req.params.agencyId);
+      const memberId = parseInt(req.params.memberId);
+      const { role, dayRatePence, hourlyRatePence } = req.body;
+      const updated = await storage.updateAgencyMemberRate(memberId, agencyId, {
+        role: role ?? undefined,
+        dayRatePence: dayRatePence !== undefined ? (dayRatePence === null ? null : Number(dayRatePence)) : undefined,
+        hourlyRatePence: hourlyRatePence !== undefined ? (hourlyRatePence === null ? null : Number(hourlyRatePence)) : undefined,
+      });
+      if (!updated) return res.status(404).json({ error: "Member not found" });
+      res.json(updated);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/agencies/:id — owner updates agency profile (featuredWork, testimonials, bio, etc.)
+  app.patch("/api/agencies/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { name, bio, location, website, specialisms, reelUrl, logo, banner, featuredWork, testimonials } = req.body;
+      const patch: Record<string, any> = {};
+      if (name !== undefined) patch.name = name;
+      if (bio !== undefined) patch.bio = bio;
+      if (location !== undefined) patch.location = location;
+      if (website !== undefined) patch.website = website;
+      if (specialisms !== undefined) patch.specialisms = specialisms;
+      if (reelUrl !== undefined) patch.reelUrl = reelUrl;
+      if (logo !== undefined) patch.logo = logo;
+      if (banner !== undefined) patch.banner = banner;
+      if (featuredWork !== undefined) patch.featuredWork = featuredWork;
+      if (testimonials !== undefined) patch.testimonials = testimonials;
+      const updated = await storage.updateAgency(id, patch);
+      if (!updated) return res.status(404).json({ error: "Agency not found" });
+      res.json(updated);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // Agency Brief Pipeline Routes
+  // ─────────────────────────────────────────────────────────────
+
+  // GET  /api/agencies/:id/briefs          — agency owner fetches all their briefs
+  app.get("/api/agencies/:id/briefs", async (req, res) => {
+    try {
+      const agencyId = parseInt(req.params.id);
+      const briefs = await storage.getAgencyBriefs(agencyId);
+      // Enrich each brief with its proposal (if any)
+      const enriched = await Promise.all(
+        briefs.map(async (b) => {
+          const proposal = await storage.getAgencyProposal(b.id);
+          return { ...b, proposal: proposal || null };
+        })
+      );
+      res.json(enriched);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/agencies/my-proposals — proposals sent TO the logged-in client
+  app.get("/api/agencies/my-proposals", requireAuth, async (req, res) => {
+    try {
+      const clientId = req.user!.id;
+      // Find all agency_briefs where client_id = clientId that have a proposal
+      const briefs = await db
+        .select()
+        .from(schema.agencyBriefs)
+        .where(drizzleSql`${schema.agencyBriefs.clientId} = ${clientId} AND ${schema.agencyBriefs.status} IN ('proposal_sent', 'won', 'lost')`);
+      const result = await Promise.all(briefs.map(async (brief) => {
+        const proposal = await db
+          .select()
+          .from(schema.agencyProposals)
+          .where(eq(schema.agencyProposals.agencyBriefId, brief.id))
+          .then(r => r[0] || null);
+        const agency = brief.agencyId ? await storage.getAgency(brief.agencyId) : null;
+        return { ...brief, proposal, agency };
+      }));
+      res.json(result);
+    } catch (e: any) {
+      console.error(e);
+      res.status(500).json({ error: 'Failed to fetch proposals' });
+    }
+  });
+
+  // POST /api/agencies/:id/briefs          — client submits a brief to this agency
+  app.post("/api/agencies/:id/briefs", async (req, res) => {
+    try {
+      const agencyId = parseInt(req.params.id);
+      const { clientId, clientName, clientAvatar, title, description, category, budgetMin, budgetMax, startDate, duration, requirements } = req.body;
+      if (!clientId || !title || !description) return res.status(400).json({ error: "clientId, title and description are required" });
+      const brief = await storage.createAgencyBrief({
+        agencyId,
+        clientId,
+        clientName: clientName || "Client",
+        clientAvatar: clientAvatar || null,
+        title,
+        description,
+        category: category || "",
+        budgetMin: budgetMin ? parseInt(budgetMin) : null,
+        budgetMax: budgetMax ? parseInt(budgetMax) : null,
+        startDate: startDate || null,
+        duration: duration || null,
+        requirements: requirements || "",
+        status: "incoming",
+      });
+      // Log activity
+      await storage.createAgencyActivity({
+        agencyId,
+        type: "brief_received",
+        title: `New brief received: ${title}`,
+        body: `From ${clientName || "a client"}.`,
+        entityType: "brief",
+        entityId: brief.id,
+        actorId: clientId,
+        actorName: clientName || null,
+      });
+      res.status(201).json(brief);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/agencies/briefs/:briefId/status  — update brief status
+  app.patch("/api/agencies/briefs/:briefId/status", async (req, res) => {
+    try {
+      const briefId = parseInt(req.params.briefId);
+      const { status } = req.body;
+      const valid = ["incoming", "viewed", "proposal_sent", "won", "lost", "declined"];
+      if (!valid.includes(status)) return res.status(400).json({ error: "Invalid status" });
+      const brief = await storage.updateAgencyBriefStatus(briefId, status);
+      if (!brief) return res.status(404).json({ error: "Brief not found" });
+      res.json(brief);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // Agency Proposal Routes
+  // ─────────────────────────────────────────────────────────────
+
+  // POST /api/agencies/briefs/:briefId/proposal  — agency sends a proposal
+  app.post("/api/agencies/briefs/:briefId/proposal", async (req, res) => {
+    try {
+      const briefId = parseInt(req.params.briefId);
+      const brief = await storage.getAgencyBrief(briefId);
+      if (!brief) return res.status(404).json({ error: "Brief not found" });
+      const existing = await storage.getAgencyProposal(briefId);
+      if (existing) return res.status(409).json({ error: "Proposal already exists for this brief" });
+      const { quotedAmountPence, coverNote, timeline, teamMemberIds, breakdown } = req.body;
+      if (!quotedAmountPence) return res.status(400).json({ error: "quotedAmountPence is required" });
+      const proposal = await storage.createAgencyProposal({
+        agencyBriefId: briefId,
+        agencyId: brief.agencyId,
+        quotedAmountPence: parseInt(quotedAmountPence),
+        coverNote: coverNote || "",
+        timeline: timeline || "",
+        teamMemberIds: teamMemberIds ? JSON.stringify(teamMemberIds) : "[]",
+        breakdown: breakdown || "",
+        status: "sent",
+        sentAt: new Date().toISOString(),
+        respondedAt: null,
+      });
+      // Mark brief as proposal_sent
+      await storage.updateAgencyBriefStatus(briefId, "proposal_sent");
+      // Log activity
+      await storage.createAgencyActivity({
+        agencyId: brief.agencyId,
+        type: "proposal_sent",
+        title: `Proposal sent: ${brief.title}`,
+        body: `Quoted £${(parseInt(quotedAmountPence) / 100).toFixed(2)} to ${brief.clientName}.`,
+        entityType: "proposal",
+        entityId: proposal.id,
+        actorId: null,
+        actorName: null,
+      });
+      // Notify the client
+      try {
+        const briefForNotif = await storage.getAgencyBrief(briefId);
+        if (briefForNotif) {
+          const agencyForNotif = await storage.getAgency(briefForNotif.agencyId);
+          await storage.createNotification({
+            recipientId: briefForNotif.clientId,
+            actorId: briefForNotif.agencyId,
+            actorName: agencyForNotif?.name || 'Agency',
+            actorAvatar: null,
+            type: 'agency_proposal',
+            message: `You have received a proposal for your brief: ${briefForNotif.title}`,
+            link: '/dashboard',
+            read: 0,
+          });
+        }
+      } catch (e) { /* best effort */ }
+      res.status(201).json(proposal);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/agencies/proposals/:proposalId/status  — client responds (accept/decline)
+  app.patch("/api/agencies/proposals/:proposalId/status", async (req, res) => {
+    try {
+      const proposalId = parseInt(req.params.proposalId);
+      const { status, agencyId, briefTitle, clientName } = req.body;
+      const valid = ["accepted", "declined"];
+      if (!valid.includes(status)) return res.status(400).json({ error: "Status must be accepted or declined" });
+      const proposal = await storage.updateAgencyProposalStatus(proposalId, status);
+      if (!proposal) return res.status(404).json({ error: "Proposal not found" });
+      // Update the brief status accordingly
+      await storage.updateAgencyBriefStatus(proposal.agencyBriefId, status === "accepted" ? "won" : "lost");
+      // Log activity
+      if (agencyId) {
+        await storage.createAgencyActivity({
+          agencyId: parseInt(agencyId),
+          type: status === "accepted" ? "proposal_accepted" : "proposal_declined",
+          title: status === "accepted" ? `Proposal accepted! 🎉` : `Proposal declined`,
+          body: status === "accepted"
+            ? `${clientName || "Client"} accepted your proposal for “${briefTitle || "project"}”.`
+            : `${clientName || "Client"} declined your proposal for “${briefTitle || "project"}”.`,
+          entityType: "proposal",
+          entityId: proposalId,
+          actorId: null,
+          actorName: clientName || null,
+        });
+      }
+      // Auto-create a project when agency proposal is accepted
+      try {
+        const agencyBriefForProject = await storage.getAgencyBrief(proposal.agencyBriefId);
+        if (agencyBriefForProject && status === 'accepted') {
+          const agencyForProject = await storage.getAgency(proposal.agencyId);
+          const freelancerPlaceholderId = agencyForProject?.ownerUserId ?? agencyBriefForProject.clientId;
+          await storage.createProject({
+            clientId: agencyBriefForProject.clientId,
+            freelancerId: freelancerPlaceholderId,
+            title: agencyBriefForProject.title,
+            description: agencyBriefForProject.description || '',
+            status: 'active',
+            currentStage: 0,
+            briefId: null,
+            interestId: null,
+            freelancerName: agencyForProject?.name || 'Agency',
+            clientName: agencyBriefForProject.clientName,
+            briefCategory: agencyBriefForProject.category || '',
+            agencyId: proposal.agencyId,
+            agencyBriefId: proposal.agencyBriefId,
+            agreedAmountPence: proposal.quotedAmountPence,
+          } as any);
+        }
+      } catch (e) { console.error('proposal project creation error', e); }
+      res.json(proposal);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // Agency Activity Feed Route
+  // ─────────────────────────────────────────────────────────────
+
+  app.get("/api/agencies/:id/activity", async (req, res) => {
+    try {
+      const agencyId = parseInt(req.params.id);
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+      const feed = await storage.getAgencyActivity(agencyId, limit);
+      res.json(feed);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 }

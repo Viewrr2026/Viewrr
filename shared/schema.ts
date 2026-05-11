@@ -10,6 +10,8 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash"),
   phone: text("phone"),
   role: text("role").notNull().default("freelancer"), // "freelancer" | "client"
+  accountSubtype: text("account_subtype").default("sole"), // "sole" | "agency_owner" | "agency_member"
+  agencyId: integer("agency_id"),  // set if agency_owner or agency_member
   avatar: text("avatar"),
   banner: text("banner"),
   headline: text("headline"),   // e.g. "Videographer & Director · London"
@@ -152,6 +154,8 @@ export const projects = pgTable("projects", {
   totalCycles: integer("total_cycles"),                                    // agreed number of cycles (null = open-ended)
   currentCycleNumber: integer("current_cycle_number").default(1),          // which cycle is live
   agreedAmountPence: integer("agreed_amount_pence"),                        // locked agreed price in pence
+  agencyId: integer("agency_id"),           // set if project sourced via agency member
+  agencyBriefId: integer("agency_brief_id"), // set if project created from accepted agency proposal
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 
@@ -390,3 +394,118 @@ export const projectInvitations = pgTable("project_invitations", {
   totalCycles: integer("total_cycles"),
 });
 export type ProjectInvitation = typeof projectInvitations.$inferSelect;
+
+// ─── Agencies ─────────────────────────────────────────────────────────────────
+export const agencies = pgTable("agencies", {
+  id: serial("id").primaryKey(),
+  ownerUserId: integer("owner_user_id").notNull().unique(),
+  name: text("name").notNull(),
+  slug: text("slug").notNull().unique(),          // URL-safe e.g. "spark-films"
+  bio: text("bio").notNull().default(""),
+  logo: text("logo"),                             // avatar URL
+  banner: text("banner"),                         // banner image URL
+  location: text("location"),
+  website: text("website"),
+  specialisms: text("specialisms").notNull().default("[]"), // JSON array
+  reelUrl: text("reel_url"),
+  inviteCode: text("invite_code").notNull().unique(), // random token for invite links
+  featuredWork: text("featured_work").notNull().default("[]"),  // JSON array of {url, label, type: "image"|"video"}
+  testimonials: text("testimonials").notNull().default("[]"),   // JSON array of {name, role, company, quote, avatar}
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+
+export const insertAgencySchema = createInsertSchema(agencies).omit({ id: true, createdAt: true });
+export type InsertAgency = z.infer<typeof insertAgencySchema>;
+export type Agency = typeof agencies.$inferSelect;
+
+// ─── Agency Members ───────────────────────────────────────────────────────────
+export const agencyMembers = pgTable("agency_members", {
+  id: serial("id").primaryKey(),
+  agencyId: integer("agency_id").notNull(),
+  userId: integer("user_id").notNull().unique(), // one agency per freelancer
+  status: text("status").notNull().default("pending"), // "pending" | "active"
+  role: text("role").notNull().default("member"),        // display role e.g. "Lead Editor"
+  dayRatePence: integer("day_rate_pence"),               // agency-internal rate (pence)
+  hourlyRatePence: integer("hourly_rate_pence"),         // agency-internal rate (pence)
+  joinedAt: text("joined_at"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+
+export const insertAgencyMemberSchema = createInsertSchema(agencyMembers).omit({ id: true, createdAt: true });
+export type InsertAgencyMember = z.infer<typeof insertAgencyMemberSchema>;
+export type AgencyMember = typeof agencyMembers.$inferSelect;
+
+// ─── Time Entries ─────────────────────────────────────────────────────────────
+export const timeEntries = pgTable("time_entries", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  userId: integer("user_id").notNull(),
+  agencyId: integer("agency_id"),               // null for sole freelancers
+  description: text("description").notNull().default(""),
+  minutes: integer("minutes").notNull(),         // total minutes logged
+  billable: boolean("billable").notNull().default(true),
+  loggedAt: text("logged_at").notNull(),         // ISO date string "YYYY-MM-DD"
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+
+export const insertTimeEntrySchema = createInsertSchema(timeEntries).omit({ id: true, createdAt: true });
+export type InsertTimeEntry = z.infer<typeof insertTimeEntrySchema>;
+export type TimeEntry = typeof timeEntries.$inferSelect;
+
+// ─── Agency Briefs (client → agency direct briefs) ───────────────────────────────────
+export const agencyBriefs = pgTable("agency_briefs", {
+  id: serial("id").primaryKey(),
+  agencyId: integer("agency_id").notNull(),
+  clientId: integer("client_id").notNull(),
+  clientName: text("client_name").notNull(),
+  clientAvatar: text("client_avatar"),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  category: text("category").notNull().default(""),
+  budgetMin: integer("budget_min"),               // pence
+  budgetMax: integer("budget_max"),               // pence
+  startDate: text("start_date"),
+  duration: text("duration"),
+  requirements: text("requirements").notNull().default(""),
+  status: text("status").notNull().default("incoming"), // "incoming"|"viewed"|"proposal_sent"|"won"|"lost"|"declined"
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export const insertAgencyBriefSchema = createInsertSchema(agencyBriefs).omit({ id: true, createdAt: true });
+export type InsertAgencyBrief = z.infer<typeof insertAgencyBriefSchema>;
+export type AgencyBrief = typeof agencyBriefs.$inferSelect;
+
+// ─── Agency Proposals (agency response to a brief) ─────────────────────────────
+export const agencyProposals = pgTable("agency_proposals", {
+  id: serial("id").primaryKey(),
+  agencyBriefId: integer("agency_brief_id").notNull().unique(), // one proposal per brief
+  agencyId: integer("agency_id").notNull(),
+  quotedAmountPence: integer("quoted_amount_pence").notNull(),
+  coverNote: text("cover_note").notNull().default(""),
+  timeline: text("timeline").notNull().default(""),           // e.g. "4–6 weeks"
+  teamMemberIds: text("team_member_ids").notNull().default("[]"), // JSON array of agencyMember.userId
+  breakdown: text("breakdown").notNull().default(""),          // free-text cost breakdown
+  status: text("status").notNull().default("sent"),           // "sent"|"accepted"|"declined"
+  sentAt: text("sent_at").notNull().default(new Date().toISOString()),
+  respondedAt: text("responded_at"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export const insertAgencyProposalSchema = createInsertSchema(agencyProposals).omit({ id: true, createdAt: true });
+export type InsertAgencyProposal = z.infer<typeof insertAgencyProposalSchema>;
+export type AgencyProposal = typeof agencyProposals.$inferSelect;
+
+// ─── Agency Activity Feed ─────────────────────────────────────────────────────────
+export const agencyActivity = pgTable("agency_activity", {
+  id: serial("id").primaryKey(),
+  agencyId: integer("agency_id").notNull(),
+  type: text("type").notNull(), // "brief_received"|"brief_viewed"|"proposal_sent"|"proposal_accepted"|"proposal_declined"|"member_joined"|"member_left"|"rate_updated"|"profile_updated"|"time_logged"
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),
+  entityType: text("entity_type"),   // "brief"|"proposal"|"member"|"project" — the related entity
+  entityId: integer("entity_id"),    // id of the related entity
+  actorId: integer("actor_id"),      // userId who triggered the event (null for system events)
+  actorName: text("actor_name"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export const insertAgencyActivitySchema = createInsertSchema(agencyActivity).omit({ id: true, createdAt: true });
+export type InsertAgencyActivity = z.infer<typeof insertAgencyActivitySchema>;
+export type AgencyActivity = typeof agencyActivity.$inferSelect;
