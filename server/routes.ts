@@ -2499,9 +2499,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // GET /api/agencies/my-proposals — proposals sent TO the logged-in client
-  app.get("/api/agencies/my-proposals", requireAuth, async (req, res) => {
+  app.get("/api/agencies/my-proposals", async (req, res) => {
     try {
-      const clientId = req.user!.id;
+      if (!req.user) return res.status(401).json({ error: "Not logged in" });
+      const clientId = req.user.id;
       // Find all agency_briefs where client_id = clientId that have a proposal
       const briefs = await db
         .select()
