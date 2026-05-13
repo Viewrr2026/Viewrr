@@ -355,6 +355,11 @@ function ExpressInterestModal({ brief, open, onClose }: { brief: Brief | null; o
       toast({ title: "Please sign in to express interest", variant: "destructive" });
       return;
     }
+    const briefClientId = (brief as any).clientId ?? 0;
+    if (!briefClientId || briefClientId === 0) {
+      toast({ title: "Demo brief", description: "This is a sample brief. Sign up or log in to see real opportunities.", variant: "destructive" });
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch("/api/interests", {

@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import LoginModal from "@/components/LoginModal";
 import SignupModal from "@/components/SignupModal";
 import MeetingSection from "@/components/MeetingSection";
-import DeliverablesSection from "@/components/DeliverablesSection";
+import DeliverablesSection, { StripePaymentDialog } from "@/components/DeliverablesSection";
 
 import CreateProjectModal from "@/components/CreateProjectModal";
 import {
@@ -355,6 +355,7 @@ function ProjectModal({ pw, currentUserId, onClose }: {
   const [showMeetings, setShowMeetings] = useState(false);
   const [leftTab, setLeftTab] = useState<"progress" | "description">("progress");
   const [showSendWork, setShowSendWork] = useState(false);
+  const [retainerPayOpen, setRetainerPayOpen] = useState<{ projectId: number; clientId: number; amountPence: number; freelancerName: string } | null>(null);
   const isFreelancer = currentUserId === pw.freelancer.id;
   const isClient = currentUserId === pw.client.id;
   const canAdvance = isFreelancer && pw.project.currentStage < STAGES.length - 1 && pw.project.status !== "completed" && pw.project.status !== "awaiting_payment";
@@ -655,12 +656,16 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                           size="sm"
                           className="w-full text-white"
                           style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                          disabled={payCycleMutation.isPending}
-                          onClick={() => currentCycle && payCycleMutation.mutate(currentCycle.id)}
+                          onClick={() => setRetainerPayOpen({
+                            projectId: pw.project.id,
+                            clientId: currentUserId,
+                            amountPence: (pw.project as any).agreedAmountPence ?? (pw.project.budgetMax ? Math.round(pw.project.budgetMax * 100) : 5000),
+                            freelancerName: pw.freelancer.name,
+                          })}
                           data-testid="btn-pay-cycle"
                         >
                           <DollarSign size={12} className="mr-1.5" />
-                          {payCycleMutation.isPending ? "Recording…" : "Confirm Payment for this Cycle"}
+                          Pay this cycle via Stripe
                         </Button>
                       )}
 
@@ -735,14 +740,14 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                             Stage {pw.project.currentStage + 1} of {STAGES.length}
                           </span>
                           <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>
-                            {Math.round((pw.project.currentStage / (STAGES.length - 1)) * 100)}%
+                            {Math.round(((pw.project.currentStage + 1) / 6) * 100)}%
                           </span>
                         </div>
                         <div className="h-2 rounded-full bg-muted overflow-hidden">
                           <div
                             className="h-full rounded-full transition-all duration-700"
                             style={{
-                              width: `${Math.round((pw.project.currentStage / (STAGES.length - 1)) * 100)}%`,
+                              width: `${Math.round(((pw.project.currentStage + 1) / 6) * 100)}%`,
                               background: "linear-gradient(90deg, #FF5A1F, #FFA500)",
                             }}
                           />
@@ -850,6 +855,8 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                   projectTitle={pw.project.title}
                   freelancerName={pw.freelancer.name}
                   clientId={pw.project.clientId}
+                  clientName={pw.client?.name}
+                  clientEmail={(pw.client as any)?.email}
                   agreedAmountPence={(pw.project as any).agreedAmountPence ?? (pw.project.budgetMax ? Math.round(pw.project.budgetMax * 100) : undefined)}
                   onPaymentConfirmed={() => {
                     queryClient.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
@@ -865,6 +872,8 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                   projectTitle={pw.project.title}
                   freelancerName={pw.freelancer.name}
                   clientId={pw.project.clientId}
+                  clientName={pw.client?.name}
+                  clientEmail={(pw.client as any)?.email}
                   agreedAmountPence={(pw.project as any).agreedAmountPence ?? (pw.project.budgetMax ? Math.round(pw.project.budgetMax * 100) : undefined)}
                 />
               )}
@@ -913,16 +922,19 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                       </Button>
                     )}
                     {isSendWorkStage && pw.project.status !== "awaiting_payment" && pw.project.status !== "completed" && (
-                      <Button
-                        size="sm"
-                        className="flex-1 text-sm text-white"
-                        style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                        onClick={() => setShowSendWork(true)}
-                        data-testid="btn-send-work"
-                      >
-                        <Upload size={13} className="mr-1.5" />
-                        Send work
-                      </Button>
+                      <div className="flex flex-col gap-1 flex-1">
+                        <Button
+                          size="sm"
+                          className="w-full text-sm text-white"
+                          style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                          onClick={() => setShowSendWork(true)}
+                          data-testid="btn-send-work"
+                        >
+                          <Upload size={13} className="mr-1.5" />
+                          Send work
+                        </Button>
+                        <p className="text-xs text-muted-foreground mt-1">Sends your final delivery to the client and triggers the payment gate</p>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -931,6 +943,24 @@ function ProjectModal({ pw, currentUserId, onClose }: {
           </div>
         </div>
       </div>
+
+      {/* Retainer Stripe pay dialog */}
+      {retainerPayOpen && (
+        <StripePaymentDialog
+          open={true}
+          onClose={() => setRetainerPayOpen(null)}
+          projectId={retainerPayOpen.projectId}
+          projectTitle={pw.project.title}
+          freelancerName={retainerPayOpen.freelancerName}
+          clientUserId={retainerPayOpen.clientId}
+          agreedAmountPence={retainerPayOpen.amountPence}
+          onPaymentDone={() => {
+            setRetainerPayOpen(null);
+            queryClient.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
+            refetchCycles();
+          }}
+        />
+      )}
 
       {/* Send Work Modal */}
       {showSendWork && (
@@ -1232,7 +1262,7 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen }: {
   const isFreelancer = currentUserId === pw.freelancer.id;
   const isClient = currentUserId === pw.client.id;
   const otherPerson  = isFreelancer ? pw.client : pw.freelancer;
-  const pct = Math.round((pw.project.currentStage / (STAGES.length - 1)) * 100);
+  const pct = Math.round(((pw.project.currentStage + 1) / 6) * 100);
   const isCompleted = pw.project.status === "completed";
   const visKey = `project_visibility_${pw.project.id}`;
   const [isPublic, setIsPublic] = useState(() => safeGet(visKey) !== "private");

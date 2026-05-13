@@ -448,7 +448,7 @@ function CardForm({
 }
 
 // ── Stripe Payment Dialog (full native experience) ─────────────────────────────
-function StripePaymentDialog({
+export function StripePaymentDialog({
   open,
   projectId,
   projectTitle,
@@ -718,12 +718,14 @@ interface Props {
   projectId: number;
   userId: number;
   isFreelancer: boolean;
-  projectStatus?: string;       // "active" | "awaiting_payment" | "completed"
-  paymentStatus?: string;       // "unpaid" | "paid"
+  projectStatus?: string;
+  paymentStatus?: string;
   projectTitle?: string;
   freelancerName?: string;
   clientId?: number;
-  agreedAmountPence?: number;   // pre-fills and locks the payment amount
+  clientName?: string;
+  clientEmail?: string;
+  agreedAmountPence?: number;
   onPaymentConfirmed?: () => void;
 }
 
@@ -736,6 +738,8 @@ export default function DeliverablesSection({
   projectTitle = "this project",
   freelancerName = "the freelancer",
   clientId,
+  clientName: clientNameProp,
+  clientEmail: clientEmailProp,
   agreedAmountPence,
   onPaymentConfirmed,
 }: Props) {
@@ -840,7 +844,7 @@ export default function DeliverablesSection({
           </p>
           {isFreelancer && !showAdd && projectStatus !== "completed" && (
             <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5" onClick={() => setShowAdd(true)}>
-              <Plus size={12} /> Share work
+              <Plus size={12} /> Upload work
             </Button>
           )}
         </div>
@@ -1193,7 +1197,8 @@ export default function DeliverablesSection({
                     .map(i => ({ ...i, totalPence: i.unitPricePence * i.quantity }));
                   await apiRequest('POST', `/api/projects/${projectId}/invoice`, {
                     clientId,
-                    clientName: '',
+                    clientName: clientNameProp || '',
+                    clientEmail: clientEmailProp || '',
                     projectTitle,
                     lineItems: items,
                     notes: invoiceNotes,

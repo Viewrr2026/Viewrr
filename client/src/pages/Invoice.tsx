@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
 import { ArrowLeft, Download, CreditCard, CheckCircle, Printer } from "lucide-react";
+import { StripePaymentDialog } from "@/components/DeliverablesSection";
 
 interface LineItem {
   description: string;
@@ -18,7 +19,7 @@ export default function Invoice() {
   const { projectId } = useParams<{ projectId: string }>();
   const [, setLocation] = useLocation();
   const { user } = useAuth();
-  const [payOpen, setPayOpen] = useState(false);
+  const [stripeOpen, setStripeOpen] = useState(false);
 
   const { data, isLoading, error } = useQuery<{ invoice: any; template: any }>({
     queryKey: ['/api/projects', projectId, 'invoice'],
@@ -38,7 +39,7 @@ export default function Invoice() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-muted-foreground">
         <p className="text-lg font-semibold">Invoice not found</p>
-        <Button variant="outline" onClick={() => setLocation('/')}>Back to dashboard</Button>
+        <Button variant="outline" onClick={() => setLocation('/your-work')}>Back to dashboard</Button>
       </div>
     );
   }
@@ -67,7 +68,7 @@ export default function Invoice() {
 
       {/* Toolbar */}
       <div className="no-print sticky top-0 z-50 bg-background/95 backdrop-blur border-b border-border px-6 py-3 flex items-center justify-between">
-        <Button variant="ghost" size="sm" className="gap-2" onClick={() => setLocation('/')}>
+        <Button variant="ghost" size="sm" className="gap-2" onClick={() => setLocation('/your-work')}>
           <ArrowLeft size={14} /> Back
         </Button>
         <div className="flex items-center gap-2">
@@ -76,7 +77,7 @@ export default function Invoice() {
               size="sm"
               className="gap-2 text-white font-semibold"
               style={{ background: `linear-gradient(135deg,${accentColor},#FF8C42)` }}
-              onClick={() => setPayOpen(true)}
+              onClick={() => setStripeOpen(true)}
               data-testid="btn-pay-invoice"
             >
               <CreditCard size={13} /> Pay £{(invoice.totalPence / 100).toFixed(2)}
@@ -223,29 +224,20 @@ export default function Invoice() {
         </div>
       </div>
 
-      {/* Stripe pay dialog — redirect to project */}
-      {payOpen && (
-        <div
-          className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4"
-          onClick={e => { if (e.target === e.currentTarget) setPayOpen(false); }}
-        >
-          <div className="bg-background rounded-2xl p-6 max-w-sm w-full shadow-2xl">
-            <p className="font-bold text-lg mb-1">Pay Invoice {invoice.invoiceNumber}</p>
-            <p className="text-sm text-muted-foreground mb-4">Amount: <strong>£{(invoice.totalPence / 100).toFixed(2)}</strong></p>
-            <p className="text-xs text-muted-foreground mb-4">Please return to the project workspace to complete your payment securely via Stripe.</p>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setPayOpen(false)}>Cancel</Button>
-              <Button
-                className="flex-1 text-white"
-                style={{ background: `linear-gradient(135deg,#FF5A1F,#FF8C42)` }}
-                onClick={() => { setPayOpen(false); setLocation('/'); }}
-              >
-                Go to Project
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <StripePaymentDialog
+        open={stripeOpen}
+        onClose={() => setStripeOpen(false)}
+        projectId={invoice.projectId}
+        projectTitle={invoice.projectTitle || 'Invoice'}
+        clientUserId={invoice.clientId}
+        freelancerName={template?.businessName || "the freelancer"}
+        agreedAmountPence={invoice.totalPence}
+        onPaymentDone={() => {
+          setStripeOpen(false);
+          // Refresh invoice to show paid status
+          window.location.reload();
+        }}
+      />
     </>
   );
 }

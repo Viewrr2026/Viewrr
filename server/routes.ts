@@ -872,10 +872,42 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   app.post("/api/projects/:id/advance", async (req, res) => {
-    const { note, authorId } = req.body;
-    const updated = await storage.advanceProjectStage(Number(req.params.id), note || "", Number(authorId));
-    if (!updated) return res.status(404).json({ error: "Project not found" });
-    res.json(await storage.getProject(updated.id));
+    try {
+      if (!req.user) return res.status(401).json({ error: "Not logged in" });
+      const { note, authorId } = req.body;
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      // Only the assigned freelancer can advance stages
+      if (pw.project.freelancerId !== req.user.id) {
+        return res.status(403).json({ error: "Only the project freelancer can advance stages" });
+      }
+      // Guard against overflow
+      if ((pw.project.currentStage ?? 0) >= 5) {
+        return res.status(400).json({ error: "Project is already at the final stage" });
+      }
+      // Guard against advancing a completed project
+      if (pw.project.status === "completed") {
+        return res.status(400).json({ error: "Cannot advance a completed project" });
+      }
+      const updated = await storage.advanceProjectStage(projectId, note || "", req.user.id);
+      if (!updated) return res.status(404).json({ error: "Project not found" });
+      // Notify the client
+      const stageName = ["Brief & Kick-off", "Pre-production", "Production", "First Delivery", "Revisions", "Final Delivery"][updated.currentStage ?? 0] ?? "Next stage";
+      await notify({
+        recipientId: pw.project.clientId,
+        actorId: req.user.id,
+        actorName: pw.freelancer?.name ?? "Freelancer",
+        actorAvatar: pw.freelancer?.avatar ?? null,
+        type: "stage_advanced",
+        message: `"${pw.project.title}" has moved to ${stageName}`,
+        link: "/your-work",
+        read: 0,
+      });
+      res.json(await storage.getProject(updated.id));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.post("/api/projects/:id/updates", async (req, res) => {
@@ -1115,24 +1147,74 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // POST confirm payment for cycle — marks paid, auto-starts next cycle
   app.post("/api/projects/:id/retainer/pay-cycle", async (req, res) => {
     try {
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
       const projectId = Number(req.params.id);
-      const { cycleId } = req.body;
-      // Mark the cycle as paid
-      await storage.updateRetainerCycle(Number(cycleId), {
-        status: "paid",
-        paymentStatus: "paid",
-      });
-      // Check if there's a totalCycles limit
-      const projRows = await storage.getProject(projectId);
-      const proj = projRows?.project;
-      if (proj?.totalCycles && (proj.currentCycleNumber ?? 1) >= proj.totalCycles) {
-        // All cycles done — complete the retainer
-        await storage.updateProjectStatus(projectId, "completed", "paid");
-        return res.json({ done: true, completed: true });
+      const { cycleId, clientUserId, amountPence } = req.body;
+      if (!cycleId || !clientUserId || !amountPence) {
+        return res.status(400).json({ error: "cycleId, clientUserId, and amountPence required" });
       }
-      // Auto-start the next cycle
-      const nextCycle = await storage.startNextCycle(projectId);
-      res.json({ done: true, nextCycle });
+
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+
+      const freelancer = await storage.getUser(pw.project.freelancerId);
+      if (!freelancer) return res.status(404).json({ error: "Freelancer not found" });
+
+      const platformFeePence = Math.round(Number(amountPence) * (VIEWRR_FEE_PERCENT / 100));
+      const freelancerPence = Number(amountPence) - platformFeePence;
+
+      // Ensure freelancer has a Stripe account
+      let stripeAccountId = freelancer.stripeAccountId;
+      if (!stripeAccountId) {
+        const acct = await stripe.accounts.create({
+          type: "express", country: "GB", email: freelancer.email,
+          business_type: "individual",
+          capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+          metadata: { viewrr_user_id: String(freelancer.id) },
+        });
+        stripeAccountId = acct.id;
+        await storage.updateStripeAccount(freelancer.id, { stripeAccountId: acct.id, stripeOnboarded: 0 });
+      }
+
+      let useDirectTransfer = false;
+      try {
+        const acct = await stripe.accounts.retrieve(stripeAccountId);
+        useDirectTransfer = acct.charges_enabled === true && acct.capabilities?.transfers === "active";
+      } catch {}
+
+      const clientUser = await storage.getUser(Number(clientUserId));
+      const intentParams: Stripe.PaymentIntentCreateParams = {
+        amount: Number(amountPence),
+        currency: "gbp",
+        automatic_payment_methods: { enabled: true },
+        receipt_email: clientUser?.email,
+        description: `${pw.project.title} — Retainer Cycle`,
+        metadata: {
+          projectId: String(projectId),
+          cycleId: String(cycleId),
+          freelancerId: String(freelancer.id),
+          clientUserId: String(clientUserId),
+          payment_type: useDirectTransfer ? "direct_transfer" : "platform_held",
+          viewrr_fee_pence: String(platformFeePence),
+          freelancer_pence: String(freelancerPence),
+          retainer_cycle: "true",
+        },
+        ...(useDirectTransfer ? {
+          application_fee_amount: platformFeePence,
+          transfer_data: { destination: stripeAccountId },
+        } : {}),
+      };
+
+      const intent = await stripe.paymentIntents.create(intentParams);
+
+      return res.json({
+        clientSecret: intent.client_secret,
+        paymentIntentId: intent.id,
+        amountPence: Number(amountPence),
+        freelancerOnboarded: useDirectTransfer,
+        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "",
+        requiresStripeConfirm: true,
+      });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -1342,6 +1424,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Counter-offer on a brief interest
   app.patch("/api/interests/:id/counter", async (req, res) => {
     try {
+      if (!req.user) return res.status(401).json({ error: "Not logged in" });
       const { counterOfferPence, clientName, clientAvatar } = req.body;
       if (!counterOfferPence || counterOfferPence < 50)
         return res.status(400).json({ error: "Invalid counter-offer amount" });
@@ -1395,11 +1478,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Client updates status of an interest (viewed / accepted / declined)
   app.patch("/api/interests/:id/status", async (req, res) => {
     try {
+      if (!req.user) return res.status(401).json({ error: "Not logged in" });
       const { status, clientName, clientAvatar } = req.body;
       if (!["pending", "viewed", "accepted", "declined"].includes(status)) {
         return res.status(400).json({ error: "Invalid status" });
       }
       const interest = await storage.getBriefInterest(Number(req.params.id));
+      if (!interest) return res.status(404).json({ error: "Interest not found" });
+      // Only the brief owner (client) can change status to accepted/declined
+      if (["accepted", "declined"].includes(status) && interest.briefClientId !== req.user.id) {
+        return res.status(403).json({ error: "Only the client can accept or decline this interest" });
+      }
       await storage.updateBriefInterestStatus(Number(req.params.id), status);
 
       if (interest && status === "accepted") {
@@ -2039,6 +2128,38 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       // Update project to completed + paid
       await storage.updateProjectStatus(Number(projectId), "completed", "paid");
+      // Mark invoice as paid if one exists
+      try {
+        const inv = await storage.getInvoiceByProject(Number(projectId));
+        if (inv) await storage.markInvoicePaid(inv.id);
+      } catch {}
+      // Notify freelancer
+      try {
+        await notify({
+          recipientId: pw.project.freelancerId,
+          actorId: pw.project.clientId,
+          actorName: pw.client?.name ?? "Client",
+          actorAvatar: pw.client?.avatar ?? null,
+          type: "payment_received",
+          message: `Payment received for "${pw.project.title}" — your work has been fully released.`,
+          link: "/your-work",
+          read: 0,
+        });
+      } catch {}
+
+      // If this is a retainer cycle payment, mark the cycle paid and advance
+      const cycleId = intent.metadata?.cycleId;
+      if (cycleId && intent.metadata?.retainer_cycle === "true") {
+        try {
+          await storage.updateRetainerCycle(Number(cycleId), { status: "paid", paymentStatus: "paid" });
+          const proj = pw.project;
+          if (proj?.totalCycles && (proj.currentCycleNumber ?? 1) >= proj.totalCycles) {
+            await storage.updateProjectStatus(Number(projectId), "completed", "paid");
+          } else {
+            await storage.startNextCycle(Number(projectId));
+          }
+        } catch (ce: any) { console.error("[confirm-intent] cycle error", ce.message); }
+      }
 
       // If freelancer is fully onboarded, transfer immediately
       if (paymentType === "direct_transfer") {
@@ -2118,12 +2239,20 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             const projectId = Number(meta.projectId);
             if (projectId) {
               await storage.updateProjectStatus(projectId, "completed", "paid");
+              try {
+                const inv = await storage.getInvoiceByProject(projectId);
+                if (inv) await storage.markInvoicePaid(inv.id);
+              } catch {}
             }
           } else if (meta.payment_type === "direct_transfer") {
             // Direct transfer — just mark project paid
             const projectId = Number(meta.projectId);
             if (projectId) {
               await storage.updateProjectStatus(projectId, "completed", "paid");
+              try {
+                const inv = await storage.getInvoiceByProject(projectId);
+                if (inv) await storage.markInvoicePaid(inv.id);
+              } catch {}
             }
             console.log(`[webhook] Direct transfer complete for project ${meta.projectId}`);
           }
@@ -2776,6 +2905,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         status: 'sent',
         issuedAt: new Date().toISOString(),
       });
+      // Notify client that invoice has been sent
+      try {
+        await notify({
+          recipientId: Number(clientId),
+          actorId: req.user!.id,
+          actorName: req.user!.name ?? "Freelancer",
+          actorAvatar: req.user!.avatar ?? null,
+          type: "invoice_sent",
+          message: `Your invoice for "${projectTitle || 'your project'}" is ready to view`,
+          link: `/invoice/${projectId}`,
+          read: 0,
+        });
+      } catch {}
       res.json(invoice);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
