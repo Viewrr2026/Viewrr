@@ -11,7 +11,7 @@ import LoginModal from "@/components/LoginModal";
 import SignupModal from "@/components/SignupModal";
 import MeetingSection from "@/components/MeetingSection";
 import DeliverablesSection from "@/components/DeliverablesSection";
-import TimeTracker from "@/components/TimeTracker";
+
 import CreateProjectModal from "@/components/CreateProjectModal";
 import {
   CheckCircle2, Circle, Clock, Briefcase, MessageSquare,
@@ -838,14 +838,6 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                   </div>
                 )}
               </div>
-
-              {/* Time Tracking */}
-              <TimeTracker
-                projectId={pw.project.id}
-                userId={currentUserId}
-                agencyId={(pw.freelancer as any).agencyId ?? null}
-                isFreelancer={isFreelancer}
-              />
 
               {/* Work delivery — active projects */}
               {pw.project.status !== "completed" || (pw.project as any).paymentStatus === "unpaid" ? (
