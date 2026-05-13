@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid, Plus, Trash2, GripVertical, FolderOpen, ShieldAlert, Eye, Building2, Copy, Link as LinkIcon, PoundSterling, UserPlus, BarChart2, CalendarClock, GitBranch, Timer, Plane, Database, ExternalLink, ChevronDown, ChevronUp, Mail } from "lucide-react";
@@ -10,7 +10,9 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import FreelancerCard from "@/components/FreelancerCard";
 import InterestsPanel from "@/components/InterestsPanel";
 import EditProfileModal from "@/components/EditProfileModal";
@@ -447,6 +449,7 @@ export default function Dashboard() {
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [editProfileOpen, setEditProfileOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [invoiceTemplateOpen, setInvoiceTemplateOpen] = useState(false);
   // Open a specific tab if URL has ?tab=xyz (e.g. from "My Agency" nav link)
   const [activeTab, setActiveTab] = useState<string | null>(() => {
     try {
@@ -457,6 +460,13 @@ export default function Dashboard() {
 
   // Must be defined before any query that references it
   const isFreelancer = user?.role === "freelancer";
+
+  // Invoice template query (freelancers only)
+  const { data: invoiceTemplate } = useQuery<any>({
+    queryKey: ['/api/invoice-template'],
+    queryFn: () => apiRequest('GET', '/api/invoice-template').then(r => r.json()),
+    enabled: !!user && isFreelancer,
+  });
 
   // Fetch the user's own profile (for freelancers — to display stats in the header)
   const { data: ownProfileData } = useQuery<any>({
@@ -1926,13 +1936,18 @@ export default function Dashboard() {
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2 mt-6">
+            <div className="flex items-center gap-2 mt-6 flex-wrap">
               <Button variant="outline" className="gap-2" onClick={() => setEditProfileOpen(true)}>
                 <Settings size={14} /> Edit profile
               </Button>
               {isFreelancer && ownProfile && (
                 <Button variant="outline" className="gap-2" onClick={() => setPreviewOpen(true)}>
                   <Eye size={14} /> Preview
+                </Button>
+              )}
+              {isFreelancer && (
+                <Button variant="outline" className="gap-2" onClick={() => setInvoiceTemplateOpen(true)}>
+                  <FileText size={14} /> Invoice settings
                 </Button>
               )}
             </div>
@@ -2035,6 +2050,151 @@ export default function Dashboard() {
           } : undefined}
         />
       )}
+
+      {/* Invoice Template Editor */}
+      {isFreelancer && (
+        <InvoiceTemplateEditor
+          open={invoiceTemplateOpen}
+          onClose={() => setInvoiceTemplateOpen(false)}
+          existing={invoiceTemplate}
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ['/api/invoice-template'] })}
+        />
+      )}
     </div>
+  );
+}
+
+// ── Invoice Template Editor ───────────────────────────────────────────────────────────────────────────────
+function InvoiceTemplateEditor({ open, onClose, existing, onSaved }: {
+  open: boolean;
+  onClose: () => void;
+  existing: any;
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    businessName: '',
+    businessAddress: '',
+    businessEmail: '',
+    businessPhone: '',
+    logoUrl: '',
+    vatNumber: '',
+    paymentTerms: 'Payment processed securely through Viewrr',
+    footerNote: '',
+    accentColor: '#FF5A1F',
+  });
+
+  // Sync existing data into form when dialog opens
+  useEffect(() => {
+    if (existing) {
+      setForm({
+        businessName: existing.businessName || '',
+        businessAddress: existing.businessAddress || '',
+        businessEmail: existing.businessEmail || '',
+        businessPhone: existing.businessPhone || '',
+        logoUrl: existing.logoUrl || '',
+        vatNumber: existing.vatNumber || '',
+        paymentTerms: existing.paymentTerms || 'Payment processed securely through Viewrr',
+        footerNote: existing.footerNote || '',
+        accentColor: existing.accentColor || '#FF5A1F',
+      });
+    }
+  }, [existing, open]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiRequest('POST', '/api/invoice-template', form);
+      onSaved();
+      toast({ title: 'Invoice settings saved' });
+      onClose();
+    } catch (e) {
+      toast({ title: 'Failed to save', variant: 'destructive' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function field(label: string, key: keyof typeof form, placeholder = '', type: 'input' | 'textarea' | 'color' = 'input') {
+    return (
+      <div className="space-y-1.5">
+        <label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">{label}</label>
+        {type === 'textarea' ? (
+          <Textarea
+            value={form[key]}
+            onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+            placeholder={placeholder}
+            className="text-sm resize-none"
+            rows={3}
+          />
+        ) : type === 'color' ? (
+          <div className="flex items-center gap-3">
+            <input
+              type="color"
+              value={form[key]}
+              onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+              className="w-10 h-10 rounded-lg border border-border cursor-pointer p-0.5 bg-transparent"
+            />
+            <Input
+              value={form[key]}
+              onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+              placeholder="#FF5A1F"
+              className="text-sm font-mono w-32"
+            />
+            <p className="text-xs text-muted-foreground">Used as accent on your invoice</p>
+          </div>
+        ) : (
+          <Input
+            value={form[key]}
+            onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+            placeholder={placeholder}
+            className="text-sm"
+          />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent className="max-w-lg max-h-[85vh] flex flex-col p-0" style={{ borderRadius: 20 }}>
+        <div className="px-6 py-5 border-b border-border flex items-center justify-between">
+          <div>
+            <h2 className="font-bold text-lg">Invoice Settings</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">This branding appears on all invoices you send to clients</p>
+          </div>
+          {/* Viewrr stamp notice */}
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[10px] font-bold" style={{ background: 'rgba(255,90,31,0.08)', color: '#FF5A1F', border: '1px solid rgba(255,90,31,0.2)' }}>
+            <svg width="10" height="10" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" fill="#FF5A1F"/><path d="M9 11l7 10 7-10" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            Viewrr stamp always included
+          </div>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-6 py-5 space-y-4">
+          {field('Business / Trading Name', 'businessName', 'Your Name or Studio Name')}
+          {field('Business Address', 'businessAddress', '123 High Street\nLondon, EC1A 1BB', 'textarea')}
+          {field('Business Email', 'businessEmail', 'hello@yourstudio.com')}
+          {field('Business Phone', 'businessPhone', '+44 7700 900000')}
+          {field('Logo URL', 'logoUrl', 'https://… (optional, shown top-left)')}
+          {field('VAT Number', 'vatNumber', 'GB123456789 (leave blank if not registered)')}
+          {field('Payment Terms', 'paymentTerms', 'e.g. Payment due on receipt', 'textarea')}
+          {field('Footer Note', 'footerNote', 'e.g. Thank you for your business!')}
+          {field('Accent Colour', 'accentColor', '#FF5A1F', 'color')}
+        </div>
+
+        <div className="px-6 py-4 border-t border-border flex gap-2">
+          <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
+          <Button
+            className="flex-1 text-white font-semibold"
+            style={{ background: 'linear-gradient(135deg,#FF5A1F,#FF8C42)' }}
+            onClick={handleSave}
+            disabled={saving}
+          >
+            {saving ? 'Saving…' : 'Save Invoice Settings'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

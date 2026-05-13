@@ -1,11 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import {
   X, ExternalLink, Play, Trash2, Plus, Upload, Link as LinkIcon,
-  Lock, CheckCircle, CreditCard, ShieldCheck, Loader2, Sparkles,
+  Lock, CheckCircle, CreditCard, ShieldCheck, Loader2, Sparkles, FileText,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -737,6 +740,7 @@ export default function DeliverablesSection({
   onPaymentConfirmed,
 }: Props) {
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
   const [showAdd, setShowAdd] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [labelInput, setLabelInput] = useState(LABEL_OPTIONS[0]);
@@ -744,6 +748,12 @@ export default function DeliverablesSection({
   const [embedTarget, setEmbedTarget] = useState<Deliverable | null>(null);
   const [urlError, setUrlError] = useState("");
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  // Invoice state
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [sendingInvoice, setSendingInvoice] = useState(false);
+  const [lineItems, setLineItems] = useState([{ description: '', quantity: 1, unitPricePence: 0 }]);
+  const [invoiceNotes, setInvoiceNotes] = useState('');
+  const [vatPercent, setVatPercent] = useState(0);
 
   // Watermark is active when project is awaiting payment and not yet paid
   const isWatermarked = projectStatus === "awaiting_payment" && paymentStatus !== "paid";
@@ -758,6 +768,16 @@ export default function DeliverablesSection({
     },
     staleTime: 0,
     refetchOnMount: true,
+  });
+
+  const { data: existingInvoice } = useQuery<{ invoice: any; template: any } | null>({
+    queryKey: ['/api/projects', projectId, 'invoice'],
+    queryFn: async () => {
+      const res = await apiRequest('GET', `/api/projects/${projectId}/invoice`);
+      if (res.status === 404) return null;
+      return res.json();
+    },
+    retry: false,
   });
 
   const addMutation = useMutation({
@@ -775,6 +795,10 @@ export default function DeliverablesSection({
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "deliverables"] });
       setUrlInput(""); setLabelInput(LABEL_OPTIONS[0]); setCustomLabel("");
       setShowAdd(false); setUrlError("");
+      // Auto-open Send Invoice dialog after sharing work
+      if (isFreelancer && !existingInvoice) {
+        setInvoiceOpen(true);
+      }
     },
   });
 
@@ -836,13 +860,33 @@ export default function DeliverablesSection({
                 Pay <span className="font-medium text-foreground">{freelancerName}</span> to remove the watermark and receive your files.
               </p>
             </div>
-            <Button
-              className="flex-shrink-0 text-white rounded-full gap-2 font-semibold text-xs"
-              style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-              onClick={() => setPaymentDialogOpen(true)}
-            >
-              <CreditCard size={13} /> Pay {freelancerName} to unlock →
-            </Button>
+            {existingInvoice ? (
+              <div className="flex flex-col sm:flex-row gap-2 flex-shrink-0">
+                <Button
+                  className="flex-shrink-0 text-white rounded-full gap-2 font-semibold text-xs"
+                  style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                  onClick={() => setLocation(`/invoice/${projectId}`)}
+                  data-testid="btn-view-invoice"
+                >
+                  <FileText size={13} /> View Invoice
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex-shrink-0 rounded-full gap-2 font-semibold text-xs"
+                  onClick={() => setPaymentDialogOpen(true)}
+                >
+                  <CreditCard size={13} /> Pay directly
+                </Button>
+              </div>
+            ) : (
+              <Button
+                className="flex-shrink-0 text-white rounded-full gap-2 font-semibold text-xs"
+                style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                onClick={() => setPaymentDialogOpen(true)}
+              >
+                <CreditCard size={13} /> Pay {freelancerName} to unlock →
+              </Button>
+            )}
           </div>
         )}
 
@@ -853,9 +897,19 @@ export default function DeliverablesSection({
             style={{ background: "rgba(255,90,31,0.06)", borderColor: "rgba(255,90,31,0.2)" }}
           >
             <ShieldCheck size={16} style={{ color: "#FF5A1F" }} className="flex-shrink-0" />
-            <p className="text-xs text-muted-foreground leading-relaxed">
+            <p className="text-xs text-muted-foreground leading-relaxed flex-1">
               Your work is shared with a watermark. It will be fully released once the client confirms final payment.
             </p>
+            {!existingInvoice && (
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs flex-shrink-0" onClick={() => setInvoiceOpen(true)}>
+                <FileText size={11} /> Send Invoice
+              </Button>
+            )}
+            {existingInvoice && (
+              <span className="text-xs text-green-600 font-semibold flex items-center gap-1">
+                <CheckCircle size={11} /> Invoice sent
+              </span>
+            )}
           </div>
         )}
 
@@ -965,13 +1019,32 @@ export default function DeliverablesSection({
 
         {/* ── Client: bottom-of-list pay button (if they scrolled past banner) */}
         {isClient && isWatermarked && deliverables.length > 2 && (
-          <Button
-            className="w-full text-white rounded-full gap-2 font-semibold mt-1 text-xs"
-            style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-            onClick={() => setPaymentDialogOpen(true)}
-          >
-            <CreditCard size={13} /> Pay {freelancerName} to unlock →
-          </Button>
+          existingInvoice ? (
+            <div className="flex gap-2 mt-1">
+              <Button
+                className="flex-1 text-white rounded-full gap-2 font-semibold text-xs"
+                style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                onClick={() => setLocation(`/invoice/${projectId}`)}
+              >
+                <FileText size={13} /> View Invoice
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1 rounded-full gap-2 font-semibold text-xs"
+                onClick={() => setPaymentDialogOpen(true)}
+              >
+                <CreditCard size={13} /> Pay directly
+              </Button>
+            </div>
+          ) : (
+            <Button
+              className="w-full text-white rounded-full gap-2 font-semibold mt-1 text-xs"
+              style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+              onClick={() => setPaymentDialogOpen(true)}
+            >
+              <CreditCard size={13} /> Pay {freelancerName} to unlock →
+            </Button>
+          )
         )}
       </div>
 
@@ -999,6 +1072,147 @@ export default function DeliverablesSection({
           onPaymentConfirmed?.();
         }}
       />
+
+      {/* ── Send Invoice Dialog ───────────────────────────────────────────────── */}
+      <Dialog open={invoiceOpen} onOpenChange={setInvoiceOpen}>
+        <DialogContent className="max-w-lg" style={{ borderRadius: 20 }}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText size={18} style={{ color: '#FF5A1F' }} />
+              Send Invoice
+            </DialogTitle>
+            <DialogDescription>
+              Add line items for the work completed. Your invoice branding is set in your dashboard settings.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 mt-2 max-h-[55vh] overflow-y-auto pr-1">
+            {/* Line items */}
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Line Items</Label>
+              {lineItems.map((item, i) => (
+                <div key={i} className="grid grid-cols-[1fr,60px,90px,32px] gap-2 items-center">
+                  <Input
+                    placeholder="Description (e.g. Video editing — 3 hours)"
+                    value={item.description}
+                    onChange={e => {
+                      const n = [...lineItems]; n[i] = { ...n[i], description: e.target.value };
+                      setLineItems(n);
+                    }}
+                    className="text-xs h-9"
+                  />
+                  <Input
+                    type="number" min="1" placeholder="Qty"
+                    value={item.quantity}
+                    onChange={e => {
+                      const n = [...lineItems]; n[i] = { ...n[i], quantity: Number(e.target.value) };
+                      setLineItems(n);
+                    }}
+                    className="text-xs h-9 text-center"
+                  />
+                  <div className="relative">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">£</span>
+                    <Input
+                      type="number" min="0" step="0.01" placeholder="0.00"
+                      value={item.unitPricePence ? (item.unitPricePence / 100).toFixed(2) : ''}
+                      onChange={e => {
+                        const n = [...lineItems];
+                        n[i] = { ...n[i], unitPricePence: Math.round(parseFloat(e.target.value || '0') * 100) };
+                        setLineItems(n);
+                      }}
+                      className="text-xs h-9 pl-6"
+                    />
+                  </div>
+                  {lineItems.length > 1 && (
+                    <button onClick={() => setLineItems(lineItems.filter((_, j) => j !== i))} className="h-9 w-8 flex items-center justify-center text-muted-foreground hover:text-destructive rounded-lg hover:bg-destructive/10 transition-colors">
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <Button
+                variant="outline" size="sm" className="gap-1.5 text-xs mt-1"
+                onClick={() => setLineItems([...lineItems, { description: '', quantity: 1, unitPricePence: 0 }])}
+              >
+                <Plus size={11} /> Add line
+              </Button>
+            </div>
+
+            {/* VAT */}
+            <div className="flex items-center gap-3">
+              <Label className="text-xs font-semibold text-muted-foreground w-24 shrink-0">VAT %</Label>
+              <div className="relative w-24">
+                <Input
+                  type="number" min="0" max="100" placeholder="0"
+                  value={vatPercent || ''}
+                  onChange={e => setVatPercent(Number(e.target.value))}
+                  className="text-xs h-9"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">Leave 0 if not VAT registered</p>
+            </div>
+
+            {/* Notes */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Notes (optional)</Label>
+              <Textarea
+                placeholder="Any additional notes for the client…"
+                value={invoiceNotes}
+                onChange={e => setInvoiceNotes(e.target.value)}
+                className="text-xs resize-none"
+                rows={2}
+              />
+            </div>
+
+            {/* Totals preview */}
+            {lineItems.some(i => i.unitPricePence > 0) && (() => {
+              const subtotal = lineItems.reduce((s, i) => s + i.unitPricePence * i.quantity, 0);
+              const vat = vatPercent ? Math.round(subtotal * vatPercent / 100) : 0;
+              const total = subtotal + vat;
+              return (
+                <div className="rounded-xl p-4 space-y-1.5 text-sm" style={{ background: 'rgba(255,90,31,0.05)', border: '1px solid rgba(255,90,31,0.15)' }}>
+                  <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span>£{(subtotal/100).toFixed(2)}</span></div>
+                  {vat > 0 && <div className="flex justify-between text-muted-foreground"><span>VAT ({vatPercent}%)</span><span>£{(vat/100).toFixed(2)}</span></div>}
+                  <div className="flex justify-between font-bold pt-1 border-t border-border" style={{ color: '#FF5A1F' }}><span>Total</span><span>£{(total/100).toFixed(2)}</span></div>
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="flex gap-2 mt-4">
+            <Button variant="outline" className="flex-1" onClick={() => setInvoiceOpen(false)}>Later</Button>
+            <Button
+              className="flex-1 text-white font-semibold gap-2"
+              style={{ background: 'linear-gradient(135deg,#FF5A1F,#FF8C42)' }}
+              disabled={sendingInvoice || !lineItems.some(i => i.description && i.unitPricePence > 0)}
+              onClick={async () => {
+                setSendingInvoice(true);
+                try {
+                  const items = lineItems
+                    .filter(i => i.description && i.unitPricePence > 0)
+                    .map(i => ({ ...i, totalPence: i.unitPricePence * i.quantity }));
+                  await apiRequest('POST', `/api/projects/${projectId}/invoice`, {
+                    clientId,
+                    clientName: '',
+                    projectTitle,
+                    lineItems: items,
+                    notes: invoiceNotes,
+                    vatPercent,
+                  });
+                  queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId, 'invoice'] });
+                  setInvoiceOpen(false);
+                } catch (e) {
+                  console.error(e);
+                } finally {
+                  setSendingInvoice(false);
+                }
+              }}
+            >
+              {sendingInvoice ? <><Loader2 size={13} className="animate-spin" /> Sending…</> : <><FileText size={13} /> Send Invoice</>}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

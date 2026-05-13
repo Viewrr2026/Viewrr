@@ -2709,4 +2709,86 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // ─── Invoice Template ─────────────────────────────────────────────────────────────────
+
+  // GET /api/invoice-template — get the logged-in freelancer's template
+  app.get('/api/invoice-template', async (req, res) => {
+    if (!req.user) return res.status(401).json({ error: 'Not logged in' });
+    const template = await storage.getInvoiceTemplate(req.user.id);
+    res.json(template || null);
+  });
+
+  // POST /api/invoice-template — create or update template
+  app.post('/api/invoice-template', async (req, res) => {
+    if (!req.user) return res.status(401).json({ error: 'Not logged in' });
+    try {
+      const template = await storage.upsertInvoiceTemplate(req.user.id, req.body);
+      res.json(template);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Invoices ──────────────────────────────────────────────────────────────────
+
+  // GET /api/projects/:id/invoice — get the invoice for a project
+  app.get('/api/projects/:id/invoice', async (req, res) => {
+    try {
+      const invoice = await storage.getInvoiceByProject(Number(req.params.id));
+      if (!invoice) return res.status(404).json({ error: 'No invoice found' });
+      // Also attach the freelancer's template for rendering
+      const template = await storage.getInvoiceTemplate(invoice.freelancerId);
+      res.json({ invoice, template: template || null });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/projects/:id/invoice — freelancer sends invoice
+  app.post('/api/projects/:id/invoice', async (req, res) => {
+    if (!req.user) return res.status(401).json({ error: 'Not logged in' });
+    try {
+      const projectId = Number(req.params.id);
+      const { clientId, clientName, clientEmail, projectTitle, lineItems, notes, vatPercent } = req.body;
+      if (!clientId || !lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        return res.status(400).json({ error: 'clientId and lineItems required' });
+      }
+      // Calculate totals
+      const subtotalPence = lineItems.reduce((sum: number, item: any) => sum + (item.totalPence || 0), 0);
+      const vatPence = vatPercent ? Math.round(subtotalPence * vatPercent / 100) : 0;
+      const totalPence = subtotalPence + vatPence;
+      // Get next invoice number
+      const invoiceNumber = await storage.getNextInvoiceNumber(req.user.id);
+      const invoice = await storage.createInvoice({
+        invoiceNumber,
+        projectId,
+        freelancerId: req.user.id,
+        clientId: Number(clientId),
+        clientName: clientName || '',
+        clientEmail: clientEmail || '',
+        projectTitle: projectTitle || '',
+        lineItems: JSON.stringify(lineItems),
+        subtotalPence,
+        vatPence,
+        totalPence,
+        notes: notes || '',
+        status: 'sent',
+        issuedAt: new Date().toISOString(),
+      });
+      res.json(invoice);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/invoices/:id/paid — mark invoice paid (called when Stripe payment confirmed)
+  app.patch('/api/invoices/:id/paid', async (req, res) => {
+    try {
+      await storage.markInvoicePaid(Number(req.params.id));
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 }

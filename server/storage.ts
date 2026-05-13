@@ -359,6 +359,45 @@ await sql`
 // ─── Agency member project columns ───────────────────────────────────────────
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agency_id INTEGER`; } catch {}
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agency_brief_id INTEGER`; } catch {}
+// ─── Invoice tables ─────────────────────────────────────────────────────────
+await sql`
+  CREATE TABLE IF NOT EXISTS invoice_templates (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL UNIQUE,
+    business_name TEXT NOT NULL DEFAULT '',
+    business_address TEXT NOT NULL DEFAULT '',
+    business_email TEXT NOT NULL DEFAULT '',
+    business_phone TEXT NOT NULL DEFAULT '',
+    logo_url TEXT,
+    vat_number TEXT NOT NULL DEFAULT '',
+    payment_terms TEXT NOT NULL DEFAULT 'Payment processed securely through Viewrr',
+    footer_note TEXT NOT NULL DEFAULT '',
+    accent_color TEXT NOT NULL DEFAULT '#FF5A1F',
+    updated_at TEXT NOT NULL DEFAULT NOW()::text,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
+  CREATE TABLE IF NOT EXISTS invoices (
+    id SERIAL PRIMARY KEY,
+    invoice_number TEXT NOT NULL,
+    project_id INTEGER NOT NULL,
+    freelancer_id INTEGER NOT NULL,
+    client_id INTEGER NOT NULL,
+    client_name TEXT NOT NULL DEFAULT '',
+    client_email TEXT NOT NULL DEFAULT '',
+    project_title TEXT NOT NULL DEFAULT '',
+    line_items TEXT NOT NULL DEFAULT '[]',
+    subtotal_pence INTEGER NOT NULL DEFAULT 0,
+    vat_pence INTEGER NOT NULL DEFAULT 0,
+    total_pence INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'sent',
+    issued_at TEXT NOT NULL DEFAULT NOW()::text,
+    paid_at TEXT,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
 }
 
 export interface IStorage {
@@ -519,6 +558,15 @@ export interface IStorage {
   // Agency Activity
   createAgencyActivity(data: schema.InsertAgencyActivity): Promise<schema.AgencyActivity>;
   getAgencyActivity(agencyId: number, limit?: number): Promise<schema.AgencyActivity[]>;
+  // Invoice Templates
+  getInvoiceTemplate(userId: number): Promise<schema.InvoiceTemplate | undefined>;
+  upsertInvoiceTemplate(userId: number, data: Partial<schema.InsertInvoiceTemplate>): Promise<schema.InvoiceTemplate>;
+  // Invoices
+  createInvoice(data: schema.InsertInvoice): Promise<schema.Invoice>;
+  getInvoiceByProject(projectId: number): Promise<schema.Invoice | undefined>;
+  getInvoicesByFreelancer(freelancerId: number): Promise<schema.Invoice[]>;
+  markInvoicePaid(invoiceId: number): Promise<void>;
+  getNextInvoiceNumber(freelancerId: number): Promise<string>;
 }
 
 export interface ProfileWithUser {
@@ -1873,6 +1921,53 @@ class Storage implements IStorage {
       .orderBy(desc(schema.agencyActivity.createdAt))
       .limit(limit)
       .all();
+  }
+
+  async getInvoiceTemplate(userId: number): Promise<schema.InvoiceTemplate | undefined> {
+    const r = await db.select().from(schema.invoiceTemplates).where(eq(schema.invoiceTemplates.userId, userId));
+    return r[0];
+  }
+
+  async upsertInvoiceTemplate(userId: number, data: Partial<schema.InsertInvoiceTemplate>): Promise<schema.InvoiceTemplate> {
+    const existing = await this.getInvoiceTemplate(userId);
+    if (existing) {
+      const r = await db.update(schema.invoiceTemplates)
+        .set({ ...data, updatedAt: new Date().toISOString() })
+        .where(eq(schema.invoiceTemplates.userId, userId))
+        .returning();
+      return r[0];
+    } else {
+      const r = await db.insert(schema.invoiceTemplates)
+        .values({ userId, businessName: '', businessAddress: '', businessEmail: '', businessPhone: '', vatNumber: '', paymentTerms: 'Payment processed securely through Viewrr', footerNote: '', accentColor: '#FF5A1F', updatedAt: new Date().toISOString(), ...data })
+        .returning();
+      return r[0];
+    }
+  }
+
+  async createInvoice(data: schema.InsertInvoice): Promise<schema.Invoice> {
+    const r = await db.insert(schema.invoices).values(data).returning();
+    return r[0];
+  }
+
+  async getInvoiceByProject(projectId: number): Promise<schema.Invoice | undefined> {
+    const r = await db.select().from(schema.invoices).where(eq(schema.invoices.projectId, projectId));
+    return r[0];
+  }
+
+  async getInvoicesByFreelancer(freelancerId: number): Promise<schema.Invoice[]> {
+    return db.select().from(schema.invoices).where(eq(schema.invoices.freelancerId, freelancerId));
+  }
+
+  async markInvoicePaid(invoiceId: number): Promise<void> {
+    await db.update(schema.invoices)
+      .set({ status: 'paid', paidAt: new Date().toISOString() })
+      .where(eq(schema.invoices.id, invoiceId));
+  }
+
+  async getNextInvoiceNumber(freelancerId: number): Promise<string> {
+    const all = await this.getInvoicesByFreelancer(freelancerId);
+    const next = all.length + 1;
+    return `INV-${String(next).padStart(5, '0')}`;
   }
 }
 

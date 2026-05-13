@@ -509,3 +509,47 @@ export const agencyActivity = pgTable("agency_activity", {
 export const insertAgencyActivitySchema = createInsertSchema(agencyActivity).omit({ id: true, createdAt: true });
 export type InsertAgencyActivity = z.infer<typeof insertAgencyActivitySchema>;
 export type AgencyActivity = typeof agencyActivity.$inferSelect;
+
+// ─── Invoice Templates (freelancer's branding/letterhead settings) ─────────
+export const invoiceTemplates = pgTable("invoice_templates", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().unique(), // one template per freelancer
+  businessName: text("business_name").notNull().default(""),
+  businessAddress: text("business_address").notNull().default(""),
+  businessEmail: text("business_email").notNull().default(""),
+  businessPhone: text("business_phone").notNull().default(""),
+  logoUrl: text("logo_url"),
+  vatNumber: text("vat_number").notNull().default(""),
+  paymentTerms: text("payment_terms").notNull().default("Payment processed securely through Viewrr"),
+  footerNote: text("footer_note").notNull().default(""),
+  accentColor: text("accent_color").notNull().default("#FF5A1F"),
+  updatedAt: text("updated_at").notNull().default(new Date().toISOString()),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export const insertInvoiceTemplateSchema = createInsertSchema(invoiceTemplates).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertInvoiceTemplate = z.infer<typeof insertInvoiceTemplateSchema>;
+export type InvoiceTemplate = typeof invoiceTemplates.$inferSelect;
+
+// ─── Invoices ─────────────────────────────────────────────────────────────────
+export const invoices = pgTable("invoices", {
+  id: serial("id").primaryKey(),
+  invoiceNumber: text("invoice_number").notNull(), // e.g. "INV-00001"
+  projectId: integer("project_id").notNull(),
+  freelancerId: integer("freelancer_id").notNull(),
+  clientId: integer("client_id").notNull(),
+  clientName: text("client_name").notNull().default(""),
+  clientEmail: text("client_email").notNull().default(""),
+  projectTitle: text("project_title").notNull().default(""),
+  lineItems: text("line_items").notNull().default("[]"), // JSON: [{description, quantity, unitPricePence, totalPence}]
+  subtotalPence: integer("subtotal_pence").notNull().default(0),
+  vatPence: integer("vat_pence").notNull().default(0),
+  totalPence: integer("total_pence").notNull().default(0),
+  notes: text("notes").notNull().default(""),
+  status: text("status").notNull().default("sent"), // "sent"|"paid"
+  issuedAt: text("issued_at").notNull().default(new Date().toISOString()),
+  paidAt: text("paid_at"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
+export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
+export type Invoice = typeof invoices.$inferSelect;

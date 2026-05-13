@@ -24,6 +24,7 @@ import AdminPanel from "@/pages/AdminPanel";
 import AgencyJoin from "@/pages/AgencyJoin";
 import AgencyProfile from "@/pages/AgencyProfile";
 import AgencyHQ from "@/pages/AgencyHQ";
+import Invoice from "@/pages/Invoice";
 import CookieBanner from "@/components/CookieBanner";
 import GetNoticedBanner from "@/components/GetNoticedBanner";
 
@@ -54,6 +55,7 @@ export default function App() {
               <Route path="/join/:code" component={AgencyJoin} />
               <Route path="/agency/:slug" component={AgencyProfile} />
               <Route path="/agency-hq" component={AgencyHQ} />
+              <Route path="/invoice/:projectId" component={Invoice} />
               <Route component={NotFound} />
             </Switch>
           </Router>
