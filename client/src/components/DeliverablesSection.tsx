@@ -755,7 +755,7 @@ export default function DeliverablesSection({
   // Invoice state
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [sendingInvoice, setSendingInvoice] = useState(false);
-  const [lineItems, setLineItems] = useState([{ description: '', quantity: 1, unitPricePence: 0 }]);
+  const [lineItems, setLineItems] = useState([{ description: '', quantity: 1, unitPricePence: 0, priceStr: '' }]);
   const [invoiceNotes, setInvoiceNotes] = useState('');
   const [vatPercent, setVatPercent] = useState(0);
 
@@ -1117,11 +1117,14 @@ export default function DeliverablesSection({
                   <div className="relative">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">£</span>
                     <Input
-                      type="number" min="0" step="0.01" placeholder="0.00"
-                      value={item.unitPricePence ? (item.unitPricePence / 100).toFixed(2) : ''}
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0.00"
+                      value={item.priceStr}
                       onChange={e => {
+                        const raw = e.target.value.replace(/[^0-9.]/g, '');
                         const n = [...lineItems];
-                        n[i] = { ...n[i], unitPricePence: Math.round(parseFloat(e.target.value || '0') * 100) };
+                        n[i] = { ...n[i], priceStr: raw, unitPricePence: Math.round(parseFloat(raw || '0') * 100) };
                         setLineItems(n);
                       }}
                       className="text-xs h-9 pl-6"
@@ -1136,7 +1139,7 @@ export default function DeliverablesSection({
               ))}
               <Button
                 variant="outline" size="sm" className="gap-1.5 text-xs mt-1"
-                onClick={() => setLineItems([...lineItems, { description: '', quantity: 1, unitPricePence: 0 }])}
+                onClick={() => setLineItems([...lineItems, { description: '', quantity: 1, unitPricePence: 0, priceStr: '' }])}
               >
                 <Plus size={11} /> Add line
               </Button>
@@ -1168,54 +1171,78 @@ export default function DeliverablesSection({
               />
             </div>
 
-            {/* Totals preview */}
-            {lineItems.some(i => i.unitPricePence > 0) && (() => {
+            {/* Totals preview + budget cap warning */}
+            {(() => {
               const subtotal = lineItems.reduce((s, i) => s + i.unitPricePence * i.quantity, 0);
               const vat = vatPercent ? Math.round(subtotal * vatPercent / 100) : 0;
               const total = subtotal + vat;
+              const overBudget = agreedAmountPence && subtotal > agreedAmountPence;
+              if (subtotal === 0) return null;
               return (
-                <div className="rounded-xl p-4 space-y-1.5 text-sm" style={{ background: 'rgba(255,90,31,0.05)', border: '1px solid rgba(255,90,31,0.15)' }}>
-                  <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span>£{(subtotal/100).toFixed(2)}</span></div>
-                  {vat > 0 && <div className="flex justify-between text-muted-foreground"><span>VAT ({vatPercent}%)</span><span>£{(vat/100).toFixed(2)}</span></div>}
-                  <div className="flex justify-between font-bold pt-1 border-t border-border" style={{ color: '#FF5A1F' }}><span>Total</span><span>£{(total/100).toFixed(2)}</span></div>
+                <div className="space-y-2">
+                  {agreedAmountPence && (
+                    <div className="flex items-center justify-between text-xs px-1">
+                      <span className="text-muted-foreground">Agreed project budget</span>
+                      <span className="font-semibold">£{(agreedAmountPence / 100).toFixed(2)}</span>
+                    </div>
+                  )}
+                  {overBudget && (
+                    <div className="rounded-lg px-3 py-2 text-xs font-medium" style={{ background: 'rgba(239,68,68,0.08)', color: '#dc2626', border: '1px solid rgba(239,68,68,0.2)' }}>
+                      ⚠️ Subtotal exceeds the agreed budget of £{(agreedAmountPence! / 100).toFixed(2)}. Please reduce your line items.
+                    </div>
+                  )}
+                  <div className="rounded-xl p-4 space-y-1.5 text-sm" style={{ background: 'rgba(255,90,31,0.05)', border: `1px solid ${overBudget ? 'rgba(239,68,68,0.3)' : 'rgba(255,90,31,0.15)'}` }}>
+                    <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span style={{ color: overBudget ? '#dc2626' : undefined }}>£{(subtotal/100).toFixed(2)}</span></div>
+                    {vat > 0 && <div className="flex justify-between text-muted-foreground"><span>VAT ({vatPercent}%)</span><span>£{(vat/100).toFixed(2)}</span></div>}
+                    <div className="flex justify-between font-bold pt-1 border-t border-border" style={{ color: overBudget ? '#dc2626' : '#FF5A1F' }}><span>Total</span><span>£{(total/100).toFixed(2)}</span></div>
+                  </div>
                 </div>
               );
             })()}
           </div>
 
-          <div className="flex gap-2 mt-4">
-            <Button variant="outline" className="flex-1" onClick={() => setInvoiceOpen(false)}>Later</Button>
-            <Button
-              className="flex-1 text-white font-semibold gap-2"
-              style={{ background: 'linear-gradient(135deg,#FF5A1F,#FF8C42)' }}
-              disabled={sendingInvoice || !lineItems.some(i => i.description && i.unitPricePence > 0)}
-              onClick={async () => {
-                setSendingInvoice(true);
-                try {
-                  const items = lineItems
-                    .filter(i => i.description && i.unitPricePence > 0)
-                    .map(i => ({ ...i, totalPence: i.unitPricePence * i.quantity }));
-                  await apiRequest('POST', `/api/projects/${projectId}/invoice`, {
-                    clientId,
-                    clientName: clientNameProp || '',
-                    clientEmail: clientEmailProp || '',
-                    projectTitle,
-                    lineItems: items,
-                    notes: invoiceNotes,
-                    vatPercent,
-                  });
-                  queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId, 'invoice'] });
-                  setInvoiceOpen(false);
-                } catch (e) {
-                  console.error(e);
-                } finally {
-                  setSendingInvoice(false);
-                }
-              }}
-            >
-              {sendingInvoice ? <><Loader2 size={13} className="animate-spin" /> Sending…</> : <><FileText size={13} /> Send Invoice</>}
-            </Button>
-          </div>
+          {(() => {
+            const subtotalCheck = lineItems.reduce((s, i) => s + i.unitPricePence * i.quantity, 0);
+            const isOverBudget = !!(agreedAmountPence && subtotalCheck > agreedAmountPence);
+            return (
+              <div className="flex gap-2 mt-4">
+                <Button variant="outline" className="flex-1" onClick={() => setInvoiceOpen(false)}>Later</Button>
+                <Button
+                  className="flex-1 text-white font-semibold gap-2"
+                  style={{ background: isOverBudget ? '#9ca3af' : 'linear-gradient(135deg,#FF5A1F,#FF8C42)' }}
+                  disabled={sendingInvoice || !lineItems.some(i => i.description && i.unitPricePence > 0) || isOverBudget}
+                  onClick={async () => {
+                    setSendingInvoice(true);
+                    try {
+                      const items = lineItems
+                        .filter(i => i.description && i.unitPricePence > 0)
+                        .map(i => ({ ...i, totalPence: i.unitPricePence * i.quantity }));
+                      await apiRequest('POST', `/api/projects/${projectId}/invoice`, {
+                        clientId,
+                        clientName: clientNameProp || '',
+                        clientEmail: clientEmailProp || '',
+                        projectTitle,
+                        lineItems: items,
+                        notes: invoiceNotes,
+                        vatPercent,
+                      });
+                      queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId, 'invoice'] });
+                      setInvoiceOpen(false);
+                      toast({ title: 'Invoice sent', description: `${clientNameProp || 'The client'} has been notified and can now view and pay your invoice.` });
+                      // Navigate to the invoice view
+                      setLocation(`/invoice/${projectId}`);
+                    } catch (e: any) {
+                      toast({ title: 'Failed to send invoice', description: e?.message || 'Please try again.', variant: 'destructive' });
+                    } finally {
+                      setSendingInvoice(false);
+                    }
+                  }}
+                >
+                  {sendingInvoice ? <><Loader2 size={13} className="animate-spin" /> Sending…</> : <><FileText size={13} /> Send Invoice</>}
+                </Button>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </>
