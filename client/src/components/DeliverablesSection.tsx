@@ -1218,6 +1218,7 @@ export default function DeliverablesSection({
                         .filter(i => i.description && i.unitPricePence > 0)
                         .map(i => ({ ...i, totalPence: i.unitPricePence * i.quantity }));
                       await apiRequest('POST', `/api/projects/${projectId}/invoice`, {
+                        freelancerId: userId,
                         clientId,
                         clientName: clientNameProp || '',
                         clientEmail: clientEmailProp || '',

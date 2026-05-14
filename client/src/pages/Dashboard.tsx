@@ -464,7 +464,7 @@ export default function Dashboard() {
   // Invoice template query (freelancers only)
   const { data: invoiceTemplate } = useQuery<any>({
     queryKey: ['/api/invoice-template'],
-    queryFn: () => apiRequest('GET', '/api/invoice-template').then(r => r.json()),
+    queryFn: () => apiRequest('GET', `/api/invoice-template?userId=${user?.id}`).then(r => r.json()),
     enabled: !!user && isFreelancer,
   });
 
@@ -675,7 +675,7 @@ export default function Dashboard() {
   // Agency proposals (for clients)
   const { data: agencyProposals = [], isLoading: proposalsLoading } = useQuery<any[]>({
     queryKey: ['/api/agencies/my-proposals'],
-    queryFn: () => apiRequest('GET', '/api/agencies/my-proposals').then(r => r.json()),
+    queryFn: () => apiRequest('GET', `/api/agencies/my-proposals?clientId=${user?.id}`).then(r => r.json()),
     enabled: !!user && !isFreelancer,
   });
 
@@ -2057,6 +2057,7 @@ export default function Dashboard() {
           open={invoiceTemplateOpen}
           onClose={() => setInvoiceTemplateOpen(false)}
           existing={invoiceTemplate}
+          userId={user?.id ?? 0}
           onSaved={() => queryClient.invalidateQueries({ queryKey: ['/api/invoice-template'] })}
         />
       )}
@@ -2065,11 +2066,12 @@ export default function Dashboard() {
 }
 
 // ── Invoice Template Editor ───────────────────────────────────────────────────────────────────────────────
-function InvoiceTemplateEditor({ open, onClose, existing, onSaved }: {
+function InvoiceTemplateEditor({ open, onClose, existing, onSaved, userId }: {
   open: boolean;
   onClose: () => void;
   existing: any;
   onSaved: () => void;
+  userId: number;
 }) {
   const { toast } = useToast();
   const [saving, setSaving] = useState(false);
@@ -2105,7 +2107,7 @@ function InvoiceTemplateEditor({ open, onClose, existing, onSaved }: {
   async function handleSave() {
     setSaving(true);
     try {
-      await apiRequest('POST', '/api/invoice-template', form);
+      await apiRequest('POST', '/api/invoice-template', { ...form, userId });
       onSaved();
       toast({ title: 'Invoice settings saved' });
       onClose();

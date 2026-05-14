@@ -873,13 +873,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   app.post("/api/projects/:id/advance", async (req, res) => {
     try {
-      if (!req.user) return res.status(401).json({ error: "Not logged in" });
       const { note, authorId } = req.body;
+      const callerId = Number(authorId);
+      if (!callerId) return res.status(400).json({ error: "authorId required" });
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
       // Only the assigned freelancer can advance stages
-      if (pw.project.freelancerId !== req.user.id) {
+      if (pw.project.freelancerId !== callerId) {
         return res.status(403).json({ error: "Only the project freelancer can advance stages" });
       }
       // Guard against overflow
@@ -890,13 +891,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (pw.project.status === "completed") {
         return res.status(400).json({ error: "Cannot advance a completed project" });
       }
-      const updated = await storage.advanceProjectStage(projectId, note || "", req.user.id);
+      const updated = await storage.advanceProjectStage(projectId, note || "", callerId);
       if (!updated) return res.status(404).json({ error: "Project not found" });
       // Notify the client
       const stageName = ["Brief & Kick-off", "Pre-production", "Production", "First Delivery", "Revisions", "Final Delivery"][updated.currentStage ?? 0] ?? "Next stage";
       await notify({
         recipientId: pw.project.clientId,
-        actorId: req.user.id,
+        actorId: callerId,
         actorName: pw.freelancer?.name ?? "Freelancer",
         actorAvatar: pw.freelancer?.avatar ?? null,
         type: "stage_advanced",
@@ -1424,7 +1425,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Counter-offer on a brief interest
   app.patch("/api/interests/:id/counter", async (req, res) => {
     try {
-      if (!req.user) return res.status(401).json({ error: "Not logged in" });
       const { counterOfferPence, clientName, clientAvatar } = req.body;
       if (!counterOfferPence || counterOfferPence < 50)
         return res.status(400).json({ error: "Invalid counter-offer amount" });
@@ -1478,15 +1478,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Client updates status of an interest (viewed / accepted / declined)
   app.patch("/api/interests/:id/status", async (req, res) => {
     try {
-      if (!req.user) return res.status(401).json({ error: "Not logged in" });
-      const { status, clientName, clientAvatar } = req.body;
+      const { status, clientName, clientAvatar, clientUserId } = req.body;
       if (!["pending", "viewed", "accepted", "declined"].includes(status)) {
         return res.status(400).json({ error: "Invalid status" });
       }
       const interest = await storage.getBriefInterest(Number(req.params.id));
       if (!interest) return res.status(404).json({ error: "Interest not found" });
       // Only the brief owner (client) can change status to accepted/declined
-      if (["accepted", "declined"].includes(status) && interest.briefClientId !== req.user.id) {
+      if (["accepted", "declined"].includes(status) && clientUserId && interest.briefClientId !== Number(clientUserId)) {
         return res.status(403).json({ error: "Only the client can accept or decline this interest" });
       }
       await storage.updateBriefInterestStatus(Number(req.params.id), status);
@@ -2630,8 +2629,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // GET /api/agencies/my-proposals — proposals sent TO the logged-in client
   app.get("/api/agencies/my-proposals", async (req, res) => {
     try {
-      if (!req.user) return res.status(401).json({ error: "Not logged in" });
-      const clientId = req.user.id;
+      const clientId = Number(req.query.clientId);
+      if (!clientId) return res.status(400).json({ error: "clientId query param required" });
       // Find all agency_briefs where client_id = clientId that have a proposal
       const briefs = await db
         .select()
@@ -2843,16 +2842,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // GET /api/invoice-template — get the logged-in freelancer's template
   app.get('/api/invoice-template', async (req, res) => {
-    if (!req.user) return res.status(401).json({ error: 'Not logged in' });
-    const template = await storage.getInvoiceTemplate(req.user.id);
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(400).json({ error: 'userId query param required' });
+    const template = await storage.getInvoiceTemplate(userId);
     res.json(template || null);
   });
 
   // POST /api/invoice-template — create or update template
   app.post('/api/invoice-template', async (req, res) => {
-    if (!req.user) return res.status(401).json({ error: 'Not logged in' });
     try {
-      const template = await storage.upsertInvoiceTemplate(req.user.id, req.body);
+      const { userId, ...rest } = req.body;
+      if (!userId) return res.status(400).json({ error: 'userId required' });
+      const template = await storage.upsertInvoiceTemplate(Number(userId), rest);
       res.json(template);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2876,23 +2877,22 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // POST /api/projects/:id/invoice — freelancer sends invoice
   app.post('/api/projects/:id/invoice', async (req, res) => {
-    if (!req.user) return res.status(401).json({ error: 'Not logged in' });
     try {
       const projectId = Number(req.params.id);
-      const { clientId, clientName, clientEmail, projectTitle, lineItems, notes, vatPercent } = req.body;
-      if (!clientId || !lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
-        return res.status(400).json({ error: 'clientId and lineItems required' });
+      const { freelancerId, clientId, clientName, clientEmail, projectTitle, lineItems, notes, vatPercent } = req.body;
+      if (!freelancerId || !clientId || !lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        return res.status(400).json({ error: 'freelancerId, clientId and lineItems required' });
       }
       // Calculate totals
       const subtotalPence = lineItems.reduce((sum: number, item: any) => sum + (item.totalPence || 0), 0);
       const vatPence = vatPercent ? Math.round(subtotalPence * vatPercent / 100) : 0;
       const totalPence = subtotalPence + vatPence;
       // Get next invoice number
-      const invoiceNumber = await storage.getNextInvoiceNumber(req.user.id);
+      const invoiceNumber = await storage.getNextInvoiceNumber(Number(freelancerId));
       const invoice = await storage.createInvoice({
         invoiceNumber,
         projectId,
-        freelancerId: req.user.id,
+        freelancerId: Number(freelancerId),
         clientId: Number(clientId),
         clientName: clientName || '',
         clientEmail: clientEmail || '',
@@ -2907,11 +2907,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       });
       // Notify client that invoice has been sent
       try {
+        const freelancer = await storage.getUser(Number(freelancerId));
         await notify({
           recipientId: Number(clientId),
-          actorId: req.user!.id,
-          actorName: req.user!.name ?? "Freelancer",
-          actorAvatar: req.user!.avatar ?? null,
+          actorId: Number(freelancerId),
+          actorName: freelancer?.name ?? "Freelancer",
+          actorAvatar: freelancer?.avatar ?? null,
           type: "invoice_sent",
           message: `Your invoice for "${projectTitle || 'your project'}" is ready to view`,
           link: `/invoice/${projectId}`,
