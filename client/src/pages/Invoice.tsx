@@ -39,7 +39,7 @@ export default function Invoice() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-muted-foreground">
         <p className="text-lg font-semibold">Invoice not found</p>
-        <Button variant="outline" onClick={() => setLocation('/your-work')}>Back to dashboard</Button>
+        <Button variant="outline" onClick={() => window.history.back()}>Back to dashboard</Button>
       </div>
     );
   }
@@ -68,7 +68,7 @@ export default function Invoice() {
 
       {/* Toolbar */}
       <div className="no-print sticky top-0 z-50 bg-background/95 backdrop-blur border-b border-border px-6 py-3 flex items-center justify-between">
-        <Button variant="ghost" size="sm" className="gap-2" onClick={() => setLocation('/your-work')}>
+        <Button variant="ghost" size="sm" className="gap-2" onClick={() => window.history.back()}>
           <ArrowLeft size={14} /> Back
         </Button>
         <div className="flex items-center gap-2">
