@@ -1,13 +1,12 @@
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Star, MapPin, Briefcase, Clock, ExternalLink, MessageSquare, Bookmark, BookmarkCheck, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users } from "lucide-react";
+import { Star, MapPin, Briefcase, Clock, MessageSquare, Bookmark, BookmarkCheck, Instagram, Linkedin, ChevronLeft, Video, UserPlus, UserCheck, Users, Play } from "lucide-react";
 import VideoEmbed from "@/components/VideoEmbed";
 import { parseVideoUrl } from "@/lib/videoEmbed";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/components/AuthProvider";
@@ -24,13 +23,13 @@ interface ProfileData {
   isClientStub?: boolean;
 }
 
-function Stars({ rating }: { rating: number }) {
+function Stars({ rating, size = 14 }: { rating: number; size?: number }) {
   return (
     <div className="flex gap-0.5">
       {[1, 2, 3, 4, 5].map(i => (
         <Star
           key={i}
-          size={14}
+          size={size}
           className={i <= Math.round(rating) ? "star-filled fill-current" : "star-empty"}
         />
       ))}
@@ -45,16 +44,14 @@ export default function ProfilePage() {
   const [msgOpen, setMsgOpen] = useState(false);
   const [msgText, setMsgText] = useState("");
   const [isSaved, setIsSaved] = useState(false);
-  const [reelOpen, setReelOpen] = useState(false);
   const [reviewsOpen, setReviewsOpen] = useState(false);
+  const [activeVideo, setActiveVideo] = useState<{ url: string; title: string } | null>(null);
   const profileIdNum = Number(id);
   const [connStatus, setConnStatus] = useState<ConnStatus>('none');
   const [connRequestId, setConnRequestId] = useState<number | null>(null);
   const [connLoading, setConnLoading] = useState(false);
-  // For display count (seeded; real count via API someday)
   const connCount = connectionCount(profileIdNum);
 
-  // ── Profile data query — MUST be declared before any useEffect that reads `data` ──
   const { data, isLoading, isError } = useQuery<ProfileData>({
     queryKey: ["/api/profiles", id],
     queryFn: async () => {
@@ -68,7 +65,6 @@ export default function ProfilePage() {
     },
   });
 
-  // Load connection status once we know both user IDs
   useEffect(() => {
     if (!user || !data?.user?.id || user.id === data.user.id) return;
     apiRequest("GET", `/api/connections/status?userA=${user.id}&userB=${data.user.id}`)
@@ -123,20 +119,18 @@ export default function ProfilePage() {
     }
   }
 
-  // Fire a profile view as soon as the page loads (once per mount)
   useEffect(() => {
     if (!id) return;
     fetch(`/api/profile-views/${id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ viewerId: user?.id ?? null }),
-    }).catch(() => {}); // silent — never block the page
+    }).catch(() => {});
   }, [id]);
 
   const specialisms: string[] = data ? JSON.parse(data.profile.specialisms || "[]") : [];
   const skills: string[] = data ? JSON.parse(data.profile.skills || "[]") : [];
   const badges: string[] = data ? JSON.parse(data.profile.badges || "[]") : [];
-  const portfolio: any[] = data ? JSON.parse(data.profile.portfolioItems || "[]") : [];
   const socialLinks: Record<string, string> = data ? JSON.parse(data.profile.socialLinks || "{}") : {};
 
   const availClass: Record<string, string> = {
@@ -176,7 +170,7 @@ export default function ProfilePage() {
       <div className="min-h-screen bg-background">
         <div className="mx-auto max-w-6xl px-6 py-10">
           <div className="h-8 w-48 skeleton rounded mb-8" />
-          <div className="grid lg:grid-cols-[2fr,1fr] gap-8">
+          <div className="grid lg:grid-cols-[260px,1fr] gap-8">
             <div className="space-y-4">
               <div className="h-64 skeleton rounded-2xl" />
               <div className="h-40 skeleton rounded-2xl" />
@@ -199,7 +193,7 @@ export default function ProfilePage() {
 
   const { profile, user: freelancer, reviews, isClientStub } = data;
 
-  // ── Client stub: no freelancer profile row exists — render a simple client card ──
+  // ── Client stub ──────────────────────────────────────────────────────────────
   if (isClientStub) {
     const clientUser = freelancer;
     return (
@@ -210,7 +204,6 @@ export default function ProfilePage() {
           </Link>
 
           <div className="bg-card border border-border rounded-2xl overflow-hidden">
-            {/* Banner */}
             {clientUser.banner ? (
               <div className="h-28 w-full bg-cover bg-center" style={{ backgroundImage: `url(${clientUser.banner})` }} />
             ) : (
@@ -279,7 +272,6 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* Message dialog */}
         <Dialog open={msgOpen} onOpenChange={v => !v && setMsgOpen(false)}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader><DialogTitle>Message {clientUser.name}</DialogTitle></DialogHeader>
@@ -305,294 +297,336 @@ export default function ProfilePage() {
     );
   }
 
+  // ── Portfolio items ──────────────────────────────────────────────────────────
+  type VideoItem = { url: string; title: string; clientName?: string; thumbnail?: string };
+  let videoItems: VideoItem[] = [];
+  try { videoItems = JSON.parse(profile.portfolioItems || "[]"); } catch {}
+  if (videoItems.length === 0 && profile.reelUrl) {
+    videoItems = [{ url: profile.reelUrl, title: "Showreel" }];
+  }
+  const validVideos = videoItems.filter(v => v.url && parseVideoUrl(v.url));
+
+  // ── Main freelancer profile ──────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-background">
-
       <div className="mx-auto max-w-6xl px-6 py-8">
+
         {/* Back */}
         <Link href="/marketplace" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-6">
           <ChevronLeft size={16} /> Back to marketplace
         </Link>
 
-        <div className="grid lg:grid-cols-[1fr,320px] gap-8">
-          {/* ── Main content ──────────────────────────────────────────── */}
-          <div className="space-y-6">
-            {/* Profile header card */}
-            <div className="bg-card border border-border rounded-2xl overflow-hidden">
-              {/* Banner */}
-              {freelancer.banner ? (
-                <div
-                  className="h-32 w-full bg-cover bg-center"
-                  style={{ backgroundImage: `url(${freelancer.banner})` }}
-                />
-              ) : (
-                <div className="h-20 w-full bg-gradient-to-r from-primary/20 via-primary/10 to-background" />
-              )}
-              <div className="p-6 md:p-8 pt-4">
-              {/* Avatar floats below banner with spacing — no overlap */}
-              <div className="flex items-end gap-4 -mt-14 mb-4">
-                <Avatar className="w-20 h-20 flex-shrink-0 ring-4 ring-card shadow-lg">
+        {/* Main card */}
+        <div className="bg-card border border-border rounded-2xl overflow-hidden">
+          <div className="grid lg:grid-cols-[260px,1fr]">
+
+            {/* ── Left sidebar ────────────────────────────────────────────── */}
+            <div className="border-r border-border p-6 flex flex-col gap-6">
+
+              {/* Avatar */}
+              <div className="flex flex-col items-center gap-3 pt-2">
+                <Avatar className="w-32 h-32 ring-4 ring-card shadow-lg">
                   <AvatarImage src={freelancer.avatar || undefined} />
-                  <AvatarFallback className="bg-primary text-white text-2xl">
+                  <AvatarFallback className="bg-primary text-white text-3xl">
                     {(freelancer.name || '?').slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
-                {/* Availability badge next to avatar at the bottom of the banner zone */}
-                <div className="ml-auto pb-1">
-                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${availClass[profile.availability]}`}>
-                    {availLabel[profile.availability]}
-                  </span>
-                </div>
+                {/* Availability */}
+                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${availClass[profile.availability]}`}>
+                  {availLabel[profile.availability]}
+                </span>
               </div>
 
-              <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div className="flex-1 min-w-0">
-                  <h1 className="text-2xl font-bold leading-tight">{freelancer.name}</h1>
-                  {/* Headline — LinkedIn-style, normal weight */}
-                  {(freelancer as any).headline && (
-                    <p className="text-base text-foreground/80 font-normal mt-0.5 leading-snug">
-                      {(freelancer as any).headline}
-                    </p>
-                  )}
-                  {/* Location */}
-                  {freelancer.location && (
-                    <p className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
-                      <MapPin size={12} /> {freelancer.location}
-                    </p>
-                  )}
-                  {/* Specialisms */}
-                  {specialisms.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {specialisms.map(s => (
-                        <span key={s} className="text-xs bg-primary/10 text-primary font-semibold px-2.5 py-0.5 rounded-full">{s}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-              {/* Stats row */}
-              <div className="flex flex-wrap gap-4 mt-5">
-                <button
-                  onClick={() => reviews.length > 0 && setReviewsOpen(true)}
-                  className={`flex items-center gap-1.5 ${reviews.length > 0 ? 'cursor-pointer hover:opacity-75 transition-opacity' : 'cursor-default'}`}
-                >
-                  <Stars rating={profile.rating || 0} />
-                  <span className="font-bold">{(profile.rating || 0).toFixed(1)}</span>
-                  <span className="text-sm text-muted-foreground underline-offset-2 hover:underline">({profile.reviewCount} reviews)</span>
-                </button>
-                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                  <Briefcase size={13} />
-                  {profile.projectCount} projects
-                </div>
-                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                  <Clock size={13} />
-                  {profile.yearsExperience} yrs experience
-                </div>
-                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                  <Users size={13} />
-                  {connCount} connections
-                </div>
-              </div>
-
-              {/* Badges */}
-              {badges.length > 0 && (
-                <div className="flex gap-2 mt-3">
-                  {badges.map(b => (
-                    <span key={b} className="text-xs bg-primary/10 text-primary rounded-full px-2.5 py-0.5 font-medium">
-                      {b}
-                    </span>
-                  ))}
+              {/* Skills & Tools */}
+              {skills.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold mb-2.5 text-foreground">Skills &amp; Tools</h3>
+                  <div className="flex flex-wrap gap-1.5">
+                    {skills.map(s => (
+                      <span key={s} className="text-xs bg-secondary text-secondary-foreground px-2.5 py-1 rounded-full border border-border">
+                        {s}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* Bio */}
-              {freelancer.bio && (
-                <p className="mt-5 text-muted-foreground leading-relaxed">{freelancer.bio}</p>
+              {/* Badges */}
+              {badges.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold mb-2.5 text-foreground">Badges</h3>
+                  <div className="flex flex-wrap gap-1.5">
+                    {badges.map(b => (
+                      <span key={b} className="text-xs bg-primary/10 text-primary px-2.5 py-1 rounded-full font-medium">
+                        {b}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Experience */}
+              {profile.yearsExperience && (
+                <div>
+                  <h3 className="text-sm font-semibold mb-1.5 text-foreground">Experience</h3>
+                  <p className="text-sm text-muted-foreground">{profile.yearsExperience}+ years</p>
+                  {specialisms.length > 0 && (
+                    <p className="text-sm text-muted-foreground mt-0.5">
+                      Specialising in {specialisms.slice(0, 2).join(' / ')}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Pricing */}
+              {(profile.dayRate || profile.hourlyRate) && (
+                <div>
+                  <h3 className="text-sm font-semibold mb-1.5 text-foreground">Rates</h3>
+                  {profile.dayRate && (
+                    <p className="text-sm text-muted-foreground">
+                      <span className="text-foreground font-semibold">£{profile.dayRate}</span> / day
+                    </p>
+                  )}
+                  {profile.hourlyRate && (
+                    <p className="text-sm text-muted-foreground mt-0.5">
+                      <span className="text-foreground font-medium">£{profile.hourlyRate}</span> / hour
+                    </p>
+                  )}
+                </div>
               )}
 
               {/* Social links */}
               {Object.keys(socialLinks).length > 0 && (
-                <div className="flex gap-3 mt-4">
+                <div className="flex gap-3">
                   {socialLinks.instagram && (
-                    <a href={socialLinks.instagram} className="text-muted-foreground hover:text-primary transition-colors">
+                    <a href={socialLinks.instagram} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary transition-colors">
                       <Instagram size={18} />
                     </a>
                   )}
                   {socialLinks.linkedin && (
-                    <a href={socialLinks.linkedin} className="text-muted-foreground hover:text-primary transition-colors">
+                    <a href={socialLinks.linkedin} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary transition-colors">
                       <Linkedin size={18} />
                     </a>
                   )}
                 </div>
               )}
-              </div>{/* /padding wrapper */}
+
+              {/* Recent Reviews */}
+              {reviews.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold mb-3 text-foreground">Recent Reviews</h3>
+                  <div className="space-y-3">
+                    {reviews.slice(0, 3).map((r: any) => (
+                      <div key={r.id} className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <img
+                            src={r.clientAvatar || `https://i.pravatar.cc/32?u=${r.clientName}`}
+                            alt={r.clientName}
+                            className="w-6 h-6 rounded-full flex-shrink-0"
+                          />
+                          <span className="text-xs font-semibold truncate">{r.clientName}</span>
+                          <Stars rating={r.rating} size={11} />
+                        </div>
+                        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+                          "{r.comment}"
+                        </p>
+                      </div>
+                    ))}
+                    {reviews.length > 3 && (
+                      <button
+                        onClick={() => setReviewsOpen(true)}
+                        className="text-xs text-primary hover:underline mt-1"
+                      >
+                        View all {reviews.length} reviews
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Tabs */}
-            <Tabs defaultValue="portfolio">
-              <TabsList className="w-full">
-                <TabsTrigger value="portfolio" className="flex-1">Portfolio</TabsTrigger>
-                <TabsTrigger value="reviews" className="flex-1">Reviews ({reviews.length})</TabsTrigger>
-                <TabsTrigger value="skills" className="flex-1">Skills</TabsTrigger>
-              </TabsList>
+            {/* ── Right main content ────────────────────────────────────── */}
+            <div className="p-6 lg:p-8 space-y-6">
 
-              {/* Portfolio */}
-              <TabsContent value="portfolio" className="mt-4">
-                {(() => {
-                  // Build display list: portfolioItems (new multi-video format) or fallback to reelUrl
-                  type VideoItem = { url: string; title: string };
-                  let videoItems: VideoItem[] = [];
-                  try { videoItems = JSON.parse(profile.portfolioItems || "[]"); } catch {}
-                  // If no portfolioItems saved yet, fall back to legacy reelUrl
-                  if (videoItems.length === 0 && profile.reelUrl) {
-                    videoItems = [{ url: profile.reelUrl, title: "" }];
-                  }
-                  const validVideos = videoItems.filter(v => v.url && parseVideoUrl(v.url));
+              {/* Header row: name/headline/meta + CTA buttons */}
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <h1 className="text-2xl font-bold leading-tight">{freelancer.name}</h1>
+                  {(freelancer as any).headline && (
+                    <p className="text-base text-foreground/70 font-normal mt-0.5 leading-snug">
+                      {(freelancer as any).headline}
+                    </p>
+                  )}
 
-                  if (validVideos.length === 0) {
-                    return (
-                      <div className="text-center py-12 text-muted-foreground">
-                        <Video size={32} className="mx-auto mb-3 opacity-40" />
-                        <p className="text-sm">No portfolio videos yet</p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className="space-y-6">
-                      {validVideos.map((v, i) => (
-                        <div key={i} className="space-y-2">
-                          {v.title && (
-                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                              {v.title}{i === 0 ? " · Featured" : ""}
-                            </p>
-                          )}
-                          {!v.title && i === 0 && (
-                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Featured</p>
-                          )}
-                          <VideoEmbed url={v.url} className="rounded-2xl" />
-                        </div>
+                  {/* Specialism pills */}
+                  {specialisms.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-3">
+                      {specialisms.map(s => (
+                        <span key={s} className="text-xs bg-secondary text-secondary-foreground border border-border font-medium px-2.5 py-1 rounded-full">
+                          {s}
+                        </span>
                       ))}
                     </div>
-                  );
-                })()}
-              </TabsContent>
+                  )}
 
-              {/* Reviews */}
-              <TabsContent value="reviews" className="mt-4 space-y-4">
-                {reviews.length === 0 ? (
-                  <div className="text-center py-12 text-muted-foreground text-sm">No reviews yet</div>
+                  {/* Stats row */}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-3">
+                    <button
+                      onClick={() => reviews.length > 0 && setReviewsOpen(true)}
+                      className={`flex items-center gap-1.5 ${reviews.length > 0 ? 'cursor-pointer hover:opacity-75 transition-opacity' : 'cursor-default'}`}
+                    >
+                      <Stars rating={profile.rating || 0} />
+                      <span className="text-sm font-bold">{(profile.rating || 0).toFixed(1)} / 5.0</span>
+                      <span className="text-sm text-muted-foreground">· {profile.reviewCount} Reviews</span>
+                    </button>
+                    {freelancer.location && (
+                      <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                        <MapPin size={13} /> {freelancer.location}
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                      <Users size={13} /> {connCount} connections
+                    </span>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex flex-col gap-2 flex-shrink-0">
+                  <Button
+                    className="bg-primary hover:bg-primary/90 text-white gap-2 px-6"
+                    onClick={() => setMsgOpen(true)}
+                    data-testid="btn-message"
+                  >
+                    <MessageSquare size={16} />
+                    Message
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className={`gap-2 transition-all ${
+                      connStatus === 'connected' ? "border-primary/40 text-primary bg-primary/5 hover:bg-primary/10"
+                      : connStatus === 'pending_sent' ? "border-amber-300 text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400"
+                      : connStatus === 'pending_received' ? "border-primary/50 text-primary bg-primary/5"
+                      : ""
+                    }`}
+                    onClick={handleConnect}
+                    disabled={connLoading}
+                    data-testid="btn-connect"
+                  >
+                    {connStatus === 'connected' ? <UserCheck size={16} className="text-primary" />
+                     : connStatus === 'pending_sent' ? <Clock size={16} />
+                     : <UserPlus size={16} />}
+                    {connStatus === 'connected' ? "Connected"
+                     : connStatus === 'pending_sent' ? "Pending"
+                     : connStatus === 'pending_received' ? "Accept Request"
+                     : "Connect"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-2 text-muted-foreground hover:text-foreground"
+                    onClick={toggleSave}
+                    data-testid="btn-save-profile"
+                  >
+                    {isSaved ? <BookmarkCheck size={15} className="text-primary" /> : <Bookmark size={15} />}
+                    {isSaved ? "Saved" : "Save"}
+                  </Button>
+                </div>
+              </div>
+
+              {/* Bio */}
+              {freelancer.bio && (
+                <p className="text-sm text-muted-foreground leading-relaxed">{freelancer.bio}</p>
+              )}
+
+              {/* Portfolio grid */}
+              <div>
+                <h2 className="text-base font-semibold mb-4">Portfolio</h2>
+                {validVideos.length === 0 ? (
+                  <div className="text-center py-12 text-muted-foreground border border-dashed border-border rounded-xl">
+                    <Video size={32} className="mx-auto mb-3 opacity-40" />
+                    <p className="text-sm">No portfolio videos yet</p>
+                  </div>
                 ) : (
-                  reviews.map((r: any) => (
-                    <div key={r.id} className="bg-card border border-border rounded-xl p-5">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-3">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    {validVideos.map((v, i) => {
+                      const parsed = parseVideoUrl(v.url);
+                      // Build thumbnail: Vimeo or YouTube
+                      let thumb: string | null = null;
+                      // Use built-in thumbnailUrl from parseVideoUrl
+                      if (parsed?.thumbnailUrl) {
+                        thumb = parsed.thumbnailUrl;
+                      }
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => setActiveVideo(v)}
+                          className="group relative rounded-xl overflow-hidden bg-secondary aspect-video text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                          data-testid={`portfolio-item-${i}`}
+                        >
+                          {thumb ? (
+                            <img src={thumb} alt={v.title || `Portfolio item ${i + 1}`} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full bg-gradient-to-br from-primary/20 to-background" />
+                          )}
+                          {/* Play overlay */}
+                          <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <div className="w-9 h-9 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
+                              <Play size={16} className="text-primary fill-primary ml-0.5" />
+                            </div>
+                          </div>
+                          {/* Always-visible play icon */}
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center group-hover:opacity-0 transition-opacity">
+                              <Play size={14} className="text-white fill-white ml-0.5" />
+                            </div>
+                          </div>
+                          {/* Title overlay at bottom */}
+                          {(v.title || v.clientName) && (
+                            <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent px-2.5 py-2">
+                              {v.title && <p className="text-white text-xs font-semibold truncate">{v.title}</p>}
+                              {v.clientName && <p className="text-white/70 text-[10px] truncate">Client: {v.clientName}</p>}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Reviews section (inline, below portfolio) */}
+              {reviews.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-base font-semibold">Reviews</h2>
+                    {reviews.length > 2 && (
+                      <button onClick={() => setReviewsOpen(true)} className="text-xs text-primary hover:underline">
+                        View all {reviews.length}
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {reviews.slice(0, 4).map((r: any) => (
+                      <div key={r.id} className="bg-secondary/40 border border-border rounded-xl p-4">
+                        <div className="flex items-center gap-2.5 mb-2">
                           <img
                             src={r.clientAvatar || `https://i.pravatar.cc/40?u=${r.clientName}`}
                             alt={r.clientName}
-                            className="w-9 h-9 rounded-full"
+                            className="w-8 h-8 rounded-full flex-shrink-0"
                           />
-                          <div>
-                            <p className="font-semibold text-sm">{r.clientName}</p>
-                            {r.projectType && <p className="text-xs text-muted-foreground">{r.projectType}</p>}
+                          <div className="min-w-0 flex-1">
+                            <p className="font-semibold text-xs truncate">{r.clientName}</p>
+                            {r.projectType && <p className="text-xs text-muted-foreground truncate">{r.projectType}</p>}
                           </div>
+                          <Stars rating={r.rating} size={12} />
                         </div>
-                        <Stars rating={r.rating} />
+                        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">"{r.comment}"</p>
                       </div>
-                      <p className="text-sm text-muted-foreground leading-relaxed">"{r.comment}"</p>
-                    </div>
-                  ))
-                )}
-              </TabsContent>
-
-              {/* Skills */}
-              <TabsContent value="skills" className="mt-4">
-                <div className="bg-card border border-border rounded-xl p-6">
-                  <h3 className="font-semibold mb-4">Core skills</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {skills.map(s => (
-                      <Badge key={s} variant="secondary" className="rounded-full px-3 py-1">{s}</Badge>
                     ))}
                   </div>
                 </div>
-              </TabsContent>
-            </Tabs>
-          </div>
+              )}
 
-          {/* ── Sidebar ──────────────────────────────────────────────── */}
-          <div className="space-y-4">
-            {/* Pricing card */}
-            <div className="bg-card border border-border rounded-2xl p-6 sticky top-20">
-              <div className="space-y-3 mb-5">
-                {profile.dayRate && (
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-3xl font-bold">£{profile.dayRate}</span>
-                    <span className="text-muted-foreground text-sm">/ day</span>
-                  </div>
-                )}
-                {profile.hourlyRate && (
-                  <p className="text-sm text-muted-foreground">£{profile.hourlyRate} per hour</p>
-                )}
-              </div>
-
-              <div className="space-y-3">
-                <Button
-                  className="w-full bg-primary hover:bg-primary/90 text-white gap-2"
-                  onClick={() => setMsgOpen(true)}
-                  data-testid="btn-message"
-                >
-                  <MessageSquare size={16} />
-                  Send message
-                </Button>
-                <Button
-                  variant="outline"
-                  className={`w-full gap-2 transition-all ${
-                    connStatus === 'connected' ? "border-primary/40 text-primary bg-primary/5 hover:bg-primary/10"
-                    : connStatus === 'pending_sent' ? "border-amber-300 text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400"
-                    : connStatus === 'pending_received' ? "border-primary/50 text-primary bg-primary/5"
-                    : ""
-                  }`}
-                  onClick={handleConnect}
-                  disabled={connLoading}
-                  data-testid="btn-connect"
-                >
-                  {connStatus === 'connected' ? <UserCheck size={16} className="text-primary" />
-                   : connStatus === 'pending_sent' ? <Clock size={16} />
-                   : <UserPlus size={16} />}
-                  {connStatus === 'connected' ? "Connected"
-                   : connStatus === 'pending_sent' ? "Pending"
-                   : connStatus === 'pending_received' ? "Accept Request"
-                   : "Connect"}
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full gap-2"
-                  onClick={toggleSave}
-                  data-testid="btn-save-profile"
-                >
-                  {isSaved ? <BookmarkCheck size={16} className="text-primary" /> : <Bookmark size={16} />}
-                  {isSaved ? "Saved" : "Save"}
-                </Button>
-              </div>
-
-              <div className="mt-5 pt-5 border-t border-border space-y-2.5 text-sm">
-                <div className="flex items-center justify-between text-muted-foreground">
-                  <span>Experience</span>
-                  <span className="text-foreground font-medium">{profile.yearsExperience} years</span>
-                </div>
-                <div className="flex items-center justify-between text-muted-foreground">
-                  <span>Connections</span>
-                  <span className="text-foreground font-medium">{connCount}</span>
-                </div>
-                <div className="flex items-center justify-between text-muted-foreground">
-                  <span>Projects completed</span>
-                  <span className="text-foreground font-medium">{profile.projectCount}</span>
-                </div>
-                <div className="flex items-center justify-between text-muted-foreground">
-                  <span>Rating</span>
-                  <span className="text-foreground font-medium">{(profile.rating || 0).toFixed(1)} / 5.0</span>
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -624,21 +658,21 @@ export default function ProfilePage() {
         </DialogContent>
       </Dialog>
 
-      {/* Reel dialog */}
-      {profile.reelUrl && (
-        <Dialog open={reelOpen} onOpenChange={v => !v && setReelOpen(false)}>
-          <DialogContent className="sm:max-w-3xl p-2">
-            <div className="aspect-video rounded-lg overflow-hidden">
-              <iframe
-                src={profile.reelUrl}
-                className="w-full h-full"
-                allow="autoplay; fullscreen"
-                allowFullScreen
-              />
+      {/* Video lightbox */}
+      <Dialog open={!!activeVideo} onOpenChange={v => !v && setActiveVideo(null)}>
+        <DialogContent className="sm:max-w-3xl p-2">
+          {activeVideo && (
+            <div className="space-y-2">
+              {activeVideo.title && (
+                <p className="text-sm font-semibold px-2 pt-1">{activeVideo.title}</p>
+              )}
+              <div className="aspect-video rounded-lg overflow-hidden">
+                <VideoEmbed url={activeVideo.url} className="rounded-lg" />
+              </div>
             </div>
-          </DialogContent>
-        </Dialog>
-      )}
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Reviews modal */}
       <Dialog open={reviewsOpen} onOpenChange={setReviewsOpen}>
