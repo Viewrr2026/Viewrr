@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import LoginModal from "./LoginModal";
 import SignupModal from "./SignupModal";
+import AuthPromptPopup from "./AuthPromptPopup";
 import NotificationBell from "./NotificationBell";
 
 export default function Navbar() {
@@ -188,6 +189,10 @@ export default function Navbar() {
 
       <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
       <SignupModal open={signupOpen} onClose={() => setSignupOpen(false)} />
+      <AuthPromptPopup
+        onLogin={() => setLoginOpen(true)}
+        onSignup={() => setSignupOpen(true)}
+      />
     </>
   );
 }

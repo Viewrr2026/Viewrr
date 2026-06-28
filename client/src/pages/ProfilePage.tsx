@@ -544,7 +544,21 @@ export default function ProfilePage() {
                 {validVideos.length === 0 ? (
                   <div className="text-center py-12 text-muted-foreground border border-dashed border-border rounded-xl">
                     <Video size={32} className="mx-auto mb-3 opacity-40" />
-                    <p className="text-sm">No portfolio videos yet</p>
+                    <p className="text-sm font-medium">No portfolio videos yet</p>
+                    {/* Show CTA only to the profile owner */}
+                    {user && user.id === freelancer.id ? (
+                      <>
+                        <p className="text-xs mt-1 mb-4">Add your Vimeo or YouTube links to showcase your work</p>
+                        <a
+                          href="/#/dashboard"
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors bg-primary/10 px-4 py-2 rounded-full"
+                        >
+                          Add portfolio videos →
+                        </a>
+                      </>
+                    ) : (
+                      <p className="text-xs mt-1">This freelancer hasn't added their portfolio yet</p>
+                    )}
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
