@@ -73,8 +73,7 @@ export default function NotificationBell() {
     notification: Notification | null;
   }>({ open: false, notification: null });
 
-  const DEMO_IDS = new Set([1, 2, 3]);
-  const isDemo = user && DEMO_IDS.has(user.id);
+  const isDemo = false;
 
   const [serverUnreadCount, setServerUnreadCount] = useState(0);
   // Derive from local state for instant UI updates after markRead; fall back to server count
@@ -207,8 +206,8 @@ export default function NotificationBell() {
             )}
           </div>
 
-          {/* Demo users */}
-          {isDemo && (
+          {/* Demo users — removed */}
+          {false && (
             <div className="flex flex-col items-center justify-center py-10 px-4 gap-2 text-center">
               <Bell className="w-8 h-8 text-muted-foreground/40" />
               <p className="text-sm text-muted-foreground">Notifications are only available on real accounts.</p>

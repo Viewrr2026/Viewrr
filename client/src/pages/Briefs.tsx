@@ -357,7 +357,7 @@ function ExpressInterestModal({ brief, open, onClose }: { brief: Brief | null; o
     }
     const briefClientId = (brief as any).clientId ?? 0;
     if (!briefClientId || briefClientId === 0) {
-      toast({ title: "Demo brief", description: "This is a sample brief. Sign up or log in to see real opportunities.", variant: "destructive" });
+      toast({ title: "Brief unavailable", description: "This brief is no longer accepting interest.", variant: "destructive" });
       return;
     }
     setSubmitting(true);

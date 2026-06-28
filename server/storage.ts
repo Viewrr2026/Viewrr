@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
-import { eq, or, and, desc, sql as drizzleSql } from "drizzle-orm";
+import { eq, or, and, desc, sql as drizzleSql, inArray } from "drizzle-orm";
 import * as schema from "@shared/schema";
 
 if (!process.env.DATABASE_URL) {
@@ -914,16 +914,18 @@ class Storage implements IStorage {
     let likedPostIds = new Set<number>();
     if (viewerUserId) {
       const postIds = rows.map(r => r.posts.id);
-      const likes = await db
-        .select({ postId: schema.postLikes.postId })
-        .from(schema.postLikes)
-        .where(
-          and(
-            eq(schema.postLikes.userId, viewerUserId),
-            drizzleSql`${schema.postLikes.postId} = ANY(${postIds})`
-          )
-        );
-      likedPostIds = new Set(likes.map(l => l.postId));
+      if (postIds.length > 0) {
+        const likes = await db
+          .select({ postId: schema.postLikes.postId })
+          .from(schema.postLikes)
+          .where(
+            and(
+              eq(schema.postLikes.userId, viewerUserId),
+              inArray(schema.postLikes.postId, postIds)
+            )
+          );
+        likedPostIds = new Set(likes.map(l => l.postId));
+      }
     }
 
     return rows.map(r => ({

@@ -7,31 +7,6 @@ import { useAuth } from "./AuthProvider";
 import { useToast } from "@/hooks/use-toast";
 import { Eye, EyeOff, Mail, ArrowLeft, RefreshCw, KeyRound, CheckCircle2 } from "lucide-react";
 
-// ── Demo accounts — fully client-side, no backend needed ─────────────────────
-const DEMO_ACCOUNTS = [
-  {
-    label: "Client — Alex Taylor",
-    email: "alex@business.co",
-    user: { id: 1, name: "Alex Taylor", email: "alex@business.co", role: "client",
-            avatar: "https://i.pravatar.cc/150?img=32", location: "London, UK",
-            bio: "Marketing Director at Taylor & Co.", createdAt: "2026-01-01" },
-  },
-  {
-    label: "Videographer — Marcus Reid",
-    email: "marcus@viewrr.co",
-    user: { id: 2, name: "Marcus Reid", email: "marcus@viewrr.co", role: "freelancer",
-            avatar: "https://i.pravatar.cc/150?img=11", location: "London, UK",
-            bio: "Award-winning cinematographer with 8 years shooting brand films.", createdAt: "2026-01-01" },
-  },
-  {
-    label: "Editor — Sophia Chen",
-    email: "sophia@viewrr.co",
-    user: { id: 3, name: "Sophia Chen", email: "sophia@viewrr.co", role: "freelancer",
-            avatar: "https://i.pravatar.cc/150?img=47", location: "Manchester, UK",
-            bio: "Post-production specialist and colour grader. Netflix, BBC, global ad agencies.", createdAt: "2026-01-01" },
-  },
-];
-
 type ModalStep = "login" | "forgot-email" | "forgot-verify" | "forgot-newpassword" | "forgot-done";
 
 const viewrrLogo = (
@@ -82,13 +57,6 @@ export default function LoginModal({ open, onClose }: { open: boolean; onClose: 
 
   function handleClose() { resetAll(); onClose(); }
 
-  // ── Demo login ────────────────────────────────────────────────────────────
-  function handleDemoLogin(account: typeof DEMO_ACCOUNTS[0]) {
-    login(account.user as any);
-    toast({ title: `Welcome back, ${account.user.name}!` });
-    handleClose();
-  }
-
   // ── Sign in ───────────────────────────────────────────────────────────────
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -97,9 +65,6 @@ export default function LoginModal({ open, onClose }: { open: boolean; onClose: 
       return;
     }
     setLoading(true);
-
-    const demo = DEMO_ACCOUNTS.find(a => a.email.toLowerCase() === email.toLowerCase());
-    if (demo) { handleDemoLogin(demo); setLoading(false); return; }
 
     try {
       const res = await fetch("/api/auth/login", {
@@ -269,22 +234,7 @@ export default function LoginModal({ open, onClose }: { open: boolean; onClose: 
               </Button>
             </form>
 
-            <div className="mt-4 pt-4 border-t border-border">
-              <p className="text-xs text-muted-foreground mb-3">Try a demo account — click to sign in instantly:</p>
-              <div className="space-y-2">
-                {DEMO_ACCOUNTS.map(a => (
-                  <button
-                    key={a.email}
-                    type="button"
-                    onClick={() => handleDemoLogin(a)}
-                    className="w-full text-left px-3 py-2.5 rounded-lg border border-border hover:border-primary hover:bg-primary/5 text-sm transition-colors"
-                  >
-                    <span className="font-medium">{a.label}</span>
-                    <span className="block text-xs text-muted-foreground mt-0.5">{a.email}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+
           </>
         )}
 

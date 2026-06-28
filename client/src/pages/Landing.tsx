@@ -199,7 +199,7 @@ export default function Landing() {
                 ))}
               </div>
               <div className="text-sm text-muted-foreground">
-                <span className="font-semibold text-foreground">Launching June 2026</span> — join the waitlist
+                <span className="font-semibold text-foreground">Now live</span> — join the UK's creative freelance marketplace
               </div>
             </div>
 

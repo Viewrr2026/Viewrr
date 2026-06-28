@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { DEMO_USER_IDS, getMockPosts } from "@/lib/mockData";
+
 import {
   Heart, MessageCircle, Send, ImagePlus, X, Hash,
   MoreHorizontal, Trash2, MapPin, Sparkles, TrendingUp,
@@ -714,38 +714,23 @@ export default function Feed() {
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  // Only show mock data for the 3 built-in demo accounts
-  const isDemo = DEMO_USER_IDS.has(user?.id ?? -1);
-
   // Initial load
   const { isLoading } = useQuery<PostWithUser[]>({
     queryKey: ["/api/feed", user?.id],
     queryFn: async () => {
-      if (isDemo) {
-        const mock = getMockPosts(user?.id) as any;
-        setPosts(mock);
-        setHasMore(false);
-        return mock;
-      }
       try {
         const viewerQ = user ? `&viewerUserId=${user.id}` : "";
         const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=0${viewerQ}`);
-        if (!res.ok) {
-          const mock = getMockPosts(undefined) as any;
-          setPosts(mock);
-          setHasMore(false);
-          return mock;
-        }
+        if (!res.ok) { setPosts([]); setHasMore(false); return []; }
         const data: PostWithUser[] = await res.json();
         setPosts(data);
         setOffset(PAGE_SIZE);
         setHasMore(data.length === PAGE_SIZE);
         return data;
       } catch {
-        const mock = getMockPosts(undefined) as any;
-        setPosts(mock);
+        setPosts([]);
         setHasMore(false);
-        return mock;
+        return [];
       }
     },
     staleTime: 60 * 1000,        // treat cached data as fresh for 60s
@@ -757,7 +742,7 @@ export default function Feed() {
   });
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore || isDemo) return;
+    if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
       const viewerQ = user ? `&viewerUserId=${user.id}` : "";
@@ -777,7 +762,7 @@ export default function Feed() {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, isDemo, offset, user]);
+  }, [loadingMore, hasMore, offset, user]);
 
   // When a new post is created, prepend it to the list and bust queries
   const handleNewPost = useCallback(() => {

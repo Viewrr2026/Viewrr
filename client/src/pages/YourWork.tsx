@@ -21,7 +21,7 @@ import {
   Pause, Play, FileText, DollarSign, Banknote, BadgeCheck, Loader2 as LoaderIcon, AlertCircle,
 } from "lucide-react";
 import { safeGet, safeSet } from "@/lib/storage";
-import { DEMO_USER_IDS, getMockProjects } from "@/lib/mockData";
+
 import type { ProjectWithDetails } from "../../../server/storage";
 
 // ── ReviewModal ─────────────────────────────────────────────────────────────
@@ -1931,12 +1931,9 @@ export default function YourWork() {
   const [invitationsOpen, setInvitationsOpen] = useState(true);
   const [payoutsTrigger, setPayoutsTrigger] = useState(0);
 
-  const isDemo = !!user && DEMO_USER_IDS.has(user.id);
-
   const { data: projects = [], isLoading, isError, refetch } = useQuery<ProjectWithDetails[]>({
     queryKey: ["/api/projects", user?.id],
     queryFn: async () => {
-      if (isDemo) return getMockProjects(user!.id) as any;
       try {
         const res = await fetch(`/api/projects?userId=${user!.id}`);
         if (!res.ok) return []; // server error — return empty, never throw
@@ -1992,14 +1989,14 @@ export default function YourWork() {
   const { data: invitations = [], refetch: refetchInvitations } = useQuery<EnrichedInvitation[]>({
     queryKey: ["/api/invitations", user?.id],
     queryFn: async () => {
-      if (!user || isDemo) return [];
+      if (!user) return [];
       try {
         const res = await fetch(`/api/invitations?userId=${user.id}`);
         if (!res.ok) return [];
         return res.json();
       } catch { return []; }
     },
-    enabled: !!user && !isDemo,
+    enabled: !!user,
     refetchInterval: false,
     retry: false,
   });
@@ -2089,17 +2086,17 @@ export default function YourWork() {
         </div>
 
         {/* ── Earnings banner — shown only when funds held and not verified ── */}
-        {!isDemo && user.role === "freelancer" && (
+        {user.role === "freelancer" && (
           <EarningsBanner userId={user.id} onSetupClick={() => setPayoutsTrigger(t => t + 1)} />
         )}
 
         {/* ── Payouts panel (freelancers only) ── */}
-        {!isDemo && user.role === "freelancer" && (
+        {user.role === "freelancer" && (
           <PayoutsPanel userId={user.id} triggerSetup={payoutsTrigger} />
         )}
 
         {/* ── Pending Invitations panel ── */}
-        {!isDemo && invitations.length > 0 && (
+        {invitations.length > 0 && (
           <div className="mb-8 rounded-2xl border border-border bg-card overflow-hidden">
             {/* Collapsible header — always visible */}
             <button
