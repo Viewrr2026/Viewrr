@@ -30,103 +30,7 @@ type Brief = {
   createdAt: string;
 };
 
-const SEED_BRIEFS: Brief[] = [
-  {
-    id: 1,
-    clientName: "SoundWave Events",
-    clientAvatar: "",
-    title: "Videographer for Summer Music Festival",
-    description: "We're looking for an experienced videographer to cover our 3-day outdoor music festival in Manchester this August. You'll capture headline acts, crowd atmosphere, backstage moments and create a highlight reel for social media. Must be comfortable working in a busy, fast-paced environment with multiple stages running simultaneously.",
-    category: "Videography",
-    location: "Manchester, UK",
-    remote: 0,
-    startDate: "2026-08-10",
-    duration: "2–3 days",
-    budgetMin: 800,
-    budgetMax: 1500,
-    budgetType: "project",
-    requirements: "Own 4K camera, drone licence preferred, event experience required, fast turnaround editing",
-    status: "open",
-    applicationCount: 7,
-    createdAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-  },
-  {
-    id: 2,
-    clientName: "The Whitmore Family",
-    clientAvatar: "",
-    title: "Wedding Videographer — Cotswolds",
-    description: "We're getting married in the Cotswolds in September and are looking for a videographer to capture our special day. We'd love a cinematic film of 5–8 minutes plus a social teaser. We have a church ceremony followed by a barn reception. Looking for someone with a warm, natural documentary style rather than overly produced.",
-    category: "Videography",
-    location: "Cotswolds, UK",
-    remote: 0,
-    startDate: "2026-09-14",
-    duration: "1 day",
-    budgetMin: 1200,
-    budgetMax: 2000,
-    budgetType: "project",
-    requirements: "Wedding portfolio required, cinematic style, dual-camera setup preferred",
-    status: "open",
-    applicationCount: 12,
-    createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-  },
-  {
-    id: 3,
-    clientName: "Bloom Botanics",
-    clientAvatar: "",
-    title: "Product & Lifestyle Photographer for Instagram",
-    description: "We're a luxury indoor plant brand looking for a photographer to shoot a series of lifestyle images for our Instagram and website refresh. We need 30–40 edited images across two sessions — product flats, lifestyle setups in home environments, and detail shots. Must have experience with product photography and a clean, airy aesthetic.",
-    category: "Photography",
-    location: "London, UK",
-    remote: 0,
-    startDate: "2026-05-20",
-    duration: "2–3 days",
-    budgetMin: 600,
-    budgetMax: 1000,
-    budgetType: "project",
-    requirements: "Product photography portfolio, own studio lighting, experience with lifestyle shoots",
-    status: "open",
-    applicationCount: 4,
-    createdAt: new Date(Date.now() - 1 * 86400000).toISOString(),
-  },
-  {
-    id: 4,
-    clientName: "ProSport Media",
-    clientAvatar: "",
-    title: "Sports Highlight Editor — YouTube Channel",
-    description: "We run a growing YouTube sports analysis channel (85k subscribers) and need a skilled video editor to produce weekly highlight and analysis videos. You'll work from raw footage and talking head recordings to create punchy, well-paced 8–12 minute videos with graphics, lower thirds and music. Must be available weekly on an ongoing basis.",
-    category: "Video Editing",
-    location: "Remote",
-    remote: 1,
-    startDate: "2026-05-01",
-    duration: "Ongoing",
-    budgetMin: 200,
-    budgetMax: 350,
-    budgetType: "project",
-    requirements: "Adobe Premiere Pro or DaVinci Resolve, sports content experience, fast turnaround, motion graphics a bonus",
-    status: "open",
-    applicationCount: 9,
-    createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-  },
-  {
-    id: 5,
-    clientName: "Maison Oré",
-    clientAvatar: "",
-    title: "Brand Marketing Campaign — Luxury Skincare Launch",
-    description: "We are launching a new luxury skincare line in the UK and need a creative marketer to develop and execute our launch campaign across Instagram, TikTok and paid channels. This is a 3-month contract role covering strategy, content briefs, influencer outreach and performance reporting. Experience with beauty or lifestyle brands is essential.",
-    category: "Marketing",
-    location: "London, UK",
-    remote: 1,
-    startDate: "2026-06-01",
-    duration: "1–3 months",
-    budgetMin: 3000,
-    budgetMax: 5000,
-    budgetType: "project",
-    requirements: "Luxury brand experience, Instagram & TikTok strategy, influencer management, analytics reporting",
-    status: "open",
-    applicationCount: 3,
-    createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-  },
-];
+
 
 const CATEGORIES = ["All", "Videography", "Video Editing", "Photography", "Marketing", "Other"];
 
@@ -515,23 +419,20 @@ export default function Briefs() {
   const [apiBriefs, setApiBriefs] = useState<Brief[] | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Load briefs from the real API on mount; fall back to seed data if unavailable
+  // Load briefs from the real API on mount
   useEffect(() => {
     async function load() {
       try {
         const res = await fetch("/api/briefs");
         if (res.ok) {
           const data: Brief[] = await res.json();
-          setApiBriefs(data.length > 0 ? data : null);
+          setApiBriefs(data);
           if (data.length > 0) setSelected(data[0]);
-          else setSelected(SEED_BRIEFS[0]);
         } else {
-          setApiBriefs(null);
-          setSelected(SEED_BRIEFS[0]);
+          setApiBriefs([]);
         }
       } catch {
-        setApiBriefs(null);
-        setSelected(SEED_BRIEFS[0]);
+        setApiBriefs([]);
       } finally {
         setLoading(false);
       }
@@ -539,8 +440,7 @@ export default function Briefs() {
     load();
   }, []);
 
-  // Use real API data when available, otherwise fall back to seeds
-  const allBriefs: Brief[] = apiBriefs ?? SEED_BRIEFS;
+  const allBriefs: Brief[] = apiBriefs ?? [];
 
   const briefs = allBriefs.filter(b => {
     if (category !== "All" && b.category !== category) return false;
