@@ -21,6 +21,13 @@ import Briefs from "@/pages/Briefs";
 import PostBrief from "@/pages/PostBrief";
 import Workspace from "@/pages/Workspace";
 import AdminPanel from "@/pages/AdminPanel";
+import FounderDashboard from "@/pages/admin/FounderDashboard";
+import FounderMarketplace from "@/pages/admin/FounderMarketplace";
+import FounderProjects from "@/pages/admin/FounderProjects";
+import FounderCommunity from "@/pages/admin/FounderCommunity";
+import FounderInsights from "@/pages/admin/FounderInsights";
+import FounderSupport from "@/pages/admin/FounderSupport";
+import FounderSettings from "@/pages/admin/FounderSettings";
 import AgencyJoin from "@/pages/AgencyJoin";
 import AgencyProfile from "@/pages/AgencyProfile";
 import AgencyHQ from "@/pages/AgencyHQ";
@@ -52,6 +59,13 @@ export default function App() {
               <Route path="/briefs/new" component={PostBrief} />
               <Route path="/workspace" component={Workspace} />
               <Route path="/admin" component={AdminPanel} />
+              <Route path="/founder" component={FounderDashboard} />
+              <Route path="/founder/marketplace" component={FounderMarketplace} />
+              <Route path="/founder/projects" component={FounderProjects} />
+              <Route path="/founder/community" component={FounderCommunity} />
+              <Route path="/founder/insights" component={FounderInsights} />
+              <Route path="/founder/support" component={FounderSupport} />
+              <Route path="/founder/settings" component={FounderSettings} />
               <Route path="/join/:code" component={AgencyJoin} />
               <Route path="/agency/:slug" component={AgencyProfile} />
               <Route path="/agency-hq" component={AgencyHQ} />

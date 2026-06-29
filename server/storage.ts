@@ -8,7 +8,8 @@ if (!process.env.DATABASE_URL) {
 }
 
 const sql = neon(process.env.DATABASE_URL);
-const db = drizzle(sql, { schema });
+export const db = drizzle(sql, { schema });
+export { drizzleSql };
 
 // Run migrations — create all tables if they don't exist
 async function runMigrations() {
@@ -1970,6 +1971,19 @@ class Storage implements IStorage {
     const all = await this.getInvoicesByFreelancer(freelancerId);
     const next = all.length + 1;
     return `INV-${String(next).padStart(5, '0')}`;
+  }
+
+  // ── Founder Dashboard ────────────────────────────────────────────────────────
+  async getUserById(id: number): Promise<schema.User | undefined> {
+    return this.getUser(id);
+  }
+
+  async getAllUsers(): Promise<schema.User[]> {
+    return db.select().from(schema.users).orderBy(desc(schema.users.id));
+  }
+
+  async getAllProjects(): Promise<schema.Project[]> {
+    return db.select().from(schema.projects).orderBy(desc(schema.projects.id));
   }
 }
 

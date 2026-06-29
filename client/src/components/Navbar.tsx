@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown, Briefcase, ClipboardList, Users, Building2 } from "lucide-react";
+import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown, Briefcase, ClipboardList, Users, Building2, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { useTheme } from "./ThemeProvider";
 import { useAuth } from "./AuthProvider";
@@ -119,6 +119,13 @@ export default function Navbar() {
                       <DropdownMenuItem asChild>
                         <Link href="/agency-hq" className="flex items-center gap-2 cursor-pointer text-primary">
                           <Building2 size={14} /> My Agency
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
+                    {user.isAdmin && (
+                      <DropdownMenuItem asChild>
+                        <Link href="/founder" className="flex items-center gap-2 cursor-pointer text-[#FF5A1F]">
+                          <ShieldCheck size={14} /> Founder Panel
                         </Link>
                       </DropdownMenuItem>
                     )}

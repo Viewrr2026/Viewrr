@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { Server } from "http";
 import { storage } from "./storage";
+import { getDashboardData } from "./services/dashboard.service";
 import crypto from "crypto";
 import multer from "multer";
 import path from "path";
@@ -2930,6 +2931,47 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       await storage.markInvoicePaid(Number(req.params.id));
       res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Founder Dashboard API ────────────────────────────────────────────────────
+  app.get('/api/admin/dashboard', async (req, res) => {
+    // Guard: only admin users
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const user = await storage.getUserById(userId);
+    if (!user || !user.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const data = await getDashboardData();
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/admin/users', async (req, res) => {
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const requester = await storage.getUserById(userId);
+    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const users = await storage.getAllUsers();
+      res.json(users);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/admin/projects', async (req, res) => {
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const requester = await storage.getUserById(userId);
+    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const projects = await storage.getAllProjects();
+      res.json(projects);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
