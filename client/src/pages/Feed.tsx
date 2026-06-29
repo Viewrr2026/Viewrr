@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
+import { displayRole } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -629,7 +630,7 @@ function NewPostModal({ open, onClose }: { open: boolean; onClose: () => void })
               </Avatar>
               <div>
                 <p className="font-semibold text-sm">{user.name}</p>
-                <p className="text-xs text-muted-foreground capitalize">{user.role}</p>
+                <p className="text-xs text-muted-foreground">{displayRole(user.role)}</p>
               </div>
             </div>
 

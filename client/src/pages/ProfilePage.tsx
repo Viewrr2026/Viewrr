@@ -10,6 +10,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/components/AuthProvider";
+import { displayRole, roleBadgeClass } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect } from "react";
 import { connectionCount } from "@/lib/storage";
@@ -217,8 +218,8 @@ export default function ProfilePage() {
                     {(clientUser.name || '?').slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
-                <span className="mb-2 px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-                  Client
+                <span className={`mb-2 px-3 py-1 rounded-full text-xs font-semibold border ${roleBadgeClass(clientUser.role)}`}>
+                  {displayRole(clientUser.role)}
                 </span>
               </div>
 

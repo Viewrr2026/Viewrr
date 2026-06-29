@@ -3,6 +3,7 @@ import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown
 import { useState } from "react";
 import { useTheme } from "./ThemeProvider";
 import { useAuth } from "./AuthProvider";
+import { displayRole } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -106,7 +107,7 @@ export default function Navbar() {
                   <DropdownMenuContent align="end" className="w-48">
                     <div className="px-3 py-2">
                       <p className="text-sm font-medium">{user.name}</p>
-                      <p className="text-xs text-muted-foreground capitalize">{user.role}</p>
+                      <p className="text-xs text-muted-foreground">{displayRole(user.role)}</p>
                     </div>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem asChild>

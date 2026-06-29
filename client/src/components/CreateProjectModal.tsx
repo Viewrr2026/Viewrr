@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { displayRole } from "@/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -600,7 +601,7 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                       <p className="text-xs text-muted-foreground truncate">{recipient.headline}</p>
                     )}
                     {recipient.role && (
-                      <p className="text-xs text-primary capitalize">{recipient.role}</p>
+                      <p className="text-xs text-primary">{displayRole(recipient.role)}</p>
                     )}
                   </div>
                   <button
@@ -657,7 +658,7 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                               <div className="min-w-0">
                                 <p className="text-sm font-medium truncate">{u.name}</p>
                                 {u.headline && <p className="text-xs text-muted-foreground truncate">{u.headline}</p>}
-                                {u.role && <p className="text-xs text-primary capitalize">{u.role}</p>}
+                                {u.role && <p className="text-xs text-primary">{displayRole(u.role)}</p>}
                               </div>
                             </button>
                           ))

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { displayRole } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Bookmark, MessageSquare, User, Send, Settings, LogOut, Star, TrendingUp, Briefcase, FileText, CheckCircle2, Clock, XCircle, ChevronRight, MapPin, Users, Film, CheckCircle, AlertCircle, LayoutGrid, Plus, Trash2, GripVertical, FolderOpen, ShieldAlert, Eye, Building2, Copy, Link as LinkIcon, PoundSterling, UserPlus, BarChart2, CalendarClock, GitBranch, Timer, Plane, Database, ExternalLink, ChevronDown, ChevronUp, Mail } from "lucide-react";
@@ -1208,7 +1209,7 @@ export default function Dashboard() {
                               conn.role === 'client'
                                 ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
                                 : 'bg-primary/10 text-primary'
-                            }`}>{conn.role === 'client' ? 'Client' : 'Creative'}</span>
+                            }`}>{displayRole(conn.role)}</span>
                           </div>
                         </Link>
                       ))}
@@ -1927,7 +1928,7 @@ export default function Dashboard() {
               </div>
               <div>
                 <label className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Role</label>
-                <p className="font-medium capitalize mt-0.5">{user.role}</p>
+                <p className="font-medium mt-0.5">{displayRole(user.role)}</p>
               </div>
               {user.bio && (
                 <div>
