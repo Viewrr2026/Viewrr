@@ -148,6 +148,23 @@ export default function Landing() {
               background: "linear-gradient(105deg, hsl(var(--background)) 30%, hsl(var(--background) / 0.75) 55%, hsl(var(--background) / 0.15) 100%)",
             }}
           />
+          {/* Video credit watermark */}
+          <div
+            className="absolute bottom-4 right-5 z-10 select-none pointer-events-none"
+            aria-hidden="true"
+          >
+            <span
+              className="text-[11px] font-medium tracking-wide"
+              style={{
+                color: "rgba(255,255,255,0.45)",
+                textShadow: "0 1px 3px rgba(0,0,0,0.5)",
+                fontFamily: "inherit",
+                letterSpacing: "0.04em",
+              }}
+            >
+              @WOL Productions
+            </span>
+          </div>
           {/* Bottom fade so it blends into the stats bar below */}
           <div
             className="absolute bottom-0 left-0 right-0 h-32"
@@ -165,11 +182,11 @@ export default function Landing() {
             </div>
 
             <h1 className="text-5xl md:text-6xl lg:text-[4.5rem] font-bold leading-[1.04] mb-6 tracking-tight">
-              The home of
+              Hire trusted
               <br />
               <span className="gradient-text">UK creative</span>
               <br />
-              freelancers.
+              professionals in minutes.
             </h1>
 
             <p className="text-base md:text-lg text-muted-foreground mb-8 max-w-sm leading-relaxed">
