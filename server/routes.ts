@@ -2976,4 +2976,155 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // ── Accreditation API ────────────────────────────────────────────────────────
+
+  /** GET /api/admin/accreditation — all freelancer profiles with accreditation data */
+  app.get('/api/admin/accreditation', async (req, res) => {
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const requester = await storage.getUserById(userId);
+    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const profiles = await storage.getFreelancerProfilesWithAccreditation();
+      res.json(profiles);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /** GET /api/admin/accreditation/history — recent audit log */
+  app.get('/api/admin/accreditation/history', async (req, res) => {
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const requester = await storage.getUserById(userId);
+    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const history = await storage.getAllAccreditationHistory(100);
+      res.json(history);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /** GET /api/admin/accreditation/history/:freelancerUserId — history for one freelancer */
+  app.get('/api/admin/accreditation/history/:freelancerUserId', async (req, res) => {
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const requester = await storage.getUserById(userId);
+    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const history = await storage.getAccreditationHistory(Number(req.params.freelancerUserId));
+      res.json(history);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * POST /api/admin/accreditation/update
+   * Body: { userId (requester), freelancerUserId, profileId, newLevel (or null), action, reason, internalNotes }
+   * action: "granted" | "promoted" | "demoted" | "removed" | "rejected" | "changes_requested"
+   * Only Founder (isAdmin) may call this — never purchasable.
+   */
+  app.post('/api/admin/accreditation/update', async (req, res) => {
+    const { userId, freelancerUserId, profileId, newLevel, action, reason, internalNotes } = req.body;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const requester = await storage.getUserById(Number(userId));
+    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden — only Founders may modify accreditations.' });
+
+    // Validate level if provided
+    const VALID_LEVELS = ['verified', 'approved', 'elite', null];
+    if (newLevel !== null && newLevel !== undefined && !VALID_LEVELS.includes(newLevel)) {
+      return res.status(400).json({ error: `Invalid accreditation level: ${newLevel}` });
+    }
+
+    const VALID_ACTIONS = ['granted', 'promoted', 'demoted', 'removed', 'rejected', 'changes_requested'];
+    if (!VALID_ACTIONS.includes(action)) {
+      return res.status(400).json({ error: `Invalid action: ${action}` });
+    }
+
+    try {
+      // Get current profile state
+      const profile = await storage.getProfileByUserId(Number(freelancerUserId));
+      if (!profile) return res.status(404).json({ error: 'Freelancer profile not found' });
+
+      const previousLevel = profile.accreditationLevel ?? null;
+      const now = new Date().toISOString();
+
+      // Update profile accreditation
+      const updated = await storage.updateAccreditation(Number(profileId), {
+        accreditationLevel: newLevel ?? null,
+        accreditationApprovedBy: newLevel ? requester.id : null,
+        accreditationApprovedByName: newLevel ? requester.name : null,
+        accreditationApprovedDate: newLevel ? now : null,
+        accreditationNotes: internalNotes ?? profile.accreditationNotes ?? null,
+        accreditationLastReviewed: now,
+      });
+
+      // Write audit log
+      await storage.createAccreditationHistory({
+        freelancerUserId: Number(freelancerUserId),
+        actionDate: now,
+        founderUserId: requester.id,
+        founderName: requester.name,
+        previousLevel,
+        newLevel: newLevel ?? null,
+        action,
+        reason: reason ?? '',
+        internalNotes: internalNotes ?? '',
+      });
+
+      // Notify freelancer (if accreditation granted/promoted)
+      if (['granted', 'promoted'].includes(action) && newLevel) {
+        const freelancerUser = await storage.getUserById(Number(freelancerUserId));
+        if (freelancerUser) {
+          const levelLabels: Record<string, string> = {
+            verified: 'Verified',
+            approved: 'Viewrr Approved',
+            elite: 'Viewrr Elite',
+          };
+          const levelDescriptions: Record<string, string> = {
+            verified: 'Your identity has been confirmed and your professional profile is now verified.',
+            approved: 'Your portfolio has been personally reviewed and professionally approved by the Viewrr team. This means Viewrr would confidently recommend you to clients.',
+            elite: 'You have been recognised by Viewrr for consistently delivering exceptional work and earning outstanding client trust.',
+          };
+          const label = levelLabels[newLevel] ?? newLevel;
+          const description = levelDescriptions[newLevel] ?? '';
+          await storage.createNotification({
+            recipientId: freelancerUser.id,
+            actorId: requester.id,
+            actorName: 'Viewrr',
+            actorAvatar: null,
+            type: 'accreditation',
+            message: `Congratulations — you have been awarded ${label}. ${description}`,
+            link: '/dashboard',
+            read: 0,
+          });
+        }
+      }
+
+      res.json({ success: true, profile: updated });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * PATCH /api/admin/accreditation/notes
+   * Body: { userId (requester), profileId, internalNotes }
+   * Updates internal notes only — not visible to freelancer.
+   */
+  app.patch('/api/admin/accreditation/notes', async (req, res) => {
+    const { userId, profileId, internalNotes } = req.body;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const requester = await storage.getUserById(Number(userId));
+    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      await storage.updateAccreditationNotes(Number(profileId), internalNotes ?? '');
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 }

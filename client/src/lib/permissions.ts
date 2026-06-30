@@ -22,7 +22,9 @@ export type Permission =
   | "community.view"
   | "insights.view"
   | "support.view"
-  | "settings.view";
+  | "settings.view"
+  | "accreditation.view"       // can see accreditation panel
+  | "accreditation.manage";    // can approve / reject / promote / demote
 
 const ROLE_PERMISSIONS: Record<FounderRole, Permission[]> = {
   founder: [
@@ -33,6 +35,8 @@ const ROLE_PERMISSIONS: Record<FounderRole, Permission[]> = {
     "insights.view",
     "support.view",
     "settings.view",
+    "accreditation.view",
+    "accreditation.manage",
   ],
   admin: [
     "dashboard.view",
@@ -40,6 +44,7 @@ const ROLE_PERMISSIONS: Record<FounderRole, Permission[]> = {
     "projects.view",
     "community.view",
     "support.view",
+    "accreditation.view",  // read-only
   ],
   support: ["support.view", "community.view"],
   moderator: ["community.view", "marketplace.view"],

@@ -14,6 +14,7 @@ import {
   LogOut,
   Menu,
   X,
+  BadgeCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/components/AuthProvider";
@@ -21,6 +22,7 @@ import { isFounderPanelUser } from "@/lib/permissions";
 
 const NAV_ITEMS = [
   { label: "Dashboard", href: "/founder", icon: LayoutDashboard, exact: true },
+  { label: "Accreditation", href: "/founder/accreditation", icon: BadgeCheck },
   { label: "Marketplace", href: "/founder/marketplace", icon: Store },
   { label: "Projects", href: "/founder/projects", icon: FolderKanban },
   { label: "Community", href: "/founder/community", icon: Users },

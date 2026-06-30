@@ -14,6 +14,7 @@ import { displayRole, roleBadgeClass } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect } from "react";
 import { connectionCount } from "@/lib/storage";
+import AccreditationBadge, { type AccreditationLevel } from "@/components/accreditation/AccreditationBadge";
 
 type ConnStatus = 'none' | 'pending_sent' | 'pending_received' | 'connected';
 
@@ -332,6 +333,13 @@ export default function ProfilePage() {
                     {(freelancer.name || '?').slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
+                {/* Accreditation badge (sidebar — visible mobile and desktop) */}
+                {profile.accreditationLevel && (
+                  <AccreditationBadge
+                    level={(profile.accreditationLevel as AccreditationLevel)}
+                    variant="badge"
+                  />
+                )}
                 {/* Availability */}
                 <span className={`px-3 py-1 rounded-full text-xs font-semibold ${availClass[profile.availability]}`}>
                   {availLabel[profile.availability]}
@@ -452,7 +460,10 @@ export default function ProfilePage() {
               {/* Header row: name/headline/meta + CTA buttons */}
               <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div className="flex-1 min-w-0">
-                  <h1 className="text-2xl font-bold leading-tight">{freelancer.name}</h1>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h1 className="text-2xl font-bold leading-tight">{freelancer.name}</h1>
+                    <AccreditationBadge level={(profile.accreditationLevel as AccreditationLevel) ?? null} variant="badge" />
+                  </div>
                   {(freelancer as any).headline && (
                     <p className="text-base text-foreground/70 font-normal mt-0.5 leading-snug">
                       {(freelancer as any).headline}

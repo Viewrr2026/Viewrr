@@ -8,6 +8,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "./AuthProvider";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
+import AccreditationBadge, { type AccreditationLevel } from "@/components/accreditation/AccreditationBadge";
 
 const SPECIALISM_ICONS: Record<string, typeof Video> = {
   "Videographer": Video,
@@ -240,11 +241,28 @@ export default function FreelancerCard({ pw, savedInit = false }: { pw: ProfileW
                 )}
               </div>
               <div className="min-w-0 flex-1">
-                <h3 className="font-semibold text-sm truncate">{pw.user.name}</h3>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <h3 className="font-semibold text-sm truncate">{pw.user.name}</h3>
+                  {(pw.profile as any).accreditationLevel && (
+                    <AccreditationBadge
+                      level={((pw.profile as any).accreditationLevel) as AccreditationLevel}
+                      variant="dot"
+                      tooltip={false}
+                    />
+                  )}
+                </div>
                 {pw.user.location && (
                   <p className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
                     <MapPin size={10} /> {pw.user.location}
                   </p>
+                )}
+                {(pw.profile as any).accreditationLevel && (
+                  <div className="mt-0.5">
+                    <AccreditationBadge
+                      level={((pw.profile as any).accreditationLevel) as AccreditationLevel}
+                      variant="inline"
+                    />
+                  </div>
                 )}
               </div>
               <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${AVAILABILITY_CLASSES[pw.profile.availability]}`}>

@@ -1985,6 +1985,73 @@ class Storage implements IStorage {
   async getAllProjects(): Promise<schema.Project[]> {
     return db.select().from(schema.projects).orderBy(desc(schema.projects.id));
   }
+
+  // ── Accreditation System ─────────────────────────────────────────────────
+
+  /** Get all freelancer profiles with accreditation data (for founder panel) */
+  async getFreelancerProfilesWithAccreditation(): Promise<(schema.Profile & { userName: string; userEmail: string; userAvatar: string | null })[]> {
+    const rows = await db
+      .select({
+        profile: schema.profiles,
+        userName: schema.users.name,
+        userEmail: schema.users.email,
+        userAvatar: schema.users.avatar,
+      })
+      .from(schema.profiles)
+      .innerJoin(schema.users, eq(schema.profiles.userId, schema.users.id))
+      .where(eq(schema.users.role, "freelancer"))
+      .orderBy(desc(schema.profiles.id));
+    return rows.map(r => ({ ...r.profile, userName: r.userName, userEmail: r.userEmail, userAvatar: r.userAvatar }));
+  }
+
+  /** Update accreditation level on a profile */
+  async updateAccreditation(profileId: number, data: {
+    accreditationLevel: string | null;
+    accreditationApprovedBy: number | null;
+    accreditationApprovedByName: string | null;
+    accreditationApprovedDate: string | null;
+    accreditationNotes: string | null;
+    accreditationLastReviewed: string;
+  }): Promise<schema.Profile> {
+    const r = await db
+      .update(schema.profiles)
+      .set(data)
+      .where(eq(schema.profiles.id, profileId))
+      .returning();
+    return r[0];
+  }
+
+  /** Update only internal notes (founder private notes) */
+  async updateAccreditationNotes(profileId: number, notes: string): Promise<void> {
+    await db
+      .update(schema.profiles)
+      .set({ accreditationNotes: notes, accreditationLastReviewed: new Date().toISOString() })
+      .where(eq(schema.profiles.id, profileId));
+  }
+
+  /** Write an audit log entry */
+  async createAccreditationHistory(data: schema.InsertAccreditationHistory): Promise<schema.AccreditationHistory> {
+    const r = await db.insert(schema.accreditationHistory).values(data).returning();
+    return r[0];
+  }
+
+  /** Get full history for a freelancer */
+  async getAccreditationHistory(freelancerUserId: number): Promise<schema.AccreditationHistory[]> {
+    return db
+      .select()
+      .from(schema.accreditationHistory)
+      .where(eq(schema.accreditationHistory.freelancerUserId, freelancerUserId))
+      .orderBy(desc(schema.accreditationHistory.actionDate));
+  }
+
+  /** Get all history (for founder panel overview) */
+  async getAllAccreditationHistory(limit = 50): Promise<schema.AccreditationHistory[]> {
+    return db
+      .select()
+      .from(schema.accreditationHistory)
+      .orderBy(desc(schema.accreditationHistory.actionDate))
+      .limit(limit);
+  }
 }
 
 export const storage = new Storage();

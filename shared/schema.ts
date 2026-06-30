@@ -50,6 +50,16 @@ export const profiles = pgTable("profiles", {
   isPro: integer("is_pro").default(0),
   proSince: text("pro_since"),
   cardThumbnail: text("card_thumbnail"),
+  // ─ Accreditation ───────────────────────────────────────────────────────────
+  accreditationLevel: text("accreditation_level"),    // null | "verified" | "approved" | "elite" | future
+  accreditationApprovedBy: integer("accreditation_approved_by"), // founder user id
+  accreditationApprovedByName: text("accreditation_approved_by_name"),
+  accreditationApprovedDate: text("accreditation_approved_date"), // ISO datetime
+  accreditationNotes: text("accreditation_notes"),     // internal founder notes (NEVER shown to freelancer)
+  accreditationLastReviewed: text("accreditation_last_reviewed"), // ISO datetime
+  reviewAverage: real("review_average").default(0),
+  verifiedReviewCount: integer("verified_review_count").default(0),
+  completedProjectCount: integer("completed_project_count").default(0),
 });
 
 export const insertProfileSchema = createInsertSchema(profiles).omit({ id: true });
@@ -509,6 +519,37 @@ export const agencyActivity = pgTable("agency_activity", {
 export const insertAgencyActivitySchema = createInsertSchema(agencyActivity).omit({ id: true, createdAt: true });
 export type InsertAgencyActivity = z.infer<typeof insertAgencyActivitySchema>;
 export type AgencyActivity = typeof agencyActivity.$inferSelect;
+
+// ─── Accreditation ──────────────────────────────────────────────────────────
+//
+// Levels are stored as text (not a pg enum) so future levels can be added
+// without a migration. The application layer validates against ACCREDITATION_LEVELS.
+//
+// Current: null | "verified" | "approved" | "elite"
+// Future:  "champion" | ...
+
+export const ACCREDITATION_LEVELS = ["verified", "approved", "elite"] as const;
+export type AccreditationLevel = (typeof ACCREDITATION_LEVELS)[number];
+
+// Extends the profiles table in-DB via ALTER TABLE (see migration).
+// These columns map to the profiles table below.
+
+export const accreditationHistory = pgTable("accreditation_history", {
+  id: serial("id").primaryKey(),
+  freelancerUserId: integer("freelancer_user_id").notNull(), // profiles.userId
+  actionDate: text("action_date").notNull(),                 // ISO datetime
+  founderUserId: integer("founder_user_id").notNull(),       // who performed the action
+  founderName: text("founder_name").notNull(),
+  previousLevel: text("previous_level"),                     // null = no accreditation
+  newLevel: text("new_level"),                               // null = accreditation removed
+  action: text("action").notNull(),                          // "granted" | "promoted" | "demoted" | "removed" | "rejected" | "changes_requested"
+  reason: text("reason").notNull().default(""),
+  internalNotes: text("internal_notes").notNull().default(""),
+});
+
+export const insertAccreditationHistorySchema = createInsertSchema(accreditationHistory).omit({ id: true });
+export type InsertAccreditationHistory = z.infer<typeof insertAccreditationHistorySchema>;
+export type AccreditationHistory = typeof accreditationHistory.$inferSelect;
 
 // ─── Invoice Templates (freelancer's branding/letterhead settings) ─────────
 export const invoiceTemplates = pgTable("invoice_templates", {
