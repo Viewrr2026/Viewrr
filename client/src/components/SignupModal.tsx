@@ -15,8 +15,9 @@ import {
   Trash2, GripVertical, Banknote, ShieldCheck, Zap,
 } from "lucide-react";
 
-type Step = "role" | "client-details" | "client-verify" | "freelancer-type" | "freelancer-details" | "freelancer-verify" | "freelancer-portfolio" | "freelancer-payouts" | "agency-setup" | "done";
+type Step = "role" | "client-details" | "client-verify" | "freelancer-type" | "freelancer-details" | "freelancer-verify" | "freelancer-accreditation" | "freelancer-portfolio" | "freelancer-payouts" | "agency-setup" | "done";
 type ClientSubStep = 1 | 2;
+type FreeSubStep = 1 | 2 | 3;
 type VerifyMethod = "email" | "phone";
 type PortfolioItem = { url: string; title: string };
 
@@ -48,6 +49,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const { toast } = useToast();
   const [step, setStep] = useState<Step>("role");
   const [clientSubStep, setClientSubStep] = useState<ClientSubStep>(1);
+  const [freeSubStep, setFreeSubStep] = useState<FreeSubStep>(1);
   const [role, setRole] = useState<"client" | "freelancer" | null>(null);
 
   // Client fields
@@ -107,7 +109,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   }, [resendCooldown]);
 
   function reset() {
-    setStep("role"); setRole(null); setClientSubStep(1);
+    setStep("role"); setRole(null); setClientSubStep(1); setFreeSubStep(1);
     setClientFirstName(""); setClientLastName(""); setClientPhone(""); setClientEmail(""); setClientPassword(""); setCompany("");
     setFreeFirstName(""); setFreeLastName(""); setFreePhone(""); setFreeEmail(""); setFreePassword(""); setFreeCompany("");
     setVerifyMethod("email");
@@ -158,13 +160,22 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     return true;
   }
 
-  function validateFreeDetails() {
+  // Freelancer step-specific validators
+  function validateFreeStep1() {
     if (!freeFirstName.trim()) { toast({ title: "Please enter your first name", variant: "destructive" }); return false; }
     if (!freeLastName.trim()) { toast({ title: "Please enter your last name", variant: "destructive" }); return false; }
-    if (!freePhone.trim()) { toast({ title: "Please enter your contact number", variant: "destructive" }); return false; }
     if (!freeEmail.trim()) { toast({ title: "Please enter your email address", variant: "destructive" }); return false; }
     if (!freePassword || freePassword.length < 8) { toast({ title: "Password must be at least 8 characters", variant: "destructive" }); return false; }
+    return true;
+  }
+  function validateFreeStep2() {
+    if (!freePhone.trim()) { toast({ title: "Please enter your contact number", variant: "destructive" }); return false; }
     if (freeSpecialisms.length === 0) { toast({ title: "Please select at least one specialism", variant: "destructive" }); return false; }
+    return true;
+  }
+  function validateFreeDetails() {
+    if (!validateFreeStep1()) return false;
+    if (!validateFreeStep2()) return false;
     return true;
   }
 
@@ -363,7 +374,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     }
 
     setCodeInput(["", "", "", "", "", ""]);
-    setStep("freelancer-portfolio");
+    setStep("freelancer-accreditation");
     setPayoutsPopupDone(false);
   }
 
@@ -402,7 +413,10 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const canProceedStep1 = !!(clientFirstName.trim() && clientLastName.trim() && clientEmail.trim() && clientPassword.length >= 8);
   // Full client form complete: step 1 + phone
   const canProceed = canProceedStep1 && !!clientPhone.trim();
-  const canFreeProceed = freeFirstName && freeLastName && freePhone && freeEmail && freePassword.length >= 8 && freeSpecialisms.length > 0;
+  // Freelancer per-step completion flags
+  const canFreeStep1 = !!(freeFirstName.trim() && freeLastName.trim() && freeEmail.trim() && freePassword.length >= 8);
+  const canFreeStep2 = canFreeStep1 && !!freePhone.trim() && freeSpecialisms.length > 0;
+  const canFreeProceed = canFreeStep2; // kept for proceedToFreeVerify compat
   const activeEmail = role === "freelancer" ? freeEmail : clientEmail;
   const activePhone = role === "freelancer" ? freePhone : clientPhone;
 
@@ -685,85 +699,177 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
           </>
         )}
 
-        {/* ── STEP: Freelancer details ── */}
+        {/* ── STEP: Freelancer details (3 sub-steps) ── */}
         {step === "freelancer-details" && (
           <>
-            <DialogHeader><DialogTitle className="flex items-center gap-2">{viewrrLogo} Create your freelancer account</DialogTitle></DialogHeader>
-            <button onClick={() => setStep("role")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label>First Name <span className="text-destructive">*</span></Label><Input placeholder="Marcus" value={freeFirstName} onChange={e => setFreeFirstName(e.target.value)} /></div>
-                <div className="space-y-1.5"><Label>Last Name <span className="text-destructive">*</span></Label><Input placeholder="Reid" value={freeLastName} onChange={e => setFreeLastName(e.target.value)} /></div>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Contact Number <span className="text-destructive">*</span></Label>
-                <div className="relative"><Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input type="tel" placeholder="+44 7700 900000" value={freePhone} onChange={e => setFreePhone(e.target.value)} className="pl-9" /></div>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Your Email <span className="text-destructive">*</span></Label>
-                <div className="relative"><Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input type="email" placeholder="you@email.com" value={freeEmail} onChange={e => setFreeEmail(e.target.value)} className="pl-9" /></div>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Password <span className="text-destructive">*</span></Label>
-                <div className="relative">
-                  <Input type={showFreePassword ? "text" : "password"} placeholder="At least 8 characters" value={freePassword} onChange={e => setFreePassword(e.target.value)} className="pr-10" />
-                  <button type="button" onClick={() => setShowFreePassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">{showFreePassword ? <EyeOff size={15}/> : <Eye size={15}/>}</button>
-                </div>
-                {freePassword && freePassword.length < 8 && <p className="text-xs text-destructive">Password must be at least 8 characters</p>}
-              </div>
-              <div className="space-y-1.5"><Label>Company / Brand name <span className="text-muted-foreground font-normal">(optional)</span></Label><Input placeholder="My Studio" value={freeCompany} onChange={e => setFreeCompany(e.target.value)} /></div>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {viewrrLogo}
+                {freeSubStep === 1 ? "Join the UK's trusted network" : freeSubStep === 2 ? "Your professional profile" : "Your creative story"}
+              </DialogTitle>
+            </DialogHeader>
 
-              {/* Specialisms */}
-              <div>
-                <Label className="mb-2 block">What do you do? <span className="text-destructive">*</span> <span className="text-muted-foreground font-normal">(select all that apply)</span></Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {SPECIALISMS.map(({ id, icon: Icon, label }) => (
-                    <button key={id} type="button" onClick={() => toggleSpecialism(id)} className={`flex items-center gap-2 p-3 rounded-xl border-2 text-sm font-medium transition-all ${freeSpecialisms.includes(id) ? "border-primary bg-primary/10 text-primary" : "border-border hover:border-primary/40"}`}>
-                      <Icon size={15} className={freeSpecialisms.includes(id) ? "text-primary" : "text-muted-foreground"} />
-                      {label}
-                      {freeSpecialisms.includes(id) && <Check size={13} className="ml-auto text-primary" />}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {/* Back button */}
+            <button
+              onClick={() => {
+                if (freeSubStep === 1) setStep("freelancer-type");
+                else setFreeSubStep(prev => (prev - 1) as FreeSubStep);
+              }}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-1 -mt-1"
+            >
+              <ArrowLeft size={12}/> Back
+            </button>
 
-              {/* Experience */}
-              <div>
-                <Label className="mb-2 block">Years of experience</Label>
-                <div className="flex flex-wrap gap-2">
-                  {EXPERIENCE_LEVELS.map(lvl => (
-                    <button key={lvl} type="button" onClick={() => setExperience(lvl)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${experience === lvl ? "bg-primary text-white border-primary" : "border-border text-muted-foreground hover:border-primary/40"}`}>{lvl}</button>
-                  ))}
-                </div>
+            {/* Progress indicator */}
+            <div className="space-y-1.5 mb-4" aria-label={`Step ${freeSubStep} of 3`}>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Step {freeSubStep} of 3</span>
+                <span className="text-xs font-medium text-primary">
+                  {freeSubStep === 1 ? "33%" : freeSubStep === 2 ? "67%" : "100%"}
+                </span>
               </div>
-
-              {/* Equipment */}
-              <div>
-                <Label className="mb-2 block">Equipment &amp; software <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                <div className="flex flex-wrap gap-2">
-                  {EQUIPMENT_OPTIONS.map(eq => (
-                    <button key={eq} type="button" onClick={() => toggleEquipment(eq)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${equipment.includes(eq) ? "bg-primary/10 text-primary border-primary/50" : "border-border text-muted-foreground hover:border-primary/40"}`}>{eq}</button>
-                  ))}
-                </div>
+              <div className="w-full h-1.5 rounded-full bg-border overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
+                  style={{ width: freeSubStep === 1 ? "33%" : freeSubStep === 2 ? "67%" : "100%" }}
+                />
               </div>
-
-              {/* Bio */}
-              <div className="space-y-1.5">
-                <Label>About you <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                <Textarea placeholder="Tell clients who you are, what you specialise in, and what makes your work stand out..." value={bio} onChange={e => setBio(e.target.value)} rows={3} className="resize-none" />
-              </div>
-
-              {/* Verify method */}
-              <div className="space-y-2">
-                <Label className="text-sm">How would you like to verify?</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button type="button" onClick={() => canFreeProceed && proceedToFreeVerify("email")} disabled={!canFreeProceed} className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${canFreeProceed ? "border-primary bg-primary text-white hover:bg-primary/90" : "border-border text-muted-foreground opacity-50 cursor-not-allowed"}`}><Mail size={15}/> Via Email</button>
-                  <button type="button" onClick={() => canFreeProceed && proceedToFreeVerify("phone")} disabled={!canFreeProceed} className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${canFreeProceed ? "border-border hover:border-primary hover:bg-primary/5" : "border-border text-muted-foreground opacity-50 cursor-not-allowed"}`}><Phone size={15}/> Via Phone</button>
-                </div>
-                <p className="text-xs text-muted-foreground text-center">Fill in all required fields above to enable verification</p>
-              </div>
-              <p className="text-xs text-muted-foreground text-center">By joining you agree to our Terms &amp; Conditions and Privacy Policy.</p>
             </div>
+
+            {/* Sub-step 1: Personal Details */}
+            {freeSubStep === 1 && (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground -mt-1">Build your profile, showcase your work and become part of a curated creative marketplace.</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5"><Label>First Name <span className="text-destructive">*</span></Label><Input placeholder="Marcus" value={freeFirstName} onChange={e => setFreeFirstName(e.target.value)} autoFocus /></div>
+                  <div className="space-y-1.5"><Label>Last Name <span className="text-destructive">*</span></Label><Input placeholder="Reid" value={freeLastName} onChange={e => setFreeLastName(e.target.value)} /></div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Email Address <span className="text-destructive">*</span></Label>
+                  <div className="relative"><Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input type="email" placeholder="you@email.com" value={freeEmail} onChange={e => setFreeEmail(e.target.value)} className="pl-9" /></div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Password <span className="text-destructive">*</span></Label>
+                  <div className="relative">
+                    <Input type={showFreePassword ? "text" : "password"} placeholder="At least 8 characters" value={freePassword} onChange={e => setFreePassword(e.target.value)} className="pr-10" />
+                    <button type="button" onClick={() => setShowFreePassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">{showFreePassword ? <EyeOff size={15}/> : <Eye size={15}/>}</button>
+                  </div>
+                  {freePassword && freePassword.length < 8 && <p className="text-xs text-destructive">Password must be at least 8 characters</p>}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { if (validateFreeStep1()) setFreeSubStep(2); }}
+                  disabled={!canFreeStep1}
+                  className={[
+                    "w-full py-3 rounded-full text-sm font-semibold flex items-center justify-center gap-2 transition-all duration-300",
+                    canFreeStep1
+                      ? "bg-primary text-white hover:bg-primary/90 shadow-md shadow-primary/25"
+                      : "bg-muted text-muted-foreground cursor-not-allowed",
+                  ].join(" ")}
+                >
+                  Continue <ChevronRight size={15} className={canFreeStep1 ? "opacity-100" : "opacity-40"} />
+                </button>
+                <p className="text-xs text-muted-foreground text-center">
+                  By joining you agree to our{" "}
+                  <span className="text-primary hover:underline cursor-pointer">Terms &amp; Conditions</span> and{" "}
+                  <span className="text-primary hover:underline cursor-pointer">Privacy Policy</span>.
+                </p>
+              </div>
+            )}
+
+            {/* Sub-step 2: Professional Profile */}
+            {freeSubStep === 2 && (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground -mt-1">Tell us about your craft and how you work.</p>
+                <div className="space-y-1.5">
+                  <Label>Contact Number <span className="text-destructive">*</span></Label>
+                  <div className="relative"><Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input type="tel" placeholder="+44 7700 900000" value={freePhone} onChange={e => setFreePhone(e.target.value)} className="pl-9" autoFocus /></div>
+                </div>
+
+                {/* Specialisms */}
+                <div>
+                  <Label className="mb-2 block">Creative Specialisms <span className="text-destructive">*</span> <span className="text-muted-foreground font-normal">(select all that apply)</span></Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {SPECIALISMS.map(({ id, icon: Icon, label }) => (
+                      <button key={id} type="button" onClick={() => toggleSpecialism(id)} className={`flex items-center gap-2 p-3 rounded-xl border-2 text-sm font-medium transition-all ${freeSpecialisms.includes(id) ? "border-primary bg-primary/10 text-primary" : "border-border hover:border-primary/40"}`}>
+                        <Icon size={15} className={freeSpecialisms.includes(id) ? "text-primary" : "text-muted-foreground"} />
+                        {label}
+                        {freeSpecialisms.includes(id) && <Check size={13} className="ml-auto text-primary" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Experience */}
+                <div>
+                  <Label className="mb-2 block">Years of Experience</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {EXPERIENCE_LEVELS.map(lvl => (
+                      <button key={lvl} type="button" onClick={() => setExperience(lvl)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${experience === lvl ? "bg-primary text-white border-primary" : "border-border text-muted-foreground hover:border-primary/40"}`}>{lvl}</button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Equipment */}
+                <div>
+                  <Label className="mb-2 block">Equipment &amp; Software <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                  <div className="flex flex-wrap gap-2">
+                    {EQUIPMENT_OPTIONS.map(eq => (
+                      <button key={eq} type="button" onClick={() => toggleEquipment(eq)} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${equipment.includes(eq) ? "bg-primary/10 text-primary border-primary/50" : "border-border text-muted-foreground hover:border-primary/40"}`}>{eq}</button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Company / Brand */}
+                <div className="space-y-1.5">
+                  <Label>Company / Brand Name <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                  <Input placeholder="My Studio" value={freeCompany} onChange={e => setFreeCompany(e.target.value)} />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => { if (validateFreeStep2()) setFreeSubStep(3); }}
+                  disabled={!canFreeStep2}
+                  className={[
+                    "w-full py-3 rounded-full text-sm font-semibold flex items-center justify-center gap-2 transition-all duration-300",
+                    canFreeStep2
+                      ? "bg-primary text-white hover:bg-primary/90 shadow-md shadow-primary/25"
+                      : "bg-muted text-muted-foreground cursor-not-allowed",
+                  ].join(" ")}
+                >
+                  Continue <ChevronRight size={15} className={canFreeStep2 ? "opacity-100" : "opacity-40"} />
+                </button>
+              </div>
+            )}
+
+            {/* Sub-step 3: Creative Story */}
+            {freeSubStep === 3 && (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground -mt-1">Help clients understand who you are and what it's like to work with you.</p>
+
+                {/* Bio */}
+                <div className="space-y-1.5">
+                  <Label>About You <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                  <Textarea
+                    placeholder="Tell clients what it's like to work with you. What makes your creative process different? What experience can clients expect?"
+                    value={bio}
+                    onChange={e => setBio(e.target.value)}
+                    rows={4}
+                    className="resize-none"
+                  />
+                </div>
+
+                {/* Verify method — completes registration */}
+                <div className="space-y-2">
+                  <Label className="text-sm">Verify to complete registration</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => canFreeProceed && proceedToFreeVerify("email")} disabled={!canFreeProceed} className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${canFreeProceed ? "border-primary bg-primary text-white hover:bg-primary/90" : "border-border text-muted-foreground opacity-50 cursor-not-allowed"}`}><Mail size={15}/> Via Email</button>
+                    <button type="button" onClick={() => canFreeProceed && proceedToFreeVerify("phone")} disabled={!canFreeProceed} className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${canFreeProceed ? "border-border hover:border-primary hover:bg-primary/5" : "border-border text-muted-foreground opacity-50 cursor-not-allowed"}`}><Phone size={15}/> Via Phone</button>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground text-center">By joining you agree to our Terms &amp; Conditions and Privacy Policy.</p>
+              </div>
+            )}
           </>
         )}
 
@@ -815,6 +921,67 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
               </div>
             </div>
           </>
+        )}
+
+        {/* ── STEP: Freelancer Accreditation Journey ── */}
+        {step === "freelancer-accreditation" && (
+          <div className="py-6 flex flex-col items-center text-center gap-5">
+            {/* Icon */}
+            <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ background: "rgba(255,90,31,0.1)" }}>
+              <ShieldCheck size={30} style={{ color: "#FF5A1F" }} />
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className="font-bold text-xl text-foreground">Welcome to Viewrr.</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Your account has been successfully created.
+              </p>
+            </div>
+
+            {/* Verified badge */}
+            <div className="w-full rounded-2xl border border-border bg-muted/30 p-4 text-left">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(255,90,31,0.12)" }}>
+                  <Check size={16} style={{ color: "#FF5A1F" }} />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold">✅ Verified</p>
+                  <p className="text-xs text-muted-foreground">Your current accreditation level</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Aspiration: Viewrr Approved */}
+            <div className="w-full rounded-2xl border-2 border-dashed border-primary/30 bg-primary/5 p-4 text-left space-y-2">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(255,90,31,0.12)" }}>
+                  <Zap size={16} style={{ color: "#FF5A1F" }} />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold">⭐ Viewrr Approved</p>
+                  <p className="text-xs text-muted-foreground">Your next milestone</p>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed pl-11">
+                Our Founder team personally reviews every creative portfolio submitted to Viewrr. Viewrr Approved represents professional quality — a badge that sets you apart in the marketplace.
+              </p>
+            </div>
+
+            {/* What happens next */}
+            <div className="w-full text-left space-y-1">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">What happens next</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Complete your portfolio below. Once submitted, our Founder team will review your work and consider you for Viewrr Approved status.
+              </p>
+            </div>
+
+            <Button
+              className="w-full bg-primary hover:bg-primary/90 text-white rounded-full font-semibold"
+              onClick={() => setStep("freelancer-portfolio")}
+            >
+              Complete my portfolio →
+            </Button>
+          </div>
         )}
 
         {/* ── STEP: Freelancer portfolio ── */}
@@ -1165,12 +1332,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                     <br />You're now ready to hire trusted UK creative professionals.
                   </p>
                 </>
-              ) : (
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  Your profile is live.
-                  <br />Time to get noticed by clients looking for your skills.
-                </p>
-              )}
+              ) : null}
             </div>
 
             {role === "client" ? (
@@ -1191,11 +1353,22 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
               </div>
             ) : (
               <div className="flex flex-col gap-2.5 w-full">
+                <p className="text-sm text-muted-foreground leading-relaxed -mt-1">
+                  Your creative profile has been created.<br />
+                  You're now part of a curated community of UK creative professionals.
+                </p>
                 <Button
                   className="w-full bg-primary hover:bg-primary/90 text-white rounded-full font-semibold"
                   onClick={() => { handleClose(); navigate("/dashboard"); }}
                 >
-                  Go to my dashboard →
+                  Complete Portfolio
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full rounded-full font-medium"
+                  onClick={() => { handleClose(); navigate("/marketplace"); }}
+                >
+                  Explore Community
                 </Button>
               </div>
             )}
