@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 type Step = "role" | "client-details" | "client-verify" | "freelancer-type" | "freelancer-details" | "freelancer-verify" | "freelancer-portfolio" | "freelancer-payouts" | "agency-setup" | "done";
+type ClientSubStep = 1 | 2;
 type VerifyMethod = "email" | "phone";
 type PortfolioItem = { url: string; title: string };
 
@@ -46,6 +47,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const { login } = useAuth();
   const { toast } = useToast();
   const [step, setStep] = useState<Step>("role");
+  const [clientSubStep, setClientSubStep] = useState<ClientSubStep>(1);
   const [role, setRole] = useState<"client" | "freelancer" | null>(null);
 
   // Client fields
@@ -105,7 +107,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   }, [resendCooldown]);
 
   function reset() {
-    setStep("role"); setRole(null);
+    setStep("role"); setRole(null); setClientSubStep(1);
     setClientFirstName(""); setClientLastName(""); setClientPhone(""); setClientEmail(""); setClientPassword(""); setCompany("");
     setFreeFirstName(""); setFreeLastName(""); setFreePhone(""); setFreeEmail(""); setFreePassword(""); setFreeCompany("");
     setVerifyMethod("email");
@@ -141,12 +143,18 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   const freeName = `${freeFirstName} ${freeLastName}`.trim();
 
   // ── Validation ──────────────────────────────────────────────────────────────
-  function validateDetails() {
+  // Step 1 — identity fields only
+  function validateClientStep1() {
     if (!clientFirstName.trim()) { toast({ title: "Please enter your first name", variant: "destructive" }); return false; }
     if (!clientLastName.trim()) { toast({ title: "Please enter your last name", variant: "destructive" }); return false; }
-    if (!clientPhone.trim()) { toast({ title: "Please enter your contact number", variant: "destructive" }); return false; }
     if (!clientEmail.trim()) { toast({ title: "Please enter your email address", variant: "destructive" }); return false; }
     if (!clientPassword || clientPassword.length < 8) { toast({ title: "Password must be at least 8 characters", variant: "destructive" }); return false; }
+    return true;
+  }
+  // Step 2 — all remaining fields needed to proceed to verify
+  function validateDetails() {
+    if (!validateClientStep1()) return false;
+    if (!clientPhone.trim()) { toast({ title: "Please enter your contact number", variant: "destructive" }); return false; }
     return true;
   }
 
@@ -266,7 +274,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
       login({ id: 99, name: clientName, email: clientEmail, role: "client", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
     }
     setStep("done");
-    setTimeout(() => { handleClose(); }, 1800);
+    // Welcome screen stays open — user dismisses via CTA buttons
   }
 
   // ── Verify & create FREELANCER account ─────────────────────────────────────
@@ -390,7 +398,10 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     </svg>
   );
 
-  const canProceed = clientFirstName && clientLastName && clientPhone && clientEmail && clientPassword.length >= 8;
+  // Step 1 complete: name + email + password
+  const canProceedStep1 = !!(clientFirstName.trim() && clientLastName.trim() && clientEmail.trim() && clientPassword.length >= 8);
+  // Full client form complete: step 1 + phone
+  const canProceed = canProceedStep1 && !!clientPhone.trim();
   const canFreeProceed = freeFirstName && freeLastName && freePhone && freeEmail && freePassword.length >= 8 && freeSpecialisms.length > 0;
   const activeEmail = role === "freelancer" ? freeEmail : clientEmail;
   const activePhone = role === "freelancer" ? freePhone : clientPhone;
@@ -463,58 +474,190 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
           </>
         )}
 
-        {/* ── STEP: Client details ── */}
+        {/* ── STEP: Client details (two-sub-step) ── */}
         {step === "client-details" && (
           <>
-            <DialogHeader><DialogTitle className="flex items-center gap-2">{viewrrLogo} Create your client account</DialogTitle></DialogHeader>
-            <button onClick={() => setStep("role")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label>First Name <span className="text-destructive">*</span></Label><Input placeholder="Alex" value={clientFirstName} onChange={e => setClientFirstName(e.target.value)} /></div>
-                <div className="space-y-1.5"><Label>Last Name <span className="text-destructive">*</span></Label><Input placeholder="Taylor" value={clientLastName} onChange={e => setClientLastName(e.target.value)} /></div>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {viewrrLogo}
+                {clientSubStep === 1 ? "Create your business profile" : "Almost there"}
+              </DialogTitle>
+            </DialogHeader>
+
+            {/* Back button */}
+            <button
+              onClick={() => clientSubStep === 1 ? setStep("role") : setClientSubStep(1)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-1 -mt-1"
+            >
+              <ArrowLeft size={12}/> Back
+            </button>
+
+            {/* Progress indicator */}
+            <div className="space-y-1.5 mb-4" aria-label={`Step ${clientSubStep} of 2`}>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Step {clientSubStep} of 2</span>
+                <span className="text-xs font-medium text-primary">{clientSubStep === 1 ? "50%" : "100%"}</span>
               </div>
-              <div className="space-y-1.5">
-                <Label>Contact Number <span className="text-destructive">*</span></Label>
-                <div className="relative"><Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input type="tel" placeholder="+44 7700 900000" value={clientPhone} onChange={e => setClientPhone(e.target.value)} className="pl-9" /></div>
+              <div className="w-full h-1.5 rounded-full bg-border overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
+                  style={{ width: clientSubStep === 1 ? "50%" : "100%" }}
+                />
               </div>
-              <div className="space-y-1.5">
-                <Label>Your Email <span className="text-destructive">*</span></Label>
-                <div className="relative"><Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input type="email" placeholder="you@email.com" value={clientEmail} onChange={e => setClientEmail(e.target.value)} className="pl-9" /></div>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Password <span className="text-destructive">*</span></Label>
-                <div className="relative">
-                  <Input type={showPassword ? "text" : "password"} placeholder="At least 8 characters" value={clientPassword} onChange={e => setClientPassword(e.target.value)} className="pr-10" />
-                  <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">{showPassword ? <EyeOff size={15}/> : <Eye size={15}/>}</button>
-                </div>
-                {clientPassword && clientPassword.length < 8 && <p className="text-xs text-destructive">Password must be at least 8 characters</p>}
-              </div>
-              <div className="space-y-1.5"><Label>Company / Brand name <span className="text-muted-foreground font-normal">(optional)</span></Label><Input placeholder="Acme Studios" value={company} onChange={e => setCompany(e.target.value)} /></div>
-              <div className="space-y-2">
-                <Label className="text-sm">How would you like to verify?</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button type="button" onClick={() => canProceed && proceedToVerify("email")} disabled={!canProceed} className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${canProceed ? "border-primary bg-primary text-white hover:bg-primary/90" : "border-border text-muted-foreground opacity-50 cursor-not-allowed"}`}><Mail size={15}/> Via Email</button>
-                  <button type="button" onClick={() => canProceed && proceedToVerify("phone")} disabled={!canProceed} className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${canProceed ? "border-border hover:border-primary hover:bg-primary/5" : "border-border text-muted-foreground opacity-50 cursor-not-allowed"}`}><Phone size={15}/> Via Phone</button>
-                </div>
-                <p className="text-xs text-muted-foreground text-center">Fill in all fields above to enable verification</p>
-              </div>
-              <p className="text-xs text-muted-foreground text-center">By joining you agree to our Terms &amp; Conditions and Privacy Policy.</p>
             </div>
+
+            {/* Sub-step 1: identity */}
+            {clientSubStep === 1 && (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground -mt-1">Start hiring trusted UK creative professionals.</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>First Name <span className="text-destructive">*</span></Label>
+                    <Input placeholder="Alex" value={clientFirstName} onChange={e => setClientFirstName(e.target.value)} autoFocus />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Last Name <span className="text-destructive">*</span></Label>
+                    <Input placeholder="Taylor" value={clientLastName} onChange={e => setClientLastName(e.target.value)} />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Email Address <span className="text-destructive">*</span></Label>
+                  <div className="relative">
+                    <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                    <Input type="email" placeholder="you@email.com" value={clientEmail} onChange={e => setClientEmail(e.target.value)} className="pl-9" />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Password <span className="text-destructive">*</span></Label>
+                  <div className="relative">
+                    <Input
+                      type={showPassword ? "text" : "password"}
+                      placeholder="At least 8 characters"
+                      value={clientPassword}
+                      onChange={e => setClientPassword(e.target.value)}
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(v => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      {showPassword ? <EyeOff size={15}/> : <Eye size={15}/>}
+                    </button>
+                  </div>
+                  {clientPassword && clientPassword.length < 8 && (
+                    <p className="text-xs text-destructive">Password must be at least 8 characters</p>
+                  )}
+                </div>
+
+                {/* Continue button — animates active when step 1 complete */}
+                <button
+                  type="button"
+                  onClick={() => { if (validateClientStep1()) setClientSubStep(2); }}
+                  disabled={!canProceedStep1}
+                  className={[
+                    "w-full py-3 rounded-full text-sm font-semibold flex items-center justify-center gap-2 transition-all duration-300",
+                    canProceedStep1
+                      ? "bg-primary text-white hover:bg-primary/90 shadow-md shadow-primary/25 scale-100"
+                      : "bg-muted text-muted-foreground cursor-not-allowed",
+                  ].join(" ")}
+                >
+                  Continue
+                  <ChevronRight size={15} className={canProceedStep1 ? "opacity-100" : "opacity-40"} />
+                </button>
+
+                <p className="text-xs text-muted-foreground text-center">
+                  By joining you agree to our{" "}
+                  <span className="text-primary hover:underline cursor-pointer">Terms &amp; Conditions</span> and{" "}
+                  <span className="text-primary hover:underline cursor-pointer">Privacy Policy</span>.
+                </p>
+              </div>
+            )}
+
+            {/* Sub-step 2: business info + verify */}
+            {clientSubStep === 2 && (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground -mt-1">Tell us a bit about your business.</p>
+                <div className="space-y-1.5">
+                  <Label>Business Name <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                  <Input placeholder="Acme Studios" value={company} onChange={e => setCompany(e.target.value)} autoFocus />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Contact Number <span className="text-destructive">*</span></Label>
+                  <div className="relative">
+                    <Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      type="tel"
+                      placeholder="+44 7700 900000"
+                      value={clientPhone}
+                      onChange={e => setClientPhone(e.target.value)}
+                      className="pl-9"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm">Verify your account via</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => canProceed && proceedToVerify("email")}
+                      disabled={!canProceed}
+                      className={[
+                        "flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all duration-300",
+                        canProceed
+                          ? "border-primary bg-primary text-white hover:bg-primary/90 shadow-sm shadow-primary/20"
+                          : "border-border text-muted-foreground opacity-50 cursor-not-allowed",
+                      ].join(" ")}
+                    >
+                      <Mail size={15}/> Email
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => canProceed && proceedToVerify("phone")}
+                      disabled={!canProceed}
+                      className={[
+                        "flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all",
+                        canProceed
+                          ? "border-border hover:border-primary hover:bg-primary/5"
+                          : "border-border text-muted-foreground opacity-50 cursor-not-allowed",
+                      ].join(" ")}
+                    >
+                      <Phone size={15}/> Phone
+                    </button>
+                  </div>
+                  {!canProceed && (
+                    <p className="text-xs text-muted-foreground text-center">Enter your contact number to continue</p>
+                  )}
+                </div>
+              </div>
+            )}
           </>
         )}
 
         {/* ── STEP: Client Verification ── */}
         {step === "client-verify" && (
           <>
-            <DialogHeader><DialogTitle className="flex items-center gap-2">{viewrrLogo} {verifyMethod === "email" ? "Verify your email" : "Verify your phone"}</DialogTitle></DialogHeader>
-            <button onClick={() => setStep("client-details")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {viewrrLogo} {verifyMethod === "email" ? "Check your inbox" : "Check your messages"}
+              </DialogTitle>
+            </DialogHeader>
+            <button onClick={() => { setStep("client-details"); setClientSubStep(2); }} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
             <div className="space-y-5">
               <div className="flex flex-col items-center gap-3 py-2">
-                <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">{verifyMethod === "email" ? <Mail size={26} className="text-primary" /> : <Phone size={26} className="text-primary" />}</div>
+                <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">
+                  {verifyMethod === "email" ? <Mail size={26} className="text-primary" /> : <Phone size={26} className="text-primary" />}
+                </div>
                 <div className="text-center">
-                  <p className="text-sm font-medium">We've sent a 6-digit code to</p>
-                  <p className="text-sm font-bold text-primary mt-0.5">{verifyMethod === "email" ? clientEmail : clientPhone}</p>
-                  <p className="text-xs text-muted-foreground mt-1">{verifyMethod === "email" ? "Check your inbox and enter the code below." : "Check your messages and enter the code below."}</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    We've sent a 6-digit verification code to your{" "}
+                    {verifyMethod === "email" ? "email address" : "phone number"}.
+                    <br />Enter the code below to activate your Viewrr account.
+                  </p>
+                  <p className="text-sm font-semibold text-primary mt-2">
+                    {verifyMethod === "email" ? clientEmail : clientPhone}
+                  </p>
                 </div>
               </div>
               <div className="flex justify-center gap-2" onPaste={handlePaste}>
@@ -522,11 +665,21 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                   <input key={i} ref={el => { inputRefs.current[i] = el; }} type="text" inputMode="numeric" maxLength={1} value={digit} onChange={e => handleDigit(i, e.target.value)} onKeyDown={e => handleKeyDown(i, e)} className={`w-11 text-center text-xl font-bold rounded-xl border-2 bg-background focus:outline-none transition-all ${codeError ? "border-destructive text-destructive" : digit ? "border-primary text-primary" : "border-border focus:border-primary"}`} style={{ height: "3.25rem" }} aria-label={`Digit ${i + 1}`} />
                 ))}
               </div>
-              {codeError && <p className="text-xs text-destructive text-center -mt-2">Incorrect code. Please try again.</p>}
-              <Button onClick={verifyAndFinish} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full" disabled={codeInput.join("").length < 6}>Verify &amp; create account →</Button>
+              {codeError && <p className="text-xs text-destructive text-center -mt-2">That code doesn't match. Please try again.</p>}
+              <Button onClick={verifyAndFinish} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full" disabled={codeInput.join("").length < 6}>
+                Activate my account →
+              </Button>
               <div className="flex flex-col items-center gap-2 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1.5"><span>Didn't receive it?</span>{resendCooldown > 0 ? <span>Resend in {resendCooldown}s</span> : <button onClick={() => sendVerificationCode(verifyMethod, clientEmail, clientPhone)} className="flex items-center gap-1 text-primary font-medium hover:underline"><RefreshCw size={11} /> Resend code</button>}</div>
-                <button onClick={() => proceedToVerify(verifyMethod === "email" ? "phone" : "email")} className="text-primary hover:underline">Try via {verifyMethod === "email" ? "phone" : "email"} instead</button>
+                <div className="flex items-center gap-1.5">
+                  <span>Didn't receive it?</span>
+                  {resendCooldown > 0
+                    ? <span>Resend in {resendCooldown}s</span>
+                    : <button onClick={() => sendVerificationCode(verifyMethod, clientEmail, clientPhone)} className="flex items-center gap-1 text-primary font-medium hover:underline"><RefreshCw size={11} /> Resend code</button>
+                  }
+                </div>
+                <button onClick={() => proceedToVerify(verifyMethod === "email" ? "phone" : "email")} className="text-primary hover:underline">
+                  Try via {verifyMethod === "email" ? "phone" : "email"} instead
+                </button>
               </div>
             </div>
           </>
@@ -617,15 +770,26 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
         {/* ── STEP: Freelancer Verification ── */}
         {step === "freelancer-verify" && (
           <>
-            <DialogHeader><DialogTitle className="flex items-center gap-2">{viewrrLogo} {verifyMethod === "email" ? "Verify your email" : "Verify your phone"}</DialogTitle></DialogHeader>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {viewrrLogo} {verifyMethod === "email" ? "Check your inbox" : "Check your messages"}
+              </DialogTitle>
+            </DialogHeader>
             <button onClick={() => setStep("freelancer-details")} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2 -mt-1"><ArrowLeft size={12}/> Back</button>
             <div className="space-y-5">
               <div className="flex flex-col items-center gap-3 py-2">
-                <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">{verifyMethod === "email" ? <Mail size={26} className="text-primary" /> : <Phone size={26} className="text-primary" />}</div>
+                <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">
+                  {verifyMethod === "email" ? <Mail size={26} className="text-primary" /> : <Phone size={26} className="text-primary" />}
+                </div>
                 <div className="text-center">
-                  <p className="text-sm font-medium">We've sent a 6-digit code to</p>
-                  <p className="text-sm font-bold text-primary mt-0.5">{verifyMethod === "email" ? freeEmail : freePhone}</p>
-                  <p className="text-xs text-muted-foreground mt-1">{verifyMethod === "email" ? "Check your inbox and enter the code below." : "Check your messages and enter the code below."}</p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    We've sent a 6-digit verification code to your{" "}
+                    {verifyMethod === "email" ? "email address" : "phone number"}.
+                    <br />Enter the code below to activate your Viewrr account.
+                  </p>
+                  <p className="text-sm font-semibold text-primary mt-2">
+                    {verifyMethod === "email" ? freeEmail : freePhone}
+                  </p>
                 </div>
               </div>
               <div className="flex justify-center gap-2" onPaste={handlePaste}>
@@ -633,11 +797,21 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                   <input key={i} ref={el => { inputRefs.current[i] = el; }} type="text" inputMode="numeric" maxLength={1} value={digit} onChange={e => handleDigit(i, e.target.value)} onKeyDown={e => handleKeyDown(i, e)} className={`w-11 text-center text-xl font-bold rounded-xl border-2 bg-background focus:outline-none transition-all ${codeError ? "border-destructive text-destructive" : digit ? "border-primary text-primary" : "border-border focus:border-primary"}`} style={{ height: "3.25rem" }} aria-label={`Digit ${i + 1}`} />
                 ))}
               </div>
-              {codeError && <p className="text-xs text-destructive text-center -mt-2">Incorrect code. Please try again.</p>}
-              <Button onClick={verifyAndFinishFreelancer} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full" disabled={codeInput.join("").length < 6}>Verify &amp; continue →</Button>
+              {codeError && <p className="text-xs text-destructive text-center -mt-2">That code doesn't match. Please try again.</p>}
+              <Button onClick={verifyAndFinishFreelancer} className="w-full bg-primary hover:bg-primary/90 text-white rounded-full" disabled={codeInput.join("").length < 6}>
+                Activate my account →
+              </Button>
               <div className="flex flex-col items-center gap-2 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1.5"><span>Didn't receive it?</span>{resendCooldown > 0 ? <span>Resend in {resendCooldown}s</span> : <button onClick={() => sendVerificationCode(verifyMethod, freeEmail, freePhone)} className="flex items-center gap-1 text-primary font-medium hover:underline"><RefreshCw size={11} /> Resend code</button>}</div>
-                <button onClick={() => proceedToFreeVerify(verifyMethod === "email" ? "phone" : "email")} className="text-primary hover:underline">Try via {verifyMethod === "email" ? "phone" : "email"} instead</button>
+                <div className="flex items-center gap-1.5">
+                  <span>Didn't receive it?</span>
+                  {resendCooldown > 0
+                    ? <span>Resend in {resendCooldown}s</span>
+                    : <button onClick={() => sendVerificationCode(verifyMethod, freeEmail, freePhone)} className="flex items-center gap-1 text-primary font-medium hover:underline"><RefreshCw size={11} /> Resend code</button>
+                  }
+                </div>
+                <button onClick={() => proceedToFreeVerify(verifyMethod === "email" ? "phone" : "email")} className="text-primary hover:underline">
+                  Try via {verifyMethod === "email" ? "phone" : "email"} instead
+                </button>
               </div>
             </div>
           </>
@@ -976,14 +1150,59 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
           </>
         )}
 
-        {/* ── STEP: Done ── */}
+        {/* ── STEP: Done / Welcome Screen ── */}
         {step === "done" && (
-          <div className="py-8 flex flex-col items-center text-center gap-4">
-            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center"><Check size={28} className="text-primary" /></div>
-            <div>
-              <h3 className="font-bold text-lg">You're in.</h3>
-              <p className="text-sm text-muted-foreground mt-1">{role === "freelancer" ? "Your profile is live. Time to get noticed." : "Your account is ready. Start finding your creative."}</p>
+          <div className="py-8 flex flex-col items-center text-center gap-5">
+            {/* Emoji celebration */}
+            <div className="text-5xl select-none" role="img" aria-label="Celebration">🎉</div>
+
+            <div className="space-y-2">
+              <h3 className="font-bold text-xl text-foreground">Welcome to Viewrr.</h3>
+              {role === "client" ? (
+                <>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Your business profile has been created successfully.
+                    <br />You're now ready to hire trusted UK creative professionals.
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Your profile is live.
+                  <br />Time to get noticed by clients looking for your skills.
+                </p>
+              )}
             </div>
+
+            {role === "client" ? (
+              <div className="flex flex-col gap-2.5 w-full">
+                <Button
+                  className="w-full bg-primary hover:bg-primary/90 text-white rounded-full font-semibold"
+                  onClick={() => { handleClose(); navigate("/marketplace"); }}
+                >
+                  Browse Creatives →
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full rounded-full font-medium"
+                  onClick={() => { handleClose(); navigate("/dashboard"); }}
+                >
+                  Complete Business Profile
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2.5 w-full">
+                <Button
+                  className="w-full bg-primary hover:bg-primary/90 text-white rounded-full font-semibold"
+                  onClick={() => { handleClose(); navigate("/dashboard"); }}
+                >
+                  Go to my dashboard →
+                </Button>
+              </div>
+            )}
+
+            <p className="text-xs text-muted-foreground">
+              Share your profile on LinkedIn to let clients know you're available.
+            </p>
           </div>
         )}
 
