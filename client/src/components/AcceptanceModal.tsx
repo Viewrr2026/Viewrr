@@ -13,47 +13,106 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
   CheckCircle2, Calendar, MessageSquare, ArrowRight,
   Zap, X, FolderOpen, Video, PoundSterling, AlertCircle,
+  Handshake, Users, Milestone, Rocket,
 } from "lucide-react";
 
-// ── Brief Booked confirmation overlay (separate from the compose modal) ──────
-function BriefBookedPopup({ onClose, onGoToWork }: { onClose: () => void; onGoToWork: () => void }) {
+// ── Project Celebration overlay — replaces old BriefBookedPopup ──────────────
+function ProjectCelebrationPopup({
+  freelancerName,
+  onClose,
+  onGoToWork,
+  onSendMessage,
+}: {
+  freelancerName: string;
+  onClose: () => void;
+  onGoToWork: () => void;
+  onSendMessage: () => void;
+}) {
+  const nextSteps = [
+    { icon: CheckCircle2, text: `${freelancerName} receives confirmation.` },
+    { icon: Users,        text: "Introduce yourselves." },
+    { icon: Milestone,    text: "Agree your first milestone." },
+    { icon: Rocket,       text: "Begin Stage One." },
+  ];
+
   return (
     <div
       className="fixed inset-0 z-[300] flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(6px)" }}
+      style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(8px)" }}
     >
-      <div className="relative bg-background border border-border rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden text-center px-8 py-10">
-        {/* Close X — user MUST click this or the CTA to dismiss */}
+      <div className="relative bg-background border border-border rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
+        {/* Close */}
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+          className="absolute top-4 right-4 w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors z-10"
         >
           <X size={14} />
         </button>
 
-        {/* Tick */}
-        <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-5">
-          <CheckCircle2 size={36} className="text-primary" />
+        {/* Header celebration block */}
+        <div
+          className="px-8 pt-10 pb-7 text-center"
+          style={{ background: "linear-gradient(160deg, rgba(255,90,31,0.06) 0%, transparent 70%)" }}
+        >
+          {/* Glowing ring icon */}
+          <div className="relative w-20 h-20 mx-auto mb-5">
+            <div
+              className="absolute inset-0 rounded-full"
+              style={{ background: "radial-gradient(circle, rgba(255,90,31,0.25) 0%, transparent 70%)" }}
+              aria-hidden
+            />
+            <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
+              <Handshake size={34} className="text-primary" />
+            </div>
+          </div>
+
+          <p className="text-3xl mb-2" aria-hidden>&#127881;</p>
+          <h2 className="text-2xl font-extrabold tracking-tight mb-2">Project Confirmed</h2>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Congratulations. You and{" "}
+            <span className="font-semibold text-foreground">{freelancerName}</span>{" "}
+            are now officially collaborating through Viewrr.
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">Your project has been created successfully.</p>
         </div>
 
-        {/* Headline */}
-        <h2 className="text-2xl font-extrabold tracking-tight uppercase mb-2">Brief Booked</h2>
+        {/* What happens next */}
+        <div className="px-8 pb-7">
+          <div className="rounded-2xl border border-border bg-muted/30 p-4 mb-5">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-3 flex items-center gap-1.5">
+              <ArrowRight size={11} /> Next Steps
+            </p>
+            <div className="space-y-2.5">
+              {nextSteps.map(({ icon: Icon, text }, i) => (
+                <div key={i} className="flex items-center gap-2.5">
+                  <div
+                    className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                    style={{ background: "rgba(255,90,31,0.12)" }}
+                  >
+                    <Icon size={10} style={{ color: "#FF5A1F" }} />
+                  </div>
+                  <p className="text-sm text-foreground">{text}</p>
+                </div>
+              ))}
+            </div>
+          </div>
 
-        {/* Sub-copy */}
-        <p className="text-sm text-muted-foreground mb-8">
-          Your project can be found in the <span className="font-semibold text-foreground">'Your Work'</span> tab.
-        </p>
-
-        <div className="flex flex-col gap-2">
-          <Button
-            className="w-full bg-primary hover:bg-primary/90 text-white rounded-full gap-2"
-            onClick={onGoToWork}
-          >
-            <FolderOpen size={14} /> Go to Your Work
-          </Button>
-          <Button variant="ghost" className="w-full rounded-full text-muted-foreground" onClick={onClose}>
-            Close
-          </Button>
+          {/* CTAs */}
+          <div className="flex flex-col gap-2">
+            <Button
+              className="w-full bg-primary hover:bg-primary/90 text-white rounded-full gap-2 font-semibold"
+              onClick={onGoToWork}
+            >
+              <FolderOpen size={14} /> Open Active Project
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full rounded-full font-medium"
+              onClick={onSendMessage}
+            >
+              <MessageSquare size={14} className="mr-1.5" /> Send First Message
+            </Button>
+          </div>
         </div>
       </div>
     </div>
@@ -83,7 +142,7 @@ export default function AcceptanceModal({
   const [meetingOption, setMeetingOption] = useState<"none" | "instant" | "scheduled">("none");
   const [meetTitle, setMeetTitle] = useState("");
   const [meetDateTime, setMeetDateTime] = useState("");
-  const [showBooked, setShowBooked] = useState(false);
+  const [showCelebration, setShowCelebration] = useState(false);
   const [, navigate] = useLocation();
 
   // Counter-offer state
@@ -235,20 +294,22 @@ export default function AcceptanceModal({
       queryClient.invalidateQueries({ queryKey: ["/api/projects", clientId] });
       queryClient.invalidateQueries({ queryKey: ["/api/briefs"] });
 
-      // Close compose modal, show Brief Booked popup
+      // Close compose modal, show celebration popup
       onClose();
-      setShowBooked(true);
+      setShowCelebration(true);
     } catch (e) {
       console.error("Acceptance flow error:", e);
     }
   }
 
-  // Render Brief Booked popup (outside/above the compose modal)
-  if (showBooked) {
+  // Render celebration popup (outside/above the compose modal)
+  if (showCelebration) {
     return (
-      <BriefBookedPopup
-        onClose={() => { setShowBooked(false); onAccepted(); }}
-        onGoToWork={() => { setShowBooked(false); onAccepted(); navigate("/your-work"); }}
+      <ProjectCelebrationPopup
+        freelancerName={interest.freelancerName ?? "your freelancer"}
+        onClose={() => { setShowCelebration(false); onAccepted(); }}
+        onGoToWork={() => { setShowCelebration(false); onAccepted(); navigate("/your-work"); }}
+        onSendMessage={() => { setShowCelebration(false); onAccepted(); navigate("/your-work"); }}
       />
     );
   }

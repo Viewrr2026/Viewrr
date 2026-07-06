@@ -19,6 +19,7 @@ import {
   Eye, EyeOff, Globe, Lock, AlertTriangle, RefreshCw,
   Plus, Send, Inbox, Check, XCircle, Upload, Trash2, ExternalLink, Star,
   Pause, Play, FileText, DollarSign, Banknote, BadgeCheck, Loader2 as LoaderIcon, AlertCircle,
+  Sparkles, FolderOpen, ThumbsUp, Zap, Info,
 } from "lucide-react";
 import { safeGet, safeSet } from "@/lib/storage";
 
@@ -188,6 +189,53 @@ function statusLabel(status: string): string {
   if (status === "awaiting_signoff") return "Awaiting sign-off";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
+
+// ── Project status banner config ──────────────────────────────────────────────
+function getProjectStatusBanner(
+  status: string,
+  currentStage: number,
+  isFreelancer: boolean
+): { emoji: string; label: string; color: string; bg: string } {
+  if (status === "completed") return { emoji: "✅", label: "Project Complete", color: "text-green-700 dark:text-green-400", bg: "bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800" };
+  if (status === "awaiting_payment") return { emoji: "🟠", label: "Awaiting Payment", color: "text-orange-700 dark:text-orange-400", bg: "bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800" };
+  if (status === "awaiting_signoff") return { emoji: "🟣", label: "Final Review", color: "text-violet-700 dark:text-violet-400", bg: "bg-violet-50 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800" };
+  if (status === "paused") return { emoji: "🟡", label: "Project Paused", color: "text-amber-700 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800" };
+  const stageLabel = STAGES[currentStage]?.label ?? "In Progress";
+  if (isFreelancer) {
+    if (currentStage === 0) return { emoji: "🟢", label: "Waiting to Begin", color: "text-blue-700 dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" };
+    return { emoji: "🔵", label: `${stageLabel} In Progress`, color: "text-blue-700 dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" };
+  }
+  return { emoji: "🟢", label: "Waiting for Freelancer", color: "text-blue-700 dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" };
+}
+
+// ── Next Action helper ────────────────────────────────────────────────────────
+function getNextAction(
+  status: string,
+  currentStage: number,
+  isFreelancer: boolean,
+  hasDeliverables: boolean
+): { label: string; description: string; urgent: boolean } | null {
+  if (status === "completed") return null;
+  if (status === "awaiting_payment") {
+    if (!isFreelancer) return { label: "Approve & Pay", description: "Your freelancer has submitted their final work. Review and release payment.", urgent: true };
+    return { label: "Waiting for Payment", description: "Your final delivery has been submitted. Waiting for the client to approve and pay.", urgent: false };
+  }
+  if (status === "awaiting_signoff") {
+    if (!isFreelancer) return { label: "Review & Approve Milestone", description: "Work has been submitted for your review. Approve to advance the project.", urgent: true };
+    return { label: "Awaiting Client Approval", description: "You've submitted your work. Waiting for the client to review and sign off.", urgent: false };
+  }
+  if (status === "paused") return { label: "Project Paused", description: "This project is currently on hold.", urgent: false };
+  if (isFreelancer) {
+    if (currentStage === 0) return { label: "Send First Message", description: "Introduce yourself and confirm the project brief with your client.", urgent: true };
+    if (hasDeliverables) return { label: "Await Client Feedback", description: "Work has been uploaded. Waiting for the client to review.", urgent: false };
+    return { label: "Upload Your Work", description: "Upload your stage deliverables for the client to review.", urgent: true };
+  } else {
+    if (hasDeliverables) return { label: "Review Uploaded Files", description: "Your freelancer has uploaded work for your review.", urgent: true };
+    if (currentStage === 0) return { label: "Send First Message", description: "Introduce yourself and kick off the collaboration.", urgent: true };
+    return { label: "Waiting for Freelancer", description: "Your freelancer is working on the next stage.", urgent: false };
+  }
+}
+
 
 // ── Shared stage tracker ──────────────────────────────────────────────────────
 function StageTracker({ currentStage, size = "sm" }: { currentStage: number; size?: "sm" | "lg" }) {
@@ -529,6 +577,54 @@ function ProjectModal({ pw, currentUserId, onClose }: {
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto">
 
+          {/* ── Status Banner + Next Action ── */}
+          {(() => {
+            const banner = getProjectStatusBanner(pw.project.status, pw.project.currentStage, isFreelancer);
+            const action = getNextAction(pw.project.status, pw.project.currentStage, isFreelancer, false);
+            return (
+              <div className="px-7 pt-5 pb-0 space-y-3">
+                {/* Status banner */}
+                <div
+                  className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border text-sm font-semibold ${banner.bg} ${banner.color}`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="text-base" aria-hidden>{banner.emoji}</span>
+                  {banner.label}
+                </div>
+
+                {/* Next Action card */}
+                {action && (
+                  <div
+                    className={`rounded-xl border p-4 flex items-start gap-3 ${
+                      action.urgent
+                        ? "border-primary/30 bg-primary/5"
+                        : "border-border bg-muted/20"
+                    }`}
+                  >
+                    <div
+                      className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+                      style={{ background: action.urgent ? "rgba(255,90,31,0.12)" : undefined }}
+                    >
+                      {action.urgent
+                        ? <Zap size={15} style={{ color: "#FF5A1F" }} />
+                        : <Info size={15} className="text-muted-foreground" />
+                      }
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-xs font-bold uppercase tracking-wide mb-0.5 ${action.urgent ? "" : "text-muted-foreground"}`}
+                        style={action.urgent ? { color: "#FF5A1F" } : undefined}>
+                        Next Action
+                      </p>
+                      <p className="text-sm font-semibold text-foreground" dangerouslySetInnerHTML={{ __html: action.label }} />
+                      <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{action.description}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Two-column: timeline + activity */}
           <div className="grid md:grid-cols-[1fr,380px] divide-y md:divide-y-0 md:divide-x divide-border px-0">
 
@@ -774,6 +870,17 @@ function ProjectModal({ pw, currentUserId, onClose }: {
 
             {/* ── Right: activity log + controls ── */}
             <div className="px-7 py-6 flex flex-col">
+              {/* Project context header — anchors messaging in project */}
+              <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 mb-4 space-y-0.5">
+                <p className="text-xs font-bold text-foreground truncate">{pw.project.title}</p>
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  <span>📁 {STAGES[pw.project.currentStage]?.label ?? "In Progress"}</span>
+                  <span>·</span>
+                  <span className={`font-semibold capitalize ${statusPill(pw.project.status).split(" ")[1] ?? ""}`}>
+                    {statusLabel(pw.project.status)}
+                  </span>
+                </div>
+              </div>
               <p className="text-xs font-bold uppercase text-muted-foreground tracking-widest mb-5">Activity Log</p>
 
               {/* Both sides */}
@@ -812,7 +919,17 @@ function ProjectModal({ pw, currentUserId, onClose }: {
               {/* Updates scroll area */}
               <div className="flex-1 space-y-4 overflow-y-auto pr-1 mb-4 min-h-0" style={{ maxHeight: "280px" }}>
                 {pw.updates.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-8">No updates yet.</p>
+                  <div className="flex flex-col items-center justify-center py-8 gap-2 text-center">
+                    <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                      <MessageSquare size={18} className="text-muted-foreground opacity-50" />
+                    </div>
+                    <p className="text-sm font-medium text-foreground">No updates yet.</p>
+                    <p className="text-xs text-muted-foreground leading-relaxed max-w-[200px]">
+                      {isFreelancer
+                        ? "Send a message or add a note to keep your client informed."
+                        : "Messages and project updates will appear here once you and your freelancer get started."}
+                    </p>
+                  </div>
                 ) : (
                   pw.updates.map(({ update, author }) => (
                     <UpdateEntry key={update.id} update={update} author={author} size="lg" />
@@ -843,6 +960,40 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                   </div>
                 )}
               </div>
+
+              {/* Stage submission callout — client sees it prominently */}
+              {isClient && (pw.project.status === "awaiting_signoff" || pw.project.status === "awaiting_payment") && (
+                <div className="mb-3 rounded-xl border-2 border-primary/30 bg-primary/5 p-4 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: "rgba(255,90,31,0.15)" }}>
+                      <Upload size={13} style={{ color: "#FF5A1F" }} />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold" style={{ color: "#FF5A1F" }}>
+                        {pw.project.status === "awaiting_payment"
+                          ? "Final Delivery Ready"
+                          : `Stage ${pw.project.currentStage + 1} Ready for Review`}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {pw.project.status === "awaiting_payment"
+                          ? `Uploaded by ${pw.freelancer.name}. Review below and release payment.`
+                          : `${pw.freelancer.name} has submitted work for your approval.`}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="text-[10px] bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded-full">
+                      View Files ↓
+                    </span>
+                    <span className="text-[10px] bg-primary text-white font-semibold px-2.5 py-1 rounded-full">
+                      {pw.project.status === "awaiting_payment" ? "Approve &amp; Pay" : "Approve Stage"}
+                    </span>
+                    <span className="text-[10px] border border-border text-muted-foreground font-semibold px-2.5 py-1 rounded-full">
+                      Request Changes
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Work delivery — active projects */}
               {pw.project.status !== "completed" || (pw.project as any).paymentStatus === "unpaid" ? (
@@ -876,6 +1027,41 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                   clientEmail={(pw.client as any)?.email}
                   agreedAmountPence={(pw.project as any).agreedAmountPence ?? (pw.project.budgetMax ? Math.round(pw.project.budgetMax * 100) : undefined)}
                 />
+              )}
+
+              {/* Completion celebration — shown at top of right panel when project is complete */}
+              {pw.project.status === "completed" && (
+                <div className="border-t border-border pt-4">
+                  <div
+                    className="rounded-2xl overflow-hidden mb-4"
+                    style={{ background: "linear-gradient(135deg, rgba(255,90,31,0.08) 0%, rgba(255,165,0,0.05) 100%)", border: "1px solid rgba(255,90,31,0.2)" }}
+                  >
+                    <div className="px-5 py-5 text-center">
+                      <p className="text-2xl mb-2" aria-hidden>&#127881;</p>
+                      <h3 className="font-extrabold text-base mb-1" style={{ color: "#FF5A1F" }}>Project Complete</h3>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        Congratulations. This project has been completed successfully through Viewrr.
+                      </p>
+                      <div className="flex flex-col gap-2 mt-4">
+                        {isClient && (
+                          <Button
+                            size="sm"
+                            className="w-full text-white text-xs rounded-full"
+                            style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                            onClick={() => {
+                              // ReviewModal is triggered externally — just close modal and notify
+                            }}
+                          >
+                            <Star size={12} className="mr-1.5" /> Leave Review
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" className="w-full text-xs rounded-full" onClick={onClose}>
+                          <FolderOpen size={12} className="mr-1.5" /> Start Another Project
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               )}
 
               {/* Visibility toggle — completed projects, client only */}

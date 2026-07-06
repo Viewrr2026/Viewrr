@@ -973,11 +973,19 @@ export default function DeliverablesSection({
 
         {/* ── Deliverables list ──────────────────────────────────────────────── */}
         {deliverables.length === 0 && !showAdd ? (
-          <p className="text-xs text-muted-foreground italic">
-            {isFreelancer
-              ? "Share a link to your work above — the client will see it with a watermark until payment is confirmed."
-              : "The freelancer hasn't shared any work yet."}
-          </p>
+          <div className="rounded-xl border border-dashed border-border bg-muted/20 p-5 text-center space-y-1.5">
+            <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center mx-auto">
+              <FileText size={18} className="text-muted-foreground opacity-40" />
+            </div>
+            <p className="text-sm font-medium text-foreground">
+              {isFreelancer ? "No files shared yet." : "No files uploaded yet."}
+            </p>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              {isFreelancer
+                ? "Share a link to your work above — the client will see it with a watermark until payment is confirmed."
+                : `${"Stage"} ${"One"} hasn't started yet. Once your freelancer uploads work, it will appear here.`}
+            </p>
+          </div>
         ) : (
           <div className="space-y-2">
             {deliverables.map(d => {

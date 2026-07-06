@@ -7,7 +7,7 @@ import { queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, CheckCircle2, XCircle, Clock, FileText,
   CalendarDays, Banknote, StickyNote, MessageSquare, ChevronRight,
-  PoundSterling, ArrowLeftRight,
+  PoundSterling, ArrowLeftRight, Info,
 } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -305,6 +305,44 @@ function InterestDetail({
                 <p className="text-xs text-foreground leading-relaxed whitespace-pre-line">{(interest as any).priceBreakdown}</p>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Negotiation context card — shown whenever price is in play */}
+        {((interest as any).proposedPricePence || (interest as any).counterOfferPence) && interest.status !== "accepted" && interest.status !== "declined" && (
+          <div className="rounded-xl border border-border bg-muted/20 p-3 space-y-2">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground flex items-center gap-1">
+              <Info size={9} /> Negotiation Status
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {/* Current / latest offer */}
+              <div>
+                <p className="text-[10px] text-muted-foreground mb-0.5">Latest Offer</p>
+                <p className="text-sm font-bold" style={{ color: "#FF5A1F" }}>
+                  {(interest as any).counterOfferPence
+                    ? formatGBP((interest as any).counterOfferPence)
+                    : (interest as any).proposedPricePence
+                    ? formatGBP((interest as any).proposedPricePence)
+                    : "—"}
+                </p>
+              </div>
+              {/* Waiting on */}
+              <div>
+                <p className="text-[10px] text-muted-foreground mb-0.5">Waiting On</p>
+                <p className="text-xs font-semibold text-foreground">
+                  {interest.status === "counter_offered"
+                    ? (isFreelancer ? "You" : "Freelancer")
+                    : interest.status === "pending" || interest.status === "viewed"
+                    ? (isFreelancer ? "Client" : "You")
+                    : "—"}
+                </p>
+              </div>
+            </div>
+            {/* Last updated */}
+            <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+              <Clock size={9} />
+              Updated {formatUK(interest.respondedAt ?? interest.createdAt)}
+            </p>
           </div>
         )}
 
