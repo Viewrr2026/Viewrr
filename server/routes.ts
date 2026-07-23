@@ -3209,18 +3209,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.status(500).json({ error: e.message });
     }
   });
-}
 
-  // PRD-006 preferences routes
-  registerPrd006Routes(app);
-
-// ─── PRD-006: Notification Preferences ────────────────────────────────────────
-export function registerPrd006Routes(app: Express) {
-  // GET notification preferences for a user
+  // ─── PRD-006: Notification Preferences (inlined inside registerRoutes) ────
   app.get("/api/notifications/preferences/:userId", async (req, res) => {
     try {
       const prefs = await (storage as any).getNotifPrefs(Number(req.params.userId));
-      // Return defaults if not yet set
       if (!prefs) {
         return res.json({
           emailProjectInvitations: true, emailNewOffers: true,
@@ -3235,7 +3228,6 @@ export function registerPrd006Routes(app: Express) {
     }
   });
 
-  // PATCH notification preferences for a user
   app.patch("/api/notifications/preferences/:userId", async (req, res) => {
     try {
       const userId = Number(req.params.userId);
@@ -3246,3 +3238,4 @@ export function registerPrd006Routes(app: Express) {
     }
   });
 }
+
