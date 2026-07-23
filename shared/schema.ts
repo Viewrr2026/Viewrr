@@ -594,3 +594,31 @@ export const invoices = pgTable("invoices", {
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type Invoice = typeof invoices.$inferSelect;
+
+// ─── Notification Preferences ────────────────────────────────────────────────
+export const notificationPreferences = pgTable("notification_preferences", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().unique(),
+  emailProjectInvitations: boolean("email_project_invitations").notNull().default(true),
+  emailNewOffers: boolean("email_new_offers").notNull().default(true),
+  emailCounterOffers: boolean("email_counter_offers").notNull().default(true),
+  emailMessages: boolean("email_messages").notNull().default(true),
+  emailStageUpdates: boolean("email_stage_updates").notNull().default(true),
+  emailPaymentUpdates: boolean("email_payment_updates").notNull().default(true),
+  emailReviewRequests: boolean("email_review_requests").notNull().default(true),
+  emailProductUpdates: boolean("email_product_updates").notNull().default(false),
+  updatedAt: text("updated_at").notNull().default(new Date().toISOString()),
+});
+export const insertNotifPrefsSchema = createInsertSchema(notificationPreferences).omit({ id: true, updatedAt: true });
+export type InsertNotifPrefs = z.infer<typeof insertNotifPrefsSchema>;
+export type NotifPrefs = typeof notificationPreferences.$inferSelect;
+
+// ─── Custom Project Stage Templates ──────────────────────────────────────────
+export const STAGE_TEMPLATES: Record<string, string[]> = {
+  "Videography": ["Discovery", "Pre-production", "Filming", "Editing", "First Draft", "Revisions", "Final Delivery"],
+  "Photography": ["Brief", "Shoot Planning", "Shoot Day", "Editing", "Client Review", "Final Images"],
+  "Graphic Design": ["Discovery", "Concepts", "First Draft", "Revisions", "Final Artwork"],
+  "Website Design": ["Discovery", "Wireframes", "Design", "Development", "Testing", "Launch"],
+  "Marketing Campaign": ["Strategy", "Creative", "Review", "Approval", "Launch"],
+  "Custom": [],
+};

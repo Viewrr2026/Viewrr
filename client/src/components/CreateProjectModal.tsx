@@ -9,25 +9,70 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   X, Search, CheckCircle2, Send, User, FileText,
   Tag, Clock, DollarSign, Loader2, ChevronRight, Plus,
-  Circle, AlertCircle, RefreshCw, Zap, Calendar,
+  Circle, AlertCircle, RefreshCw, Zap, Calendar, LayoutList, Trash2,
 } from "lucide-react";
 
-// ── Category presets ──────────────────────────────────────────────────────────
+// ── Category presets ─────────────────────────────────────────────────────────
 const CATEGORY_PRESETS = [
   "Video Production", "Photography", "Motion Graphics", "Editing",
   "Animation", "Social Media", "Brand Identity", "Podcast",
   "Music / Audio", "Drone", "Event Coverage", "Documentary",
 ];
 
-// ── Project stages ─────────────────────────────────────────────────────────────
-const STAGES = [
-  { index: 0, label: "Brief & Kick-off",  desc: "Scope agreed, brief shared" },
-  { index: 1, label: "Pre-production",    desc: "Planning & schedule" },
-  { index: 2, label: "Production",        desc: "Work in progress" },
-  { index: 3, label: "First Delivery",    desc: "Initial draft for review" },
-  { index: 4, label: "Revisions",         desc: "Feedback & refinements" },
-  { index: 5, label: "Final Delivery",    desc: "Finals handed over" },
-];
+// ── Stage templates ───────────────────────────────────────────────────────────
+type StageItem = { label: string; desc: string };
+const STAGE_TEMPLATES: Record<string, StageItem[]> = {
+  "Default": [
+    { label: "Brief & Kick-off", desc: "Scope agreed, brief shared" },
+    { label: "Pre-production",   desc: "Planning & schedule" },
+    { label: "Production",       desc: "Work in progress" },
+    { label: "First Delivery",   desc: "Initial draft for review" },
+    { label: "Revisions",        desc: "Feedback & refinements" },
+    { label: "Final Delivery",   desc: "Finals handed over" },
+  ],
+  "Videography": [
+    { label: "Discovery",      desc: "Brief & vision aligned" },
+    { label: "Pre-production", desc: "Planning, storyboard, schedule" },
+    { label: "Filming",        desc: "Shoot day(s)" },
+    { label: "Editing",        desc: "Rough cut assembled" },
+    { label: "First Draft",    desc: "Initial version for review" },
+    { label: "Revisions",      desc: "Feedback applied" },
+    { label: "Final Delivery", desc: "Finals handed over" },
+  ],
+  "Photography": [
+    { label: "Brief",         desc: "Scope & style agreed" },
+    { label: "Shoot Planning",desc: "Location, kit, shot list" },
+    { label: "Shoot Day",     desc: "Photos captured" },
+    { label: "Editing",       desc: "Colour grade & retouching" },
+    { label: "Client Review", desc: "Selection & feedback" },
+    { label: "Final Images",  desc: "Hi-res delivery" },
+  ],
+  "Graphic Design": [
+    { label: "Discovery",     desc: "Brief & brand guidelines reviewed" },
+    { label: "Concepts",      desc: "Initial directions presented" },
+    { label: "First Draft",   desc: "Chosen concept developed" },
+    { label: "Revisions",     desc: "Amends made" },
+    { label: "Final Artwork", desc: "Production files delivered" },
+  ],
+  "Website Design": [
+    { label: "Discovery",    desc: "Goals & scope agreed" },
+    { label: "Wireframes",   desc: "Structure & layout mapped" },
+    { label: "Design",       desc: "Visual mockups created" },
+    { label: "Development",  desc: "Site built" },
+    { label: "Testing",      desc: "QA & cross-device checks" },
+    { label: "Launch",       desc: "Go live" },
+  ],
+  "Marketing Campaign": [
+    { label: "Strategy",  desc: "Audience, goals & budget" },
+    { label: "Creative",  desc: "Assets produced" },
+    { label: "Review",    desc: "Internal review" },
+    { label: "Approval",  desc: "Client sign-off" },
+    { label: "Launch",    desc: "Campaign live" },
+  ],
+};
+
+// ── Static STAGES alias (used in summary row) ─────────────────────────────────
+const STAGES = STAGE_TEMPLATES["Default"].map((s, i) => ({ ...s, index: i }));
 
 // ── Timeline options (one-off only) ──────────────────────────────────────────
 const TIMELINES = [
@@ -71,6 +116,8 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
   const [budget, setBudget]           = useState("");
   const [timeline, setTimeline]       = useState("");
   const [startStage, setStartStage]   = useState(0);
+  const [selectedTemplate, setSelectedTemplate] = useState<string>("Default");
+  const [customStages, setCustomStages] = useState<StageItem[]>(STAGE_TEMPLATES["Default"]);
 
   // ── Retainer state ──
   const [isRetainer, setIsRetainer]                   = useState(false);
@@ -542,36 +589,62 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
 
               {/* ── Starting Stage picker — one-off only ── */}
               {!isRetainer && (
-                <div className="space-y-2">
+                <div className="space-y-3">
+                  {/* Template picker */}
+                  <div>
+                    <label className="text-xs font-semibold text-foreground flex items-center gap-1.5 mb-2">
+                      <LayoutList size={12} className="text-primary" />
+                      Project Template
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.keys(STAGE_TEMPLATES).map(tmpl => (
+                        <button
+                          key={tmpl}
+                          onClick={() => {
+                            setSelectedTemplate(tmpl);
+                            setCustomStages(STAGE_TEMPLATES[tmpl]);
+                            setStartStage(0);
+                          }}
+                          className={`text-[11px] font-semibold px-3 py-1 rounded-full border transition-all ${
+                            selectedTemplate === tmpl
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "border-border hover:border-primary/30 text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          {tmpl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Stage list */}
                   <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                     <Circle size={12} className="text-primary" />
                     Starting Stage
                     <span className="ml-1 text-[11px] font-normal text-muted-foreground">(where does this project begin?)</span>
                   </label>
                   <div className="space-y-1.5">
-                    {STAGES.map(stage => (
+                    {customStages.map((stage, i) => (
                       <button
-                        key={stage.index}
-                        onClick={() => setStartStage(stage.index)}
-                        data-testid={`btn-stage-${stage.index}`}
+                        key={i}
+                        onClick={() => setStartStage(i)}
+                        data-testid={`btn-stage-${i}`}
                         className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl border text-left transition-all ${
-                          startStage === stage.index
+                          startStage === i
                             ? "border-primary/50 bg-primary/5"
                             : "border-border hover:border-primary/20 hover:bg-secondary/40"
                         }`}
                       >
                         <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[10px] font-bold ${
-                          startStage === stage.index
-                            ? "bg-primary text-white"
-                            : "bg-muted text-muted-foreground"
+                          startStage === i ? "bg-primary text-white" : "bg-muted text-muted-foreground"
                         }`}>
-                          {startStage === stage.index ? <CheckCircle2 size={12} /> : stage.index + 1}
+                          {startStage === i ? <CheckCircle2 size={12} /> : i + 1}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className={`text-xs font-semibold ${startStage === stage.index ? "text-primary" : "text-foreground"}`}>
+                          <p className={`text-xs font-semibold ${startStage === i ? "text-primary" : "text-foreground"}`}>
                             {stage.label}
-                            {stage.index === 0 && (
-                              <span className="ml-2 text-[10px] font-normal text-muted-foreground">(default)</span>
+                            {i === 0 && (
+                              <span className="ml-2 text-[10px] font-normal text-muted-foreground">(start)</span>
                             )}
                           </p>
                           <p className="text-[11px] text-muted-foreground">{stage.desc}</p>
@@ -704,7 +777,7 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                 ) : (
                   <>
                     {timeline && <SummaryRow icon={<Clock size={12} />} label="Timeline" value={timeline} />}
-                    <SummaryRow icon={<Circle size={12} />} label="Starts at" value={STAGES[startStage].label} />
+                    <SummaryRow icon={<Circle size={12} />} label="Starts at" value={customStages[startStage]?.label ?? STAGES[startStage]?.label ?? "Stage 1"} />
                   </>
                 )}
               </div>

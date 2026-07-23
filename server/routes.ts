@@ -30,8 +30,90 @@ const verificationCodes = new Map<string, { code: string; expires: number }>();
 import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema, insertBriefInterestSchema, insertAgencySchema, insertAgencyMemberSchema } from "@shared/schema";
 
 // Helper: fire-and-forget notification (never throws)
+// ── Email event types that trigger emails ─────────────────────────────────
+const EMAIL_NOTIFICATION_TYPES = new Set([
+  "interest", "interest_accepted", "interest_declined", "counter_offered",
+  "project_started", "stage_submitted", "stage_approved",
+  "payment_requested", "payment_received", "project_completed",
+  "review_requested", "message",
+]);
+
+// Email-readable labels for notification types
+const NOTIF_TYPE_LABELS: Record<string, string> = {
+  interest: "New interest in your brief",
+  interest_accepted: "Your interest was accepted",
+  interest_declined: "Interest update",
+  counter_offered: "Counter offer received",
+  project_started: "Project has started",
+  stage_submitted: "Stage submitted for review",
+  stage_approved: "Stage approved",
+  payment_requested: "Payment requested",
+  payment_received: "Payment received",
+  project_completed: "Project completed",
+  review_requested: "Leave a review",
+  message: "New message on Viewrr",
+};
+
 async function notify(data: Parameters<typeof storage.createNotification>[0]) {
+  // 1. Always create in-app notification
   try { await storage.createNotification(data); } catch { /* non-fatal */ }
+
+  // 2. Send email if resend is configured + event is email-worthy
+  if (!resend) return;
+  if (!EMAIL_NOTIFICATION_TYPES.has(data.type)) return;
+
+  try {
+    // Get recipient email
+    const recipient = await storage.getUser(data.recipientId);
+    if (!recipient?.email) return;
+
+    // Check notification preferences
+    const prefs = await (storage as any).getNotifPrefs(data.recipientId) as any;
+    if (prefs) {
+      const prefKey: Record<string, string> = {
+        interest: "emailNewOffers",
+        interest_accepted: "emailProjectInvitations",
+        interest_declined: "emailProjectInvitations",
+        counter_offered: "emailCounterOffers",
+        project_started: "emailProjectInvitations",
+        stage_submitted: "emailStageUpdates",
+        stage_approved: "emailStageUpdates",
+        payment_requested: "emailPaymentUpdates",
+        payment_received: "emailPaymentUpdates",
+        project_completed: "emailPaymentUpdates",
+        review_requested: "emailReviewRequests",
+        message: "emailMessages",
+      };
+      const key = prefKey[data.type];
+      if (key && prefs[key] === false) return; // user opted out
+    }
+
+    const subject = NOTIF_TYPE_LABELS[data.type] ?? "You have a notification on Viewrr";
+    const linkUrl = data.link ? `https://www.viewrr.co.uk/#${data.link}` : "https://www.viewrr.co.uk";
+    const html = `
+      <div style="font-family:system-ui,sans-serif;background:#0d0d0d;color:#f5f5f5;padding:40px 20px;">
+        <div style="max-width:560px;margin:0 auto;">
+          <img src="https://www.viewrr.co.uk/viewrr-logo.png" alt="Viewrr" height="28" style="margin-bottom:32px;" />
+          <div style="background:#1a1a1a;border-radius:16px;padding:32px;border:1px solid #2a2a2a;">
+            <h2 style="color:#FF5A1F;font-size:20px;font-weight:700;margin:0 0 8px;">${subject}</h2>
+            <p style="color:#cccccc;font-size:15px;line-height:1.6;margin:0 0 24px;">${data.message}</p>
+            <a href="${linkUrl}" style="display:inline-block;background:linear-gradient(135deg,#FF5A1F,#FF8C42);color:#fff;text-decoration:none;padding:12px 28px;border-radius:9999px;font-weight:600;font-size:14px;">View on Viewrr →</a>
+          </div>
+          <p style="color:#555;font-size:12px;margin-top:24px;text-align:center;">
+            You can manage your email preferences in your <a href="https://www.viewrr.co.uk/#/settings/notifications" style="color:#FF5A1F;">notification settings</a>.
+          </p>
+        </div>
+      </div>`;
+
+    await resend.emails.send({
+      from: "Viewrr <notifications@viewrr.co.uk>",
+      to: recipient.email,
+      subject,
+      html,
+    });
+  } catch (emailErr: any) {
+    console.warn("[notify] Email send failed (non-fatal):", emailErr?.message);
+  }
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
@@ -3123,6 +3205,42 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       await storage.updateAccreditationNotes(Number(profileId), internalNotes ?? '');
       res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+}
+
+  // PRD-006 preferences routes
+  registerPrd006Routes(app);
+
+// ─── PRD-006: Notification Preferences ────────────────────────────────────────
+export function registerPrd006Routes(app: Express) {
+  // GET notification preferences for a user
+  app.get("/api/notifications/preferences/:userId", async (req, res) => {
+    try {
+      const prefs = await (storage as any).getNotifPrefs(Number(req.params.userId));
+      // Return defaults if not yet set
+      if (!prefs) {
+        return res.json({
+          emailProjectInvitations: true, emailNewOffers: true,
+          emailCounterOffers: true, emailMessages: true,
+          emailStageUpdates: true, emailPaymentUpdates: true,
+          emailReviewRequests: true, emailProductUpdates: false,
+        });
+      }
+      res.json(prefs);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH notification preferences for a user
+  app.patch("/api/notifications/preferences/:userId", async (req, res) => {
+    try {
+      const userId = Number(req.params.userId);
+      const prefs = await (storage as any).upsertNotifPrefs(userId, req.body);
+      res.json(prefs);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

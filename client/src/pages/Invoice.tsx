@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams, useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/components/AuthProvider";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,9 @@ export default function Invoice() {
   const { projectId } = useParams<{ projectId: string }>();
   const [, setLocation] = useLocation();
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [stripeOpen, setStripeOpen] = useState(false);
+  const [paid, setPaid] = useState(false); // local optimistic state
 
   const { data, isLoading, error } = useQuery<{ invoice: any; template: any }>({
     queryKey: ['/api/projects', projectId, 'invoice'],
@@ -48,7 +50,7 @@ export default function Invoice() {
   const lineItems: LineItem[] = (() => { try { return JSON.parse(invoice.lineItems || '[]'); } catch { return []; } })();
   const isClient = user?.id === invoice.clientId;
   const isFreelancer = user?.id === invoice.freelancerId;
-  const isPaid = invoice.status === 'paid';
+  const isPaid = paid || invoice.status === 'paid';
   const accentColor = template?.accentColor || '#FF5A1F';
 
   function handlePrint() {
@@ -234,8 +236,9 @@ export default function Invoice() {
         agreedAmountPence={invoice.totalPence}
         onPaymentDone={() => {
           setStripeOpen(false);
-          // Refresh invoice to show paid status
-          window.location.reload();
+          setPaid(true); // immediate optimistic update
+          queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId, 'invoice'] });
+          queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
         }}
       />
     </>

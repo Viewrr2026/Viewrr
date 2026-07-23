@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Bell, Heart, MessageCircle, Mail, Briefcase, CheckCircle, XCircle, Eye, UserCheck } from "lucide-react";
+import { Bell, Heart, MessageCircle, Mail, Briefcase, CheckCircle, XCircle, Eye, UserCheck, Settings2 } from "lucide-react";
 import { useAuth } from "./AuthProvider";
+import { useLocation } from "wouter";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import QuickMessageModal from "./QuickMessageModal";
 import NotificationActionModal from "./NotificationActionModal";
@@ -54,6 +55,7 @@ function NotifIcon({ type }: { type: string }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function NotificationBell() {
   const { user } = useAuth();
+  const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
@@ -196,14 +198,23 @@ export default function NotificationBell() {
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-border sticky top-0 bg-background z-10">
             <span className="text-sm font-semibold">Notifications</span>
-            {unreadCount > 0 && (
+            <div className="flex items-center gap-2">
+              {unreadCount > 0 && (
+                <button
+                  onClick={markAllRead}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Mark all as read
+                </button>
+              )}
               <button
-                onClick={markAllRead}
-                className="text-xs text-primary hover:underline"
+                onClick={() => { setOpen(false); navigate("/settings/notifications"); }}
+                className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                title="Notification preferences"
               >
-                Mark all as read
+                <Settings2 size={14} />
               </button>
-            )}
+            </div>
           </div>
 
           {/* Demo users — removed */}

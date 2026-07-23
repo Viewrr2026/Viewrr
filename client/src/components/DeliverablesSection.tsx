@@ -260,19 +260,29 @@ function ConfettiBurst() {
 }
 
 // ── Payment success screen ─────────────────────────────────────────────────────
-function PaymentSuccessScreen({ amountPence, freelancerName, onDone }: {
+function PaymentSuccessScreen({
+  amountPence,
+  freelancerName,
+  projectId,
+  onDone,
+  onViewInvoice,
+}: {
   amountPence: number;
   freelancerName: string;
+  projectId?: number;
   onDone: () => void;
+  onViewInvoice?: () => void;
 }) {
   const [show, setShow] = useState(false);
+  const [, navigate] = useLocation();
   useEffect(() => { setTimeout(() => setShow(true), 50); }, []);
   return (
-    <div className="relative flex flex-col items-center justify-center py-6 px-4 text-center overflow-hidden" style={{ minHeight: 320 }}>
+    <div className="relative flex flex-col items-center justify-center py-6 px-4 text-center overflow-hidden" style={{ minHeight: 360 }}>
       <ConfettiBurst />
+
       {/* Glowing ring */}
       <div
-        className="relative flex items-center justify-center mb-5"
+        className="relative flex items-center justify-center mb-4"
         style={{
           transition: "transform 0.6s cubic-bezier(0.34,1.56,0.64,1), opacity 0.4s",
           transform: show ? "scale(1)" : "scale(0.4)",
@@ -293,16 +303,17 @@ function PaymentSuccessScreen({ amountPence, freelancerName, onDone }: {
           opacity: show ? 1 : 0,
         }}
       >
-        <p className="text-2xl font-bold mb-1">Payment sent!</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-primary mb-1">✓ Payment Successful</p>
+        <p className="text-2xl font-bold mb-1">Payment received.</p>
         <p className="text-sm text-muted-foreground leading-relaxed mb-1">
           <span className="font-semibold text-foreground">£{(amountPence / 100).toFixed(2)}</span> is on its way to {freelancerName}.
         </p>
-        <p className="text-xs text-muted-foreground">The watermark has been removed — your files are fully released.</p>
+        <p className="text-xs text-muted-foreground">The project has been automatically updated.</p>
       </div>
 
       {/* Unlock pill */}
       <div
-        className="mt-5 flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold"
+        className="mt-4 flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold"
         style={{
           background: "rgba(34,197,94,0.12)", color: "#16a34a",
           border: "1px solid rgba(34,197,94,0.3)",
@@ -314,18 +325,35 @@ function PaymentSuccessScreen({ amountPence, freelancerName, onDone }: {
         <Sparkles size={12} /> Files unlocked
       </div>
 
-      <Button
-        className="mt-6 rounded-full px-8 text-white font-semibold"
+      {/* CTAs */}
+      <div
+        className="flex flex-col gap-2 w-full mt-5 px-4"
         style={{
-          background: "linear-gradient(135deg,#FF5A1F,#FF8C42)",
           transition: "opacity 0.4s 0.5s, transform 0.5s cubic-bezier(0.34,1.56,0.64,1) 0.5s",
           transform: show ? "translateY(0)" : "translateY(12px)",
           opacity: show ? 1 : 0,
         }}
-        onClick={onDone}
       >
-        Done
-      </Button>
+        <Button
+          className="w-full rounded-full text-white font-semibold"
+          style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+          onClick={onDone}
+        >
+          Return to Project
+        </Button>
+        {onViewInvoice && (
+          <Button
+            variant="outline"
+            className="w-full rounded-full font-medium"
+            onClick={() => {
+              onViewInvoice();
+              if (projectId) navigate(`/invoice/${projectId}`);
+            }}
+          >
+            View Invoice
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -416,6 +444,7 @@ function CardForm({
             layout: "tabs",
             fields: { billingDetails: { name: "auto", email: "never" } },
             terms: { card: "never" },
+            wallets: { applePay: "auto", googlePay: "auto" },
           }}
         />
       </div>
@@ -705,7 +734,9 @@ export function StripePaymentDialog({
           <PaymentSuccessScreen
             amountPence={paidAmountPence}
             freelancerName={freelancerName}
+            projectId={projectId}
             onDone={() => { onPaymentDone?.(); onClose(); }}
+            onViewInvoice={() => { onPaymentDone?.(); onClose(); }}
           />
         )}
       </DialogContent>

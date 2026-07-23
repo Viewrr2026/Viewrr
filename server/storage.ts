@@ -2060,3 +2060,23 @@ export const storage = new Storage();
 export async function initStorage() {
   await runMigrations();
 }
+
+// ── Extend Storage with notification preferences methods ──
+(Storage.prototype as any).getNotifPrefs = async function(userId: number): Promise<schema.NotifPrefs | null> {
+  const r = await db.select().from(schema.notificationPreferences).where(eq(schema.notificationPreferences.userId, userId));
+  return r[0] ?? null;
+};
+
+(Storage.prototype as any).upsertNotifPrefs = async function(userId: number, prefs: Partial<Omit<schema.NotifPrefs, 'id' | 'userId' | 'updatedAt'>>): Promise<schema.NotifPrefs> {
+  const existing = await (storage as any).getNotifPrefs(userId);
+  const updatedAt = new Date().toISOString();
+  if (existing) {
+    const r = await db.update(schema.notificationPreferences)
+      .set({ ...prefs, updatedAt })
+      .where(eq(schema.notificationPreferences.userId, userId))
+      .returning();
+    return r[0];
+  }
+  const r = await db.insert(schema.notificationPreferences).values({ userId, ...prefs, updatedAt }).returning();
+  return r[0];
+};
