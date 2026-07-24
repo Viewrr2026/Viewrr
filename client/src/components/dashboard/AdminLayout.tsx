@@ -15,6 +15,7 @@ import {
   Menu,
   X,
   BadgeCheck,
+  Landmark,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/components/AuthProvider";
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
   { label: "Marketplace", href: "/founder/marketplace", icon: Store },
   { label: "Projects", href: "/founder/projects", icon: FolderKanban },
   { label: "Community", href: "/founder/community", icon: Users },
+  { label: "Finance & Ops", href: "/founder/finance", icon: Landmark },
   { label: "Insights", href: "/founder/insights", icon: BarChart3 },
   { label: "Support", href: "/founder/support", icon: HeadphonesIcon },
   { label: "Settings", href: "/founder/settings", icon: Settings },

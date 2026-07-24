@@ -303,12 +303,13 @@ function PaymentSuccessScreen({
           opacity: show ? 1 : 0,
         }}
       >
-        <p className="text-[10px] font-bold uppercase tracking-widest text-primary mb-1">✓ Payment Successful</p>
-        <p className="text-2xl font-bold mb-1">Payment received.</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-primary mb-1">✓ Payment Confirmed</p>
+        <p className="text-2xl font-bold mb-1">Payment confirmed.</p>
         <p className="text-sm text-muted-foreground leading-relaxed mb-1">
-          <span className="font-semibold text-foreground">£{(amountPence / 100).toFixed(2)}</span> is on its way to {freelancerName}.
+          Stripe has confirmed your payment of{" "}
+          <span className="font-semibold text-foreground">£{(amountPence / 100).toFixed(2)}</span>.
         </p>
-        <p className="text-xs text-muted-foreground">The project has been automatically updated.</p>
+        <p className="text-xs text-muted-foreground">Earnings will be allocated to {freelancerName}'s Stripe balance. Arrival depends on Stripe and their bank.</p>
       </div>
 
       {/* Unlock pill */}

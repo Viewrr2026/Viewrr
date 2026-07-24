@@ -15,6 +15,11 @@ import {
 } from "./payment-service";
 import { getDashboardData } from "./services/dashboard.service";
 import { neon } from "@neondatabase/serverless";
+import { requireFinancePermission, deriveFinanceRole, canApproveRefund, REFUND_THRESHOLD_HIGH_VALUE } from "./permission-service";
+import { createRetainerPayment, fulfilRetainerCyclePayment } from "./retainer-service";
+import { getFreelancerPayoutTimeline, configureAutoDailyPayout, migrateAllAccountsToAutoDailyPayout, configureNewAccountDailyPayout } from "./payout-service";
+import { runExceptionScan, generateDailySummary, reconcilePaymentFull } from "./reconciliation-service";
+import { enqueueJob, startWorker, registerJobHandler } from "./job-queue";
 import crypto from "crypto";
 import multer from "multer";
 import path from "path";
@@ -1242,82 +1247,31 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST confirm payment for cycle — marks paid, auto-starts next cycle
+  // POST /api/projects/:id/retainer/pay-cycle — DEPRECATED (PRD-008)
+  // Replaced by server-authoritative POST /api/retainer-cycles/:cyclePublicId/payments
+  // Kept for backward-compat; redirects to new endpoint using cycle's public_id
   app.post("/api/projects/:id/retainer/pay-cycle", async (req, res) => {
     try {
-      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const projectId = Number(req.params.id);
-      const { cycleId, clientUserId, amountPence } = req.body;
-      if (!cycleId || !clientUserId || !amountPence) {
-        return res.status(400).json({ error: "cycleId, clientUserId, and amountPence required" });
+      const { cycleId, clientUserId } = req.body;
+      if (!cycleId || !clientUserId) {
+        return res.status(400).json({ error: "cycleId and clientUserId required" });
       }
-
-      const pw = await storage.getProject(projectId);
-      if (!pw) return res.status(404).json({ error: "Project not found" });
-
-      const freelancer = await storage.getUser(pw.project.freelancerId);
-      if (!freelancer) return res.status(404).json({ error: "Freelancer not found" });
-
-      const platformFeePence = Math.round(Number(amountPence) * (VIEWRR_FEE_PERCENT / 100));
-      const freelancerPence = Number(amountPence) - platformFeePence;
-
-      // Ensure freelancer has a Stripe account
-      let stripeAccountId = freelancer.stripeAccountId;
-      if (!stripeAccountId) {
-        const acct = await stripe.accounts.create({
-          type: "express", country: "GB", email: freelancer.email,
-          business_type: "individual",
-          capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
-          metadata: { viewrr_user_id: String(freelancer.id) },
-        });
-        stripeAccountId = acct.id;
-        await storage.updateStripeAccount(freelancer.id, { stripeAccountId: acct.id, stripeOnboarded: 0 });
+      // Look up cycle public_id
+      const db = neon(process.env.DATABASE_URL!);
+      const cycles = await db`SELECT public_id FROM retainer_cycles WHERE id = ${Number(cycleId)} LIMIT 1`;
+      if (!cycles.length || !cycles[0].public_id) {
+        return res.status(404).json({ error: "Retainer cycle not found or missing public_id" });
       }
-
-      let useDirectTransfer = false;
-      try {
-        const acct = await stripe.accounts.retrieve(stripeAccountId);
-        useDirectTransfer = acct.charges_enabled === true && acct.capabilities?.transfers === "active";
-      } catch {}
-
-      const clientUser = await storage.getUser(Number(clientUserId));
-      const intentParams: Stripe.PaymentIntentCreateParams = {
-        amount: Number(amountPence),
-        currency: "gbp",
-        automatic_payment_methods: { enabled: true },
-        receipt_email: clientUser?.email,
-        description: `${pw.project.title} — Retainer Cycle`,
-        metadata: {
-          projectId: String(projectId),
-          cycleId: String(cycleId),
-          freelancerId: String(freelancer.id),
-          clientUserId: String(clientUserId),
-          payment_type: useDirectTransfer ? "direct_transfer" : "platform_held",
-          viewrr_fee_pence: String(platformFeePence),
-          freelancer_pence: String(freelancerPence),
-          retainer_cycle: "true",
-        },
-        ...(useDirectTransfer ? {
-          application_fee_amount: platformFeePence,
-          transfer_data: { destination: stripeAccountId },
-        } : {}),
-      };
-
-      const intent = await stripe.paymentIntents.create(intentParams);
-
-      return res.json({
-        clientSecret: intent.client_secret,
-        paymentIntentId: intent.id,
-        amountPence: Number(amountPence),
-        freelancerOnboarded: useDirectTransfer,
-        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "",
-        requiresStripeConfirm: true,
-      });
+      const cyclePublicId = cycles[0].public_id;
+      const result = await createRetainerPayment(cyclePublicId, Number(clientUserId));
+      return res.json(result);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      const status = (e as any).status ?? 500;
+      res.status(status).json({ error: e.message });
     }
   });
 
-  // POST pause retainer
+    // POST pause retainer
   app.post("/api/projects/:id/retainer/pause", async (req, res) => {
     try {
       const projectId = Number(req.params.id);
@@ -3252,5 +3206,510 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // ─── PRD-008: Server-authoritative retainer payment ───────────────────────
+  // POST /api/retainer-cycles/:cyclePublicId/payments
+  // Body: { clientUserId } — NO amountPence allowed from client
+  app.post("/api/retainer-cycles/:cyclePublicId/payments", async (req, res) => {
+    try {
+      const { cyclePublicId } = req.params;
+      const { clientUserId } = req.body;
+      if (!clientUserId) return res.status(400).json({ error: "clientUserId required" });
+      const result = await createRetainerPayment(cyclePublicId, Number(clientUserId));
+      res.json(result);
+    } catch (e: any) {
+      const status = (e as any).status ?? 500;
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  // GET /api/retainer-cycles/:cyclePublicId/payment — get current payment status
+  app.get("/api/retainer-cycles/:cyclePublicId/payment", async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const { cyclePublicId } = req.params;
+      const cycles = await db`SELECT * FROM retainer_cycles WHERE public_id = ${cyclePublicId} LIMIT 1`;
+      if (!cycles.length) return res.status(404).json({ error: "Cycle not found" });
+      const cycle = cycles[0];
+      if (!cycle.payment_id) return res.json({ status: "not_started" });
+      const payments = await db`SELECT * FROM payments WHERE id = ${cycle.payment_id} LIMIT 1`;
+      res.json(payments[0] ?? { status: "not_found" });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-008: Payment money timeline ─────────────────────────────────────
+  // GET /api/payments/:paymentPublicId/timeline
+  app.get("/api/payments/:paymentPublicId/timeline", async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const { paymentPublicId } = req.params;
+      const { userId, role } = req.query as { userId?: string; role?: string };
+
+      const paymentRows = await db`SELECT * FROM payments WHERE public_id = ${paymentPublicId} LIMIT 1`;
+      if (!paymentRows.length) return res.status(404).json({ error: "Payment not found" });
+      const payment = paymentRows[0];
+
+      // Determine visibility filter based on requester
+      let visibility = "both";
+      const uid = Number(userId);
+      if (uid === payment.client_id) visibility = "client";
+      else if (uid === payment.freelancer_id) visibility = "freelancer";
+
+      const events = await db`
+        SELECT * FROM payment_timeline_events
+        WHERE payment_id = ${payment.id}
+          AND (visibility = 'both' OR visibility = ${visibility} OR visibility = 'admin')
+        ORDER BY occurred_at ASC
+      `;
+      res.json({ paymentPublicId, events });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-008: Freelancer payout timeline ─────────────────────────────────
+  app.get("/api/me/payouts", async (req, res) => {
+    try {
+      const userId = Number(req.query.userId);
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const timeline = await getFreelancerPayoutTimeline(userId);
+      res.json(timeline);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-008: Terms API ───────────────────────────────────────────────────
+  // GET /api/legal/terms/current — get current terms versions
+  app.get("/api/legal/terms/current", async (_req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      // Return the latest version for each document type
+      const terms = await db`
+        SELECT DISTINCT ON (document) document, version, effective_date, content_hash, created_at
+        FROM terms_versions
+        ORDER BY document, effective_date DESC
+      `;
+      res.json({ terms });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/legal/terms/accept — record terms acceptance
+  app.post("/api/legal/terms/accept", async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const { userId, document, version, context } = req.body;
+      if (!userId || !document || !version) {
+        return res.status(400).json({ error: "userId, document, version required" });
+      }
+      const tv = await db`SELECT id FROM terms_versions WHERE document = ${document} AND version = ${version} LIMIT 1`;
+      if (!tv.length) return res.status(404).json({ error: "Terms version not found" });
+      const ip = req.headers["x-forwarded-for"]?.toString() ?? req.socket.remoteAddress;
+      const ua = req.headers["user-agent"] ?? "";
+      await db`
+        INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
+        VALUES (${userId}, ${tv[0].id}, ${document}, ${version}, ${context ?? "manual"}, ${ip}, ${ua})
+        ON CONFLICT (user_id, terms_version_id) DO UPDATE SET accepted_at = NOW()::TEXT
+      `;
+      res.json({ accepted: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/me/legal-acceptances
+  app.get("/api/me/legal-acceptances", async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const userId = Number(req.query.userId);
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const acceptances = await db`
+        SELECT ta.*, tv.effective_date FROM terms_acceptances ta
+        JOIN terms_versions tv ON tv.id = ta.terms_version_id
+        WHERE ta.user_id = ${userId}
+        ORDER BY ta.accepted_at DESC
+      `;
+      res.json({ acceptances });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-008: Founder Finance & Operations APIs ───────────────────────────
+  // All require finance permission (userId in query/body)
+
+  // GET /api/founder/finance/overview
+  app.get("/api/founder/finance/overview", requireFinancePermission("finance.dashboard.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const period = (req.query.period as string) ?? "today";
+      const now = new Date();
+      let since: string;
+      if (period === "today") since = now.toISOString().slice(0, 10) + "T00:00:00.000Z";
+      else if (period === "7d") since = new Date(now.getTime() - 7 * 86400_000).toISOString();
+      else if (period === "30d") since = new Date(now.getTime() - 30 * 86400_000).toISOString();
+      else since = (req.query.since as string) ?? now.toISOString().slice(0, 10) + "T00:00:00.000Z";
+
+      const [volumeRow] = await db`
+        SELECT
+          COALESCE(SUM(gross_pence),0) AS gross_volume,
+          COALESCE(SUM(platform_fee_pence),0) AS platform_fee,
+          COALESCE(SUM(COALESCE(stripe_fee_pence,0)),0) AS stripe_fee,
+          COALESCE(SUM(COALESCE(net_platform_revenue_pence, platform_fee_pence)),0) AS net_revenue,
+          COALESCE(SUM(freelancer_pence),0) AS freelancer_earnings,
+          COUNT(*) FILTER (WHERE status='failed') AS failed_count,
+          COUNT(*) AS total_payments
+        FROM payments WHERE succeeded_at >= ${since}
+      `;
+      const [refundRow] = await db`
+        SELECT COALESCE(SUM(amount_pence),0) AS refunds_total
+        FROM payment_refunds WHERE created_at >= ${since} AND status='succeeded'
+      `;
+      const [pendingTransfers] = await db`
+        SELECT COALESCE(SUM(p.freelancer_pence),0) AS pending
+        FROM payments p
+        WHERE p.status='succeeded'
+          AND p.transfer_strategy='platform_held'
+          AND NOT EXISTS (SELECT 1 FROM payment_transfers pt WHERE pt.payment_id=p.id)
+      `;
+      const openExceptions = (await db`SELECT COUNT(*) AS c FROM finance_exceptions WHERE status='open'`)[0]?.c ?? 0;
+      const failedJobs = (await db`SELECT COUNT(*) AS c FROM background_jobs WHERE status='dead_letter'`)[0]?.c ?? 0;
+
+      res.json({
+        period, since,
+        grossVolumePence: Number(volumeRow.gross_volume),
+        grossCommissionPence: Number(volumeRow.platform_fee),
+        stripeFeesPence: Number(volumeRow.stripe_fee),
+        netRevenuePence: Number(volumeRow.net_revenue),
+        freelancerEarningsPence: Number(volumeRow.freelancer_earnings),
+        pendingTransfersPence: Number(pendingTransfers.pending),
+        refundsTotalPence: Number(refundRow.refunds_total),
+        failedPaymentCount: Number(volumeRow.failed_count),
+        openExceptions: Number(openExceptions),
+        failedWebhookJobs: Number(failedJobs),
+        totalPayments: Number(volumeRow.total_payments),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/payments
+  app.get("/api/founder/finance/payments", requireFinancePermission("finance.payment.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const limit = Math.min(Number(req.query.limit ?? 50), 200);
+      const offset = Number(req.query.offset ?? 0);
+      const status = req.query.status as string | undefined;
+      const search = req.query.search as string | undefined;
+
+      const payments = await db`
+        SELECT p.*,
+          pr.title AS project_title,
+          cu.email AS client_email,
+          fu.email AS freelancer_email,
+          (SELECT COUNT(*) FROM payment_refunds pr2 WHERE pr2.payment_id = p.id AND pr2.status='succeeded') AS refund_count,
+          (SELECT COUNT(*) FROM payment_transfers pt WHERE pt.payment_id = p.id) AS transfer_count
+        FROM payments p
+        LEFT JOIN projects pr ON pr.id = p.project_id
+        LEFT JOIN users cu ON cu.id = p.client_id
+        LEFT JOIN users fu ON fu.id = p.freelancer_id
+        WHERE
+          (${status ?? null}::TEXT IS NULL OR p.status = ${status ?? ""})
+          AND (
+            ${search ?? null}::TEXT IS NULL OR
+            p.public_id ILIKE ${'%' + (search ?? '') + '%'} OR
+            cu.email ILIKE ${'%' + (search ?? '') + '%'} OR
+            fu.email ILIKE ${'%' + (search ?? '') + '%'}
+          )
+        ORDER BY p.created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+
+      const [total] = await db`SELECT COUNT(*) AS c FROM payments`;
+      res.json({ payments, total: Number(total.c), limit, offset });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/payments/:paymentPublicId
+  app.get("/api/founder/finance/payments/:paymentPublicId", requireFinancePermission("finance.payment.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const { paymentPublicId } = req.params;
+      const [payment] = await db`SELECT p.*, pr.title AS project_title FROM payments p LEFT JOIN projects pr ON pr.id=p.project_id WHERE p.public_id=${paymentPublicId}`;
+      if (!payment) return res.status(404).json({ error: "Payment not found" });
+      const transfers = await db`SELECT * FROM payment_transfers WHERE payment_id = ${payment.id}`;
+      const refunds = await db`SELECT * FROM payment_refunds WHERE payment_id = ${payment.id}`;
+      const auditEntries = await db`SELECT * FROM payment_audit_log WHERE payment_id = ${payment.id} ORDER BY created_at DESC LIMIT 50`;
+      const timeline = await db`SELECT * FROM payment_timeline_events WHERE payment_id = ${payment.id} ORDER BY occurred_at ASC`;
+      const exceptions = await db`SELECT * FROM finance_exceptions WHERE payment_id = ${payment.id} ORDER BY detected_at DESC`;
+      const jobs = await db`SELECT * FROM background_jobs WHERE payload->>'paymentId' = ${String(payment.id)} ORDER BY created_at DESC LIMIT 20`;
+      res.json({ payment, transfers, refunds, auditLog: auditEntries, timeline, exceptions, jobs });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/exceptions
+  app.get("/api/founder/finance/exceptions", requireFinancePermission("finance.dashboard.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const status = (req.query.status as string) ?? "open";
+      const exceptions = await db`
+        SELECT fe.*, p.public_id AS payment_public_id
+        FROM finance_exceptions fe
+        LEFT JOIN payments p ON p.id = fe.payment_id
+        WHERE fe.status = ${status}
+        ORDER BY fe.detected_at DESC
+        LIMIT 100
+      `;
+      res.json({ exceptions });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/founder/finance/exceptions/:publicId/resolve
+  app.post("/api/founder/finance/exceptions/:publicId/resolve", requireFinancePermission("finance.reconcile.run"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const { publicId } = req.params;
+      const { resolutionNote, status } = req.body;
+      const validStatuses = ["resolved", "ignored_with_reason", "investigating", "action_required"];
+      if (!validStatuses.includes(status)) return res.status(400).json({ error: "Invalid status" });
+      await db`
+        UPDATE finance_exceptions
+        SET status = ${status},
+            resolution_note = ${resolutionNote ?? null},
+            resolved_at = ${status === "resolved" || status === "ignored_with_reason" ? new Date().toISOString() : null}
+        WHERE public_id = ${publicId}
+      `;
+      res.json({ updated: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/founder/finance/exceptions/:publicId/assign
+  app.post("/api/founder/finance/exceptions/:publicId/assign", requireFinancePermission("finance.reconcile.run"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const { publicId } = req.params;
+      const { assignToUserId } = req.body;
+      await db`UPDATE finance_exceptions SET assigned_to = ${assignToUserId}, status = 'investigating' WHERE public_id = ${publicId}`;
+      res.json({ updated: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/founder/finance/payments/:paymentPublicId/reconcile
+  app.post("/api/founder/finance/payments/:paymentPublicId/reconcile", requireFinancePermission("finance.reconcile.run"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const [payment] = await db`SELECT id FROM payments WHERE public_id = ${req.params.paymentPublicId}`;
+      if (!payment) return res.status(404).json({ error: "Payment not found" });
+      const result = await reconcilePaymentFull(payment.id);
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/founder/finance/stripe-events/:eventId/replay
+  app.post("/api/founder/finance/stripe-events/:eventId/replay", requireFinancePermission("finance.webhook.replay"), async (req, res) => {
+    try {
+      const jobId = await enqueueJob(
+        "process_stripe_event",
+        { stripeEventId: req.params.eventId, replay: true },
+        `replay:${req.params.eventId}:${Date.now()}`
+      );
+      res.json({ queued: true, jobId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/payouts
+  app.get("/api/founder/finance/payouts", requireFinancePermission("finance.payment.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const limit = Math.min(Number(req.query.limit ?? 50), 200);
+      const offset = Number(req.query.offset ?? 0);
+      const payouts = await db`
+        SELECT pp.*, p.public_id AS payment_public_id, u.email AS freelancer_email
+        FROM payment_payouts pp
+        LEFT JOIN payments p ON p.id = pp.payment_id
+        LEFT JOIN users u ON u.id = pp.user_id
+        ORDER BY pp.created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+      res.json({ payouts });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/refunds
+  app.get("/api/founder/finance/refunds", requireFinancePermission("finance.payment.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const limit = Math.min(Number(req.query.limit ?? 50), 200);
+      const offset = Number(req.query.offset ?? 0);
+      const refunds = await db`
+        SELECT pr.*, p.public_id AS payment_public_id, p.gross_pence, p.project_id,
+          cu.email AS client_email, fu.email AS freelancer_email
+        FROM payment_refunds pr
+        JOIN payments p ON p.id = pr.payment_id
+        LEFT JOIN users cu ON cu.id = p.client_id
+        LEFT JOIN users fu ON fu.id = p.freelancer_id
+        ORDER BY pr.created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+      res.json({ refunds });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/disputes
+  app.get("/api/founder/finance/disputes", requireFinancePermission("finance.dispute.manage"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const exceptions = await db`
+        SELECT fe.*, p.public_id AS payment_public_id, p.gross_pence
+        FROM finance_exceptions fe
+        LEFT JOIN payments p ON p.id = fe.payment_id
+        WHERE fe.type LIKE '%dispute%' OR fe.summary ILIKE '%dispute%'
+        ORDER BY fe.detected_at DESC LIMIT 100
+      `;
+      res.json({ disputes: exceptions });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/reports/export (CSV stub)
+  app.get("/api/founder/finance/reports/export", requireFinancePermission("finance.export"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const since = (req.query.since as string) ?? new Date(Date.now() - 30 * 86400_000).toISOString();
+      const payments = await db`
+        SELECT p.public_id, p.created_at, p.gross_pence, p.platform_fee_pence, p.stripe_fee_pence,
+          p.freelancer_pence, p.status, p.payment_kind,
+          cu.email AS client_email, fu.email AS freelancer_email,
+          pr.title AS project_title
+        FROM payments p
+        LEFT JOIN users cu ON cu.id = p.client_id
+        LEFT JOIN users fu ON fu.id = p.freelancer_id
+        LEFT JOIN projects pr ON pr.id = p.project_id
+        WHERE p.succeeded_at >= ${since}
+        ORDER BY p.created_at DESC
+        LIMIT 1000
+      `;
+
+      // Build CSV
+      const headers = ["Payment ID","Date","Project","Client","Freelancer","Gross (£)","Viewrr Fee (£)","Stripe Fee (£)","Freelancer Amount (£)","Status","Type"];
+      const rows = payments.map(p => [
+        p.public_id, p.created_at?.slice(0,10) ?? "",
+        (p.project_title ?? "").replace(/,/g, ""),
+        (p.client_email ?? "").replace(/,/g, ""),
+        (p.freelancer_email ?? "").replace(/,/g, ""),
+        ((p.gross_pence ?? 0)/100).toFixed(2),
+        ((p.platform_fee_pence ?? 0)/100).toFixed(2),
+        ((p.stripe_fee_pence ?? 0)/100).toFixed(2),
+        ((p.freelancer_pence ?? 0)/100).toFixed(2),
+        p.status, p.payment_kind,
+      ]);
+      const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename=viewrr_payments_${since.slice(0,10)}.csv`);
+      res.send(csv);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/connected-accounts
+  app.get("/api/founder/finance/connected-accounts", requireFinancePermission("finance.connected_account.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const accounts = await db`
+        SELECT sca.*, u.email, u.name
+        FROM stripe_connect_accounts sca
+        JOIN users u ON u.id = sca.user_id
+        ORDER BY sca.created_at DESC
+      `;
+      res.json({ accounts });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/founder/finance/payout-migration — trigger the daily payout migration
+  app.post("/api/founder/finance/payout-migration", requireFinancePermission("finance.settings.payout"), async (req, res) => {
+    try {
+      const result = await migrateAllAccountsToAutoDailyPayout();
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/founder/finance/run-exception-scan
+  app.post("/api/founder/finance/run-exception-scan", requireFinancePermission("finance.reconcile.run"), async (req, res) => {
+    try {
+      const result = await runExceptionScan();
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/daily-summaries
+  app.get("/api/founder/finance/daily-summaries", requireFinancePermission("finance.dashboard.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const summaries = await db`
+        SELECT * FROM finance_daily_summaries
+        ORDER BY date DESC LIMIT 30
+      `;
+      res.json({ summaries });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-008: Start background job worker on server init ─────────────────
+  // Register handlers for key job types
+  registerJobHandler("reconcile_payment", async (payload) => {
+    const paymentId = Number(payload.paymentId);
+    await reconcilePaymentFull(paymentId);
+  });
+
+  registerJobHandler("generate_finance_summary", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+    await generateDailySummary(today);
+    await generateDailySummary(yesterday);
+    await runExceptionScan();
+  });
+
+  registerJobHandler("sync_connect_account", async (payload) => {
+    const userId = Number(payload.userId);
+    const stripeAccountId = payload.stripeAccountId as string;
+    await syncConnectAccount(userId, stripeAccountId);
+    await configureAutoDailyPayout(userId, stripeAccountId);
+  });
+
+  // Start the worker (non-blocking)
+  startWorker();
 }
 
