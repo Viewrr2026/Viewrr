@@ -622,3 +622,149 @@ export const STAGE_TEMPLATES: Record<string, string[]> = {
   "Marketing Campaign": ["Strategy", "Creative", "Review", "Approval", "Launch"],
   "Custom": [],
 };
+
+// ─── PRD-007: Payment Ledger Tables ──────────────────────────────────────────
+
+// payments — one row per payment attempt (source of truth for all money movement)
+export const payments = pgTable("payments", {
+  id: serial("id").primaryKey(),
+  publicId: text("public_id").notNull().unique(),          // pay_vrr_<nanoid>
+  projectId: integer("project_id").notNull(),
+  invoiceId: integer("invoice_id"),                        // nullable for retainer cycles
+  retainerCycleId: integer("retainer_cycle_id"),
+  clientId: integer("client_id").notNull(),
+  freelancerId: integer("freelancer_id").notNull(),
+  paymentKind: text("payment_kind").notNull().default("one_off"), // one_off | retainer_cycle
+  currency: text("currency").notNull().default("gbp"),
+  grossPence: integer("gross_pence").notNull(),
+  platformFeePence: integer("platform_fee_pence").notNull(),
+  freelancerPence: integer("freelancer_pence").notNull(),
+  stripeFeePence: integer("stripe_fee_pence"),             // filled after charge succeeds
+  netPlatformRevenuePence: integer("net_platform_revenue_pence"), // grossFee - stripeFee
+  status: text("status").notNull().default("pending"),
+  // pending | requires_payment_method | processing | succeeded | failed | cancelled | refunded | partially_refunded
+  transferStrategy: text("transfer_strategy").notNull().default("platform_held"),
+  // direct_transfer | platform_held
+  stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
+  stripeChargeId: text("stripe_charge_id"),
+  stripeBalanceTransactionId: text("stripe_balance_transaction_id"),
+  stripeApplicationFeeId: text("stripe_application_fee_id"),
+  idempotencyKey: text("idempotency_key").unique(),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  authorisedAt: text("authorised_at"),
+  succeededAt: text("succeeded_at"),
+  failedAt: text("failed_at"),
+  cancelledAt: text("cancelled_at"),
+  version: integer("version").notNull().default(1),
+});
+export type Payment = typeof payments.$inferSelect;
+
+// payment_transfers — one row per Stripe transfer to a connected account
+export const paymentTransfers = pgTable("payment_transfers", {
+  id: serial("id").primaryKey(),
+  paymentId: integer("payment_id").notNull(),
+  stripeTransferId: text("stripe_transfer_id").notNull().unique(),
+  destinationAccountId: text("destination_account_id").notNull(),
+  amountPence: integer("amount_pence").notNull(),
+  status: text("status").notNull().default("pending"),
+  // pending | processing | transferred | partially_reversed | reversed | failed
+  failureCode: text("failure_code"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  reversedPence: integer("reversed_pence").notNull().default(0),
+  lastReconciledAt: text("last_reconciled_at"),
+});
+export type PaymentTransfer = typeof paymentTransfers.$inferSelect;
+
+// payment_refunds — one row per refund (full or partial)
+export const paymentRefunds = pgTable("payment_refunds", {
+  id: serial("id").primaryKey(),
+  publicId: text("public_id").notNull().unique(),
+  paymentId: integer("payment_id").notNull(),
+  stripeRefundId: text("stripe_refund_id").unique(),
+  amountPence: integer("amount_pence").notNull(),
+  reasonCode: text("reason_code").notNull(),
+  // client_cancellation | defective_work | duplicate | fraud | admin_goodwill | statutory_right
+  status: text("status").notNull().default("requested"),
+  // requested | under_review | approved | submitted_to_stripe | processing | succeeded
+  // | partially_succeeded | failed | manual_recovery_required | cancelled
+  reverseTransfer: integer("reverse_transfer").notNull().default(1),
+  refundApplicationFee: integer("refund_application_fee").notNull().default(0),
+  requestedBy: integer("requested_by").notNull(),
+  approvedBy: integer("approved_by"),
+  internalNote: text("internal_note"),
+  failureCode: text("failure_code"),
+  idempotencyKey: text("idempotency_key").unique(),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  succeededAt: text("succeeded_at"),
+});
+export type PaymentRefund = typeof paymentRefunds.$inferSelect;
+
+// payment_payouts — synced from Stripe payout events
+export const paymentPayouts = pgTable("payment_payouts", {
+  id: serial("id").primaryKey(),
+  freelancerId: integer("freelancer_id").notNull(),
+  stripePayoutId: text("stripe_payout_id").notNull().unique(),
+  amountPence: integer("amount_pence").notNull(),
+  currency: text("currency").notNull().default("gbp"),
+  status: text("status").notNull().default("pending"),
+  // pending | in_transit | paid | failed | cancelled
+  arrivalDate: text("arrival_date"),
+  failureCode: text("failure_code"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  paidAt: text("paid_at"),
+});
+export type PaymentPayout = typeof paymentPayouts.$inferSelect;
+
+// stripe_events — idempotent event store (prevents duplicate processing)
+export const stripeEvents = pgTable("stripe_events", {
+  stripeEventId: text("stripe_event_id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  livemode: integer("livemode").notNull().default(0),
+  apiVersion: text("api_version"),
+  processingStatus: text("processing_status").notNull().default("received"),
+  // received | processing | processed | failed | skipped
+  attemptCount: integer("attempt_count").notNull().default(0),
+  receivedAt: text("received_at").notNull().default(new Date().toISOString()),
+  processedAt: text("processed_at"),
+  errorCode: text("error_code"),
+  errorSummary: text("error_summary"),
+});
+export type StripeEvent = typeof stripeEvents.$inferSelect;
+
+// payment_audit_log — immutable audit trail for all payment actions
+export const paymentAuditLog = pgTable("payment_audit_log", {
+  id: serial("id").primaryKey(),
+  paymentId: integer("payment_id"),
+  actorType: text("actor_type").notNull(), // system | user | admin | webhook
+  actorId: integer("actor_id"),
+  action: text("action").notNull(),
+  beforeState: text("before_state"),       // JSON snapshot
+  afterState: text("after_state"),         // JSON snapshot
+  reason: text("reason"),
+  correlationId: text("correlation_id"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export type PaymentAuditEntry = typeof paymentAuditLog.$inferSelect;
+
+// stripe_connect_accounts — richer Connect readiness state (FR-13)
+export const stripeConnectAccounts = pgTable("stripe_connect_accounts", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().unique(),
+  stripeAccountId: text("stripe_account_id").notNull().unique(),
+  readinessState: text("readiness_state").notNull().default("not_created"),
+  // not_created | onboarding_required | verification_pending | transfers_ready | payouts_ready | restricted | disabled
+  detailsSubmitted: integer("details_submitted").notNull().default(0),
+  chargesEnabled: integer("charges_enabled").notNull().default(0),
+  payoutsEnabled: integer("payouts_enabled").notNull().default(0),
+  transfersCapability: text("transfers_capability").default("inactive"),
+  currentlyDue: text("currently_due").notNull().default("[]"),    // JSON
+  eventuallyDue: text("eventually_due").notNull().default("[]"),
+  pastDue: text("past_due").notNull().default("[]"),
+  pendingVerification: text("pending_verification").notNull().default("[]"),
+  disabledReason: text("disabled_reason"),
+  payoutSchedule: text("payout_schedule"),     // JSON {interval, delay_days}
+  termsAcceptedAt: text("terms_accepted_at"),  // when freelancer accepted platform payment terms
+  lastSyncedAt: text("last_synced_at"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export type StripeConnectAccount = typeof stripeConnectAccounts.$inferSelect;

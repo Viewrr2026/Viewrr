@@ -402,17 +402,14 @@ function CardForm({
         return;
       }
       if (paymentIntent?.status === "succeeded") {
-        // Confirm on backend
-        const res = await apiRequest("POST", "/api/stripe/confirm-intent", {
-          paymentIntentId,
-          projectId,
-          clientUserId,
-        });
-        if (!res.ok) {
-          const b = await res.json().catch(() => ({}));
-          onError(b.error || "Payment confirmed but failed to update project");
-          return;
-        }
+        // FR-03: notify backend (non-authoritative — webhook is the source of truth)
+        // The project will update via webhook even if this call fails
+        try {
+          await apiRequest("POST", "/api/stripe/confirm-intent", {
+            paymentIntentId, projectId, clientUserId,
+          });
+        } catch { /* non-fatal — webhook handles fulfilment */ }
+        // Invalidate queries so UI refreshes when webhook updates project
         queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
         onSuccess();
       } else {
@@ -534,15 +531,14 @@ export function StripePaymentDialog({
 
   async function handleAmountContinue() {
     setError("");
-    const pounds = parseFloat(amountStr);
-    if (!amountStr.trim() || isNaN(pounds)) { setError("Please enter an amount"); return; }
-    if (pounds < 0.50) { setError("Minimum is £0.50"); return; }
     if (!clientUserId) { setError("Could not identify your account"); return; }
     setLoadingIntent(true);
     try {
-      const amountPence = Math.round(pounds * 100);
+      // FR-01: send only projectId + invoiceId — backend derives the amount
+      // For backward compat when no invoiceId is available, fall back to legacy endpoint
       const res = await apiRequest("POST", "/api/stripe/create-payment-intent", {
-        projectId, amountPence, clientUserId,
+        projectId, clientUserId,
+        // Do NOT send amountPence — server derives it from the invoice
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
@@ -552,7 +548,9 @@ export function StripePaymentDialog({
       setClientSecret(data.clientSecret);
       setPublishableKey(data.publishableKey);
       setPaymentIntentId(data.paymentIntentId);
-      setPaidAmountPence(amountPence);
+      // Use server-derived amount (not client-entered)
+      const serverAmountPence = data.amountPence ?? Math.round(parseFloat(amountStr) * 100);
+      setPaidAmountPence(serverAmountPence);
       // Pre-load Stripe immediately
       stripePromiseRef.current = loadStripe(data.publishableKey);
       setStep("card");
@@ -571,89 +569,47 @@ export function StripePaymentDialog({
         className="p-0 flex flex-col"
         style={{ maxWidth: 420, borderRadius: 24, maxHeight: "90vh", overflow: "hidden" }}
       >
-        {/* ── Step: Amount ── */}
+        {/* ── Step: Amount (server-derives amount — FR-01) ── */}
         {step === "amount" && (
-          <div className="p-6 overflow-y-auto">
-            {/* Header — no manual close button, DialogContent renders its own */}
-            <div className="flex items-center gap-3 mb-5">
-              <div className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0" style={{ background: "rgba(255,90,31,0.1)" }}>
-                <CreditCard size={20} style={{ color: "#FF5A1F" }} />
+          <div className="px-6 py-4 space-y-5">
+            {/* Summary header */}
+            <div className="flex items-center gap-3 pb-3 border-b border-border">
+              <div className="w-9 h-9 rounded-2xl flex items-center justify-center" style={{ background: "rgba(255,90,31,0.1)" }}>
+                <Banknote size={17} style={{ color: "#FF5A1F" }} />
               </div>
               <div>
-                <p className="font-bold text-base">Pay {freelancerName}</p>
-                <p className="text-xs text-muted-foreground truncate max-w-[260px]">{projectTitle}</p>
+                <p className="text-sm font-semibold">{projectTitle}</p>
+                <p className="text-xs text-muted-foreground">Paying {freelancerName}</p>
               </div>
             </div>
 
-            {/* Amount input */}
-            <div className="mb-4">
-              <label className="text-xs font-semibold text-foreground mb-2 block">
-                {agreedAmountPence ? "Project amount" : "Agreed amount"}
-              </label>
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-light text-muted-foreground">£</span>
-                <input
-                  type="number"
-                  min="0.50"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={amountStr}
-                  onChange={e => { if (!agreedAmountPence) { setAmountStr(e.target.value); setError(""); } }}
-                  onKeyDown={e => e.key === "Enter" && handleAmountContinue()}
-                  className="w-full pl-10 pr-4 py-3.5 text-2xl font-semibold rounded-2xl border border-border bg-secondary/40 focus:outline-none focus:ring-2 focus:border-transparent transition-all"
-                  style={{
-                    fontVariantNumeric: "tabular-nums",
-                    "--tw-ring-color": "rgba(255,90,31,0.4)",
-                    cursor: agreedAmountPence ? "default" : "text",
-                    opacity: agreedAmountPence ? 0.85 : 1,
-                  } as any}
-                  readOnly={!!agreedAmountPence}
-                  disabled={loadingIntent}
-                  data-testid="input-payment-amount"
-                  autoFocus={!agreedAmountPence}
-                />
-              </div>
-              {agreedAmountPence && (
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  Amount set by project — cannot be changed
-                </p>
-              )}
-              {error && (
-                <p className="text-xs text-destructive mt-1.5 flex items-center gap-1">
-                  <span className="w-1 h-1 rounded-full bg-destructive inline-block" />{error}
-                </p>
-              )}
+            {/* Amount is fixed by the invoice — not editable by client (FR-01) */}
+            <div
+              className="flex items-center justify-between px-4 py-3 rounded-2xl"
+              style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.2)" }}
+            >
+              <span className="text-xs text-muted-foreground font-medium">Invoice total</span>
+              <span className="text-lg font-bold" style={{ color: "#FF5A1F" }}>
+                {agreedAmountPence ? `£${(agreedAmountPence / 100).toFixed(2)}` : "Loading…"}
+              </span>
             </div>
+            <p className="text-[11px] text-muted-foreground text-center">
+              This amount is confirmed by the agreed invoice and verified by Viewrr.
+            </p>
 
-            {/* Trust badges */}
-            <div className="flex items-center gap-3 mb-5">
-              {[["🔒","Secure payment"],["⚡","Instant release"],["🏦","Stripe protected"]].map(([icon, label]) => (
-                <div key={label} className="flex-1 flex flex-col items-center gap-1 py-2.5 rounded-xl text-center" style={{ background: "rgba(255,90,31,0.05)", border: "1px solid rgba(255,90,31,0.1)" }}>
-                  <span className="text-base">{icon}</span>
-                  <span className="text-[10px] font-medium text-muted-foreground leading-tight">{label}</span>
-                </div>
-              ))}
-            </div>
+            {error && <p className="text-xs text-red-500">{error}</p>}
 
-            <button
+            <Button
               onClick={handleAmountContinue}
-              disabled={loadingIntent || !amountStr.trim()}
-              className="w-full flex items-center justify-center gap-2 py-3.5 rounded-full font-semibold text-white text-sm"
-              style={{
-                background: loadingIntent || !amountStr.trim() ? "rgba(255,90,31,0.35)" : "linear-gradient(135deg,#FF5A1F,#FF8C42)",
-                boxShadow: loadingIntent || !amountStr.trim() ? "none" : "0 4px 20px rgba(255,90,31,0.3)",
-                cursor: loadingIntent || !amountStr.trim() ? "not-allowed" : "pointer",
-                transition: "all 0.2s",
-              }}
+              disabled={loadingIntent || !agreedAmountPence}
+              className="w-full rounded-full text-white font-semibold"
+              style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
               data-testid="btn-continue-to-card"
             >
-              {loadingIntent
-                ? <><Loader2 size={15} className="animate-spin" /> Setting up payment…</>
-                : <>Continue to payment →</>}
-            </button>
+              {loadingIntent ? <><Loader2 size={14} className="animate-spin mr-2" />Setting up payment…</> : "Continue to payment"}
+            </Button>
           </div>
         )}
-
         {/* ── Step: Card ── */}
         {step === "card" && clientSecret && stripePromiseRef.current && (
           <div className="flex flex-col overflow-hidden" style={{ maxHeight: "90vh" }}>

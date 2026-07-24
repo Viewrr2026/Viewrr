@@ -1,7 +1,20 @@
 import type { Express } from "express";
 import { Server } from "http";
 import { storage } from "./storage";
+import {
+  createPayment,
+  initiateRefund,
+  claimStripeEvent,
+  markEventProcessed,
+  handlePaymentIntentSucceeded,
+  releaseHeldEarnings,
+  syncConnectAccount,
+  reconcilePayment,
+  auditLog,
+  VIEWRR_FEE_PERCENT as PAYMENT_FEE_PERCENT,
+} from "./payment-service";
 import { getDashboardData } from "./services/dashboard.service";
+import { neon } from "@neondatabase/serverless";
 import crypto from "crypto";
 import multer from "multer";
 import path from "path";
@@ -1911,29 +1924,34 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ───────────────────────────────────────────────────────────────────────────
 
   // 1. Create (or retrieve) a Stripe Express account for a freelancer
+
+  // ─── PRD-007: Hardened Stripe Payment Routes ─────────────────────────────────
+
+  // FR-14: Explicit freelancer Connect account creation (must be initiated by freelancer)
   app.post("/api/stripe/connect-account", async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { userId } = req.body;
+      const { userId, termsAccepted } = req.body;
       if (!userId) return res.status(400).json({ error: "userId required" });
+      if (!termsAccepted) return res.status(400).json({ error: "You must accept the payment terms before connecting Stripe" });
 
       const user = await storage.getUser(Number(userId));
       if (!user) return res.status(404).json({ error: "User not found" });
+      // FR-02: must be a freelancer
+      if (user.role !== "freelancer") return res.status(403).json({ error: "Only freelancers can connect Stripe" });
 
-      // Re-use existing account if already created
       if (user.stripeAccountId) {
-        try {
-          const existing = await stripe.accounts.retrieve(user.stripeAccountId);
-          return res.json({
-            accountId: user.stripeAccountId,
-            onboarded: user.stripeOnboarded === 1,
-            chargesEnabled: existing.charges_enabled,
-          });
-        } catch {
-          // Account no longer exists in Stripe — create a fresh one
-        }
+        // Re-use existing account — sync readiness state
+        const connectState = await syncConnectAccount(user.id, user.stripeAccountId).catch(() => null);
+        return res.json({
+          accountId: user.stripeAccountId,
+          readinessState: connectState?.readinessState ?? "verification_pending",
+          alreadyExists: true,
+        });
       }
 
+      // FR-07: deterministic idempotency key
+      const idempotencyKey = `connect_account:${userId}:v1`;
       const account = await stripe.accounts.create({
         type: "express",
         country: "GB",
@@ -1941,20 +1959,28 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         business_type: "individual",
         capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
         business_profile: { product_description: "Freelance creative services via Viewrr" },
-        settings: { payouts: { schedule: { interval: "manual" } } },
         metadata: { viewrr_user_id: String(userId) },
+      }, { idempotencyKey });
+
+      // Store in legacy field for backward compat + new connect accounts table
+      await storage.updateStripeAccount(user.id, { stripeAccountId: account.id, stripeOnboarded: 0 });
+      await syncConnectAccount(user.id, account.id);
+
+      await auditLog({
+        actorType: "user",
+        actorId: user.id,
+        action: "stripe_account_created",
+        afterState: { stripeAccountId: account.id },
       });
 
-      await storage.updateStripeAccount(Number(userId), { stripeAccountId: account.id, stripeOnboarded: 0 });
-
-      return res.json({ accountId: account.id, onboarded: false });
+      res.json({ accountId: account.id, readinessState: "onboarding_required" });
     } catch (e: any) {
       console.error("[stripe/connect-account]", e.message);
       res.status(500).json({ error: e.message });
     }
   });
 
-  // 2. Generate onboarding link so freelancer can enter their bank details
+  // FR-14: Onboarding link — FR-02: no userId in path/body (use body for now, validated against DB)
   app.post("/api/stripe/onboarding-link", async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
@@ -1962,12 +1988,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!userId) return res.status(400).json({ error: "userId required" });
 
       const user = await storage.getUser(Number(userId));
-      if (!user?.stripeAccountId) return res.status(400).json({ error: "No Stripe account found. Create one first." });
+      if (!user || !user.stripeAccountId)
+        return res.status(404).json({ error: "No Stripe account found. Connect Stripe first." });
+      if (user.role !== "freelancer")
+        return res.status(403).json({ error: "Only freelancers can access onboarding links" });
 
       const link = await stripe.accountLinks.create({
         account: user.stripeAccountId,
-        refresh_url: `${APP_BASE_URL}/your-work?stripe=refresh`,
-        return_url:  `${APP_BASE_URL}/your-work?stripe=complete`,
+        refresh_url: `${APP_BASE_URL}/#/your-work?stripe=refresh`,
+        return_url: `${APP_BASE_URL}/#/your-work?stripe=complete`,
         type: "account_onboarding",
       });
 
@@ -1978,30 +2007,40 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // 3. Check onboarding status
+  // FR-13: Full Connect readiness status (richer than before)
   app.get("/api/stripe/status/:userId", async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const user = await storage.getUser(Number(req.params.userId));
+      const userId = Number(req.params.userId);
+
+      const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
 
       if (!user.stripeAccountId) {
-        return res.json({ connected: false, onboarded: false, pendingPence: 0 });
+        return res.json({
+          connected: false,
+          readinessState: "not_created",
+          chargesEnabled: false,
+          payoutsEnabled: false,
+          transfersReady: false,
+          pendingRequirements: [],
+        });
       }
 
-      const account = await stripe.accounts.retrieve(user.stripeAccountId);
-      const fullyOnboarded = account.charges_enabled === true && account.capabilities?.transfers === "active";
-
-      // Sync onboarded status if it changed
-      if (fullyOnboarded && user.stripeOnboarded !== 1) {
-        await storage.updateStripeAccount(Number(req.params.userId), { stripeOnboarded: 1 });
-      }
+      // Sync from Stripe
+      const connectState = await syncConnectAccount(userId, user.stripeAccountId);
 
       res.json({
         connected: true,
-        onboarded: fullyOnboarded,
-        chargesEnabled: account.charges_enabled,
-        pendingPence: user.stripePendingPence ?? 0,
+        readinessState: connectState.readinessState,
+        detailsSubmitted: connectState.detailsSubmitted === 1,
+        chargesEnabled: connectState.chargesEnabled === 1,
+        payoutsEnabled: connectState.payoutsEnabled === 1,
+        transfersReady: connectState.readinessState === "transfers_ready" || connectState.readinessState === "payouts_ready",
+        currentlyDue: JSON.parse(connectState.currentlyDue ?? "[]"),
+        pastDue: JSON.parse(connectState.pastDue ?? "[]"),
+        disabledReason: connectState.disabledReason,
+        payoutSchedule: connectState.payoutSchedule ? JSON.parse(connectState.payoutSchedule) : null,
       });
     } catch (e: any) {
       console.error("[stripe/status]", e.message);
@@ -2009,277 +2048,103 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // 4. Create a Stripe Checkout payment session (client pays freelancer)
-  app.post("/api/stripe/create-payment", async (req, res) => {
+  // FR-01, FR-02, FR-04, FR-07: Server-authoritative payment creation
+  // Browser submits ONLY projectId + invoiceId — no amount, no userId authority
+  app.post("/api/projects/:projectId/payments", async (req, res) => {
     try {
-      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { projectId, amountPence, currency = "gbp", clientUserId, description } = req.body;
-      if (!projectId || !amountPence || !clientUserId) {
-        return res.status(400).json({ error: "projectId, amountPence, clientUserId required" });
+      const { invoiceId, clientUserId } = req.body;
+      const projectId = Number(req.params.projectId);
+      if (!invoiceId) return res.status(400).json({ error: "invoiceId required" });
+      // clientUserId supplied by frontend (no sessions) — validated against project ownership
+      if (!clientUserId) return res.status(400).json({ error: "clientUserId required" });
+
+      const result = await createPayment(projectId, Number(invoiceId), Number(clientUserId));
+      res.json(result);
+    } catch (e: any) {
+      const status = (e as any).status ?? 500;
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  // Payment status endpoint (FR-03: browser polls this after stripe.confirmPayment)
+  app.get("/api/payments/:publicId", async (req, res) => {
+    try {
+      const { userId } = req.query;
+      // Load payment — returning only what the requesting party can see
+      const db = (await import("./payment-service")).reconcilePayment; // just to ensure service loaded
+      const neonClient = neon(process.env.DATABASE_URL!);
+      const rows = await neonClient(
+        "SELECT * FROM payments WHERE public_id = $1 LIMIT 1",
+        [req.params.publicId]
+      );
+      if (!rows.length) return res.status(404).json({ error: "Payment not found" });
+      const p = rows[0];
+      // Only client or freelancer on the project can view
+      const uid = Number(userId);
+      if (uid !== p.client_id && uid !== p.freelancer_id) {
+        return res.status(403).json({ error: "Access denied" });
       }
-
-      const pw = await storage.getProject(Number(projectId));
-      if (!pw) return res.status(404).json({ error: "Project not found" });
-
-      const freelancer = await storage.getUser(pw.project.freelancerId);
-      if (!freelancer) return res.status(404).json({ error: "Freelancer not found" });
-
-      const platformFeePence = Math.round(amountPence * (VIEWRR_FEE_PERCENT / 100));
-      const freelancerPence  = amountPence - platformFeePence;
-
-      // Check if freelancer has a verified Stripe account
-      let useDirectTransfer = false;
-      if (freelancer.stripeAccountId) {
-        try {
-          const acct = await stripe.accounts.retrieve(freelancer.stripeAccountId);
-          useDirectTransfer = acct.charges_enabled === true && acct.capabilities?.transfers === "active";
-        } catch { /* account check failed — fall through to platform-held */ }
-      }
-
-      // If freelancer has no account yet, create one silently (deferred onboarding)
-      if (!freelancer.stripeAccountId) {
-        const acct = await stripe.accounts.create({
-          type: "express", country: "GB", email: freelancer.email,
-          business_type: "individual",
-          capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
-          business_profile: { product_description: "Freelance creative services via Viewrr" },
-          settings: { payouts: { schedule: { interval: "manual" } } },
-          metadata: { viewrr_user_id: String(freelancer.id) },
-        });
-        await storage.updateStripeAccount(freelancer.id, { stripeAccountId: acct.id, stripeOnboarded: 0 });
-      }
-
-      const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData = useDirectTransfer
-        ? {
-            application_fee_amount: platformFeePence,
-            transfer_data: { destination: freelancer.stripeAccountId! },
-            metadata: {
-              projectId: String(projectId),
-              freelancerId: String(freelancer.id),
-              clientUserId: String(clientUserId),
-              payment_type: "direct_transfer",
-              viewrr_fee_pence: String(platformFeePence),
-              freelancer_pence: String(freelancerPence),
-            },
-          }
-        : {
-            metadata: {
-              projectId: String(projectId),
-              freelancerId: String(freelancer.id),
-              clientUserId: String(clientUserId),
-              payment_type: "platform_held",
-              viewrr_fee_pence: String(platformFeePence),
-              freelancer_pence: String(freelancerPence),
-              transfer_when_ready: "true",
-            },
-          };
-
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        mode: "payment",
-        line_items: [{
-          price_data: {
-            currency,
-            product_data: {
-              name: description ?? pw.project.title,
-              description: `Viewrr project payment — ${pw.project.title}`,
-            },
-            unit_amount: amountPence,
-          },
-          quantity: 1,
-        }],
-        payment_intent_data: paymentIntentData,
-        success_url: `${APP_BASE_URL}/your-work?payment=success&project=${projectId}`,
-        cancel_url:  `${APP_BASE_URL}/your-work?payment=cancelled&project=${projectId}`,
-        customer_email: (await storage.getUser(Number(clientUserId)))?.email,
-        metadata: {
-          projectId: String(projectId),
-          clientUserId: String(clientUserId),
-          freelancerId: String(freelancer.id),
-        },
-      });
-
       res.json({
-        url: session.url,
-        sessionId: session.id,
-        paymentStrategy: useDirectTransfer ? "direct_transfer" : "platform_held",
-        freelancerOnboarded: useDirectTransfer,
+        publicId: p.public_id,
+        status: p.status,
+        grossPence: p.gross_pence,
+        currency: p.currency,
+        succeededAt: p.succeeded_at,
+        failedAt: p.failed_at,
       });
     } catch (e: any) {
-      console.error("[stripe/create-payment]", e.message);
       res.status(500).json({ error: e.message });
     }
   });
 
-  // 5b. Create Payment Intent — for embedded card form (no redirect)
+  // Legacy endpoint kept for backward compat with old frontend — delegates to new service
   app.post("/api/stripe/create-payment-intent", async (req, res) => {
     try {
-      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { projectId, amountPence, clientUserId } = req.body;
-      if (!projectId || !amountPence || !clientUserId)
-        return res.status(400).json({ error: "projectId, amountPence, clientUserId required" });
+      const { projectId, amountPence: _ignore, clientUserId } = req.body;
+      if (!projectId || !clientUserId)
+        return res.status(400).json({ error: "projectId and clientUserId required" });
 
-      const pw = await storage.getProject(Number(projectId));
-      if (!pw) return res.status(404).json({ error: "Project not found" });
+      // Find or create the invoice for this project
+      const inv = await storage.getInvoiceByProject(Number(projectId));
+      if (!inv) return res.status(400).json({ error: "No invoice found for this project. Please create an invoice first." });
 
-      const freelancer = await storage.getUser(pw.project.freelancerId);
-      if (!freelancer) return res.status(404).json({ error: "Freelancer not found" });
-
-      const platformFeePence = Math.round(amountPence * (VIEWRR_FEE_PERCENT / 100));
-      const freelancerPence  = amountPence - platformFeePence;
-
-      // Ensure freelancer has a Stripe account (create silently if not)
-      let stripeAccountId = freelancer.stripeAccountId;
-      if (!stripeAccountId) {
-        const acct = await stripe.accounts.create({
-          type: "express", country: "GB", email: freelancer.email,
-          business_type: "individual",
-          capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
-          business_profile: { product_description: "Freelance creative services via Viewrr" },
-          settings: { payouts: { schedule: { interval: "manual" } } },
-          metadata: { viewrr_user_id: String(freelancer.id) },
-        });
-        stripeAccountId = acct.id;
-        await storage.updateStripeAccount(freelancer.id, { stripeAccountId: acct.id, stripeOnboarded: 0 });
-      }
-
-      // Check if freelancer is fully verified for direct transfer
-      let useDirectTransfer = false;
-      try {
-        const acct = await stripe.accounts.retrieve(stripeAccountId);
-        useDirectTransfer = acct.charges_enabled === true && acct.capabilities?.transfers === "active";
-      } catch { /* fall through */ }
-
-      const clientUser = await storage.getUser(Number(clientUserId));
-
-      const intentParams: Stripe.PaymentIntentCreateParams = {
-        amount: amountPence,
-        currency: "gbp",
-        automatic_payment_methods: { enabled: true },
-        receipt_email: clientUser?.email,
-        description: pw.project.title,
-        metadata: {
-          projectId: String(projectId),
-          freelancerId: String(freelancer.id),
-          clientUserId: String(clientUserId),
-          payment_type: useDirectTransfer ? "direct_transfer" : "platform_held",
-          viewrr_fee_pence: String(platformFeePence),
-          freelancer_pence: String(freelancerPence),
-          transfer_when_ready: useDirectTransfer ? "false" : "true",
-        },
-        ...(useDirectTransfer ? {
-          application_fee_amount: platformFeePence,
-          transfer_data: { destination: stripeAccountId },
-        } : {}),
-      };
-
-      const intent = await stripe.paymentIntents.create(intentParams);
-
+      const result = await createPayment(Number(projectId), inv.id, Number(clientUserId));
       res.json({
-        clientSecret: intent.client_secret,
-        paymentIntentId: intent.id,
-        amountPence,
-        freelancerOnboarded: useDirectTransfer,
-        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "",
+        clientSecret: result.clientSecret,
+        paymentIntentId: result.publicId,
+        amountPence: result.amountPence,
+        publishableKey: result.publishableKey,
       });
     } catch (e: any) {
-      console.error("[stripe/create-payment-intent]", e.message);
-      res.status(500).json({ error: e.message });
+      const status = (e as any).status ?? 500;
+      res.status(status).json({ error: e.message });
     }
   });
 
-  // 5c. Confirm payment after successful intent (mark project paid)
+  // FR-03: Browser notification only — fulfilment is handled by webhook
+  // This endpoint records that the client-side confirmed, but does NOT mark project paid
   app.post("/api/stripe/confirm-intent", async (req, res) => {
     try {
-      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
       const { paymentIntentId, projectId, clientUserId } = req.body;
-      if (!paymentIntentId || !projectId)
-        return res.status(400).json({ error: "paymentIntentId and projectId required" });
+      if (!paymentIntentId || !projectId) return res.status(400).json({ error: "paymentIntentId and projectId required" });
 
-      const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
-      if (intent.status !== "succeeded")
-        return res.status(400).json({ error: `Payment not succeeded: ${intent.status}` });
+      // Just verify the intent status with Stripe and return — webhook handles fulfilment
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+      const intent = await stripe.paymentIntents.retrieve(paymentIntentId as string);
 
-      const pw = await storage.getProject(Number(projectId));
-      if (!pw) return res.status(404).json({ error: "Project not found" });
-
-      const freelancer = await storage.getUser(pw.project.freelancerId);
-      const amountPence = intent.amount;
-      const freelancerPence = Number(intent.metadata?.freelancer_pence ?? amountPence);
-      const paymentType = intent.metadata?.payment_type;
-
-      // Update project to completed + paid
-      await storage.updateProjectStatus(Number(projectId), "completed", "paid");
-      // Mark invoice as paid if one exists
-      try {
-        const inv = await storage.getInvoiceByProject(Number(projectId));
-        if (inv) await storage.markInvoicePaid(inv.id);
-      } catch {}
-      // Notify freelancer
-      try {
-        await notify({
-          recipientId: pw.project.freelancerId,
-          actorId: pw.project.clientId,
-          actorName: pw.client?.name ?? "Client",
-          actorAvatar: pw.client?.avatar ?? null,
-          type: "payment_received",
-          message: `Payment received for "${pw.project.title}" — your work has been fully released.`,
-          link: "/your-work",
-          read: 0,
-        });
-      } catch {}
-
-      // If this is a retainer cycle payment, mark the cycle paid and advance
-      const cycleId = intent.metadata?.cycleId;
-      if (cycleId && intent.metadata?.retainer_cycle === "true") {
-        try {
-          await storage.updateRetainerCycle(Number(cycleId), { status: "paid", paymentStatus: "paid" });
-          const proj = pw.project;
-          if (proj?.totalCycles && (proj.currentCycleNumber ?? 1) >= proj.totalCycles) {
-            await storage.updateProjectStatus(Number(projectId), "completed", "paid");
-          } else {
-            await storage.startNextCycle(Number(projectId));
-          }
-        } catch (ce: any) { console.error("[confirm-intent] cycle error", ce.message); }
+      if (intent.status !== "succeeded") {
+        return res.status(200).json({ ok: false, status: intent.status, message: "Payment still processing — project will update automatically" });
       }
 
-      // If freelancer is fully onboarded, transfer immediately
-      if (paymentType === "direct_transfer") {
-        // Transfer already set up via transfer_data on the intent
-      } else if (freelancer?.stripeAccountId) {
-        // Platform-held: try to transfer now if they're verified
-        try {
-          const acct = await stripe.accounts.retrieve(freelancer.stripeAccountId);
-          if (acct.charges_enabled && acct.capabilities?.transfers === "active") {
-            await stripe.transfers.create({
-              amount: freelancerPence,
-              currency: "gbp",
-              destination: freelancer.stripeAccountId,
-              source_transaction: typeof intent.latest_charge === "string" ? intent.latest_charge : undefined,
-              metadata: { projectId: String(projectId), viewrr_transfer: "on_confirm" },
-            });
-            await storage.updateStripeAccount(freelancer.id, { stripePendingPence: 0 });
-          } else {
-            // Hold it — add to pending
-            const current = freelancer.stripePendingPence ?? 0;
-            await storage.updateStripeAccount(freelancer.id, { stripePendingPence: current + freelancerPence });
-          }
-        } catch (te: any) {
-          console.error("[confirm-intent] transfer error", te.message);
-          const current = freelancer.stripePendingPence ?? 0;
-          await storage.updateStripeAccount(freelancer.id, { stripePendingPence: current + freelancerPence });
-        }
-      }
-
-      res.json({ ok: true, projectStatus: "completed", paymentStatus: "paid" });
+      // Payment succeeded client-side — return status. Webhook will fulfil.
+      res.json({ ok: true, status: "processing", message: "Payment confirmed. Project will update within moments." });
     } catch (e: any) {
-      console.error("[stripe/confirm-intent]", e.message);
       res.status(500).json({ error: e.message });
     }
   });
 
-  // 5. Webhook — MUST use raw body parser (registered before JSON middleware)
-  // Note: this route reads raw bytes; Express json() middleware must NOT parse it
+  // ─── PRD-007: Hardened Stripe Webhook ─────────────────────────────────────────
+  // MUST be before any JSON body parser — raw body required for signature verification
   app.post("/api/stripe/webhook",
     (req, res, next) => {
       let data = Buffer.alloc(0);
@@ -2287,6 +2152,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       req.on("end",  () => { (req as any).rawBody = data; next(); });
     },
     async (req, res) => {
+      const correlationId = `wh_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       try {
         if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
         const sig = req.headers["stripe-signature"] as string;
@@ -2302,161 +2168,310 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           return res.status(400).json({ error: "Invalid signature" });
         }
 
-        // ─ checkout.session.completed ─────────────────────────────────────
-        if (event.type === "checkout.session.completed") {
-          const session = event.data.object as Stripe.Checkout.Session;
-          const pi = await stripe.paymentIntents.retrieve(session.payment_intent as string);
-          const meta = pi.metadata;
-
-          if (meta.payment_type === "platform_held") {
-            const freelancerId = Number(meta.freelancerId);
-            const freelancerPence = Number(meta.freelancer_pence ?? 0);
-            const user = await storage.getUser(freelancerId);
-            if (user) {
-              const newPending = (user.stripePendingPence ?? 0) + freelancerPence;
-              await storage.updateStripeAccount(freelancerId, { stripePendingPence: newPending });
-              console.log(`[webhook] Holding ${freelancerPence}p for freelancer ${freelancerId} (total: ${newPending}p)`);
-            }
-            // Mark project as paid
-            const projectId = Number(meta.projectId);
-            if (projectId) {
-              await storage.updateProjectStatus(projectId, "completed", "paid");
-              try {
-                const inv = await storage.getInvoiceByProject(projectId);
-                if (inv) await storage.markInvoicePaid(inv.id);
-              } catch {}
-            }
-          } else if (meta.payment_type === "direct_transfer") {
-            // Direct transfer — just mark project paid
-            const projectId = Number(meta.projectId);
-            if (projectId) {
-              await storage.updateProjectStatus(projectId, "completed", "paid");
-              try {
-                const inv = await storage.getInvoiceByProject(projectId);
-                if (inv) await storage.markInvoicePaid(inv.id);
-              } catch {}
-            }
-            console.log(`[webhook] Direct transfer complete for project ${meta.projectId}`);
-          }
-
-          // Notify both parties
-          const projectId = Number(meta.projectId);
-          if (projectId) {
-            const pw = await storage.getProject(projectId);
-            if (pw) {
-              await notify({
-                recipientId: pw.project.freelancerId,
-                actorId: pw.project.clientId,
-                actorName: pw.client.name,
-                actorAvatar: pw.client.avatar ?? null,
-                type: "payment_received",
-                message: `Payment received for "${pw.project.title}"`,
-                link: "/your-work",
-                read: 0,
-              });
-            }
-          }
+        // FR-09: Idempotent event store — claim before processing
+        const shouldProcess = await claimStripeEvent(
+          event.id,
+          event.type,
+          event.livemode,
+          event.api_version ?? ""
+        );
+        if (!shouldProcess) {
+          return res.json({ received: true, duplicate: true });
         }
 
-        // ─ account.updated (freelancer completed onboarding) ──────────────
-        if (event.type === "account.updated") {
-          const account = event.data.object as Stripe.Account;
-          const fullyVerified = account.charges_enabled === true && account.capabilities?.transfers === "active";
-          if (!fullyVerified) return res.json({ received: true });
+        // Acknowledge receipt immediately (Stripe requires 200 within 30s)
+        // Processing happens synchronously here but with idempotency guard
+        try {
+          // FR-10: P0 event handlers
+          switch (event.type) {
 
-          // Find the user by stripeAccountId
-          // We stored viewrr_user_id in metadata at account creation
-          const viewrrUserId = Number(account.metadata?.viewrr_user_id);
-          if (!viewrrUserId) return res.json({ received: true });
-
-          const user = await storage.getUser(viewrrUserId);
-          if (!user) return res.json({ received: true });
-
-          const pendingPence = user.stripePendingPence ?? 0;
-          const stripeAccountId = user.stripeAccountId!;
-
-          // ── Step 1: Set minimum payout delay (2 days) + daily schedule ──────
-          // This runs for ALL newly verified accounts, before anything else.
-          // delay_days_override = 2 is the UK minimum — cuts the rolling window
-          // from 7 days down to 2 business days for all future payouts.
-          try {
-            await stripe.accounts.update(stripeAccountId, {
-              settings: {
-                payouts: {
-                  schedule: { interval: "daily", delay_days: 2 },
-                },
-              },
-            });
-            console.log(`[webhook] Set payout delay to 2 days for account ${stripeAccountId}`);
-          } catch (err: any) {
-            // Non-fatal — log and continue
-            console.warn(`[webhook] Could not set delay_days for ${stripeAccountId}:`, err.message);
-          }
-
-          // ── Step 2: Pre-charge transfer to start the payout clock ────────────
-          // A £1 transfer from the Viewrr platform balance to the freelancer's
-          // connected account starts the 7-day first-payout clock immediately.
-          // This means by the time their first real client payment arrives,
-          // the waiting period is already counting down (or may already be done).
-          // Idempotency key ensures this only ever fires once per account.
-          const prechargeKey = `precharge_clock_${stripeAccountId}`;
-          try {
-            await stripe.transfers.create({
-              amount: 35, // £0.35 in pence
-              currency: "gbp",
-              destination: stripeAccountId,
-              description: "Viewrr welcome credit — starts your payout clock",
-              metadata: {
-                viewrr_user_id: String(viewrrUserId),
-                type: "payout_clock_starter",
-              },
-            }, { idempotencyKey: prechargeKey });
-            console.log(`[webhook] Pre-charge £1 sent to ${stripeAccountId} to start payout clock`);
-          } catch (err: any) {
-            // Non-fatal — if this fails (e.g. insufficient platform balance) log it
-            console.warn(`[webhook] Pre-charge transfer failed for ${stripeAccountId}:`, err.message);
-          }
-
-          // ── Step 3: Release any held earnings ────────────────────────────────
-          if (pendingPence > 0) {
-            try {
-              await stripe.transfers.create({
-                amount: pendingPence,
-                currency: "gbp",
-                destination: stripeAccountId,
-                description: `Viewrr held earnings release for user ${viewrrUserId}`,
-                metadata: { viewrr_user_id: String(viewrrUserId) },
-              }, { idempotencyKey: `transfer_${viewrrUserId}_${Date.now()}` });
-
-              await storage.updateStripeAccount(viewrrUserId, { stripeOnboarded: 1, stripePendingPence: 0 });
-              console.log(`[webhook] Released ${pendingPence}p to user ${viewrrUserId}`);
-
-              await notify({
-                recipientId: viewrrUserId,
-                actorId: viewrrUserId,
-                actorName: "Viewrr",
-                actorAvatar: null,
-                type: "payment_received",
-                message: `Your Stripe account is verified and £${(pendingPence / 100).toFixed(2)} has been released to your bank.`,
-                link: "/your-work",
-                read: 0,
-              });
-            } catch (err: any) {
-              console.error("[webhook] Transfer failed:", err.message);
+            case "payment_intent.succeeded": {
+              const intent = event.data.object as Stripe.PaymentIntent;
+              await handlePaymentIntentSucceeded(intent, correlationId);
+              break;
             }
-          } else {
-            // No pending earnings — just mark as onboarded
-            await storage.updateStripeAccount(viewrrUserId, { stripeOnboarded: 1 });
+
+            case "payment_intent.payment_failed": {
+              const intent = event.data.object as Stripe.PaymentIntent;
+              const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
+              if (viewrrPaymentId) {
+                // Update payment status to failed
+                const sqlClient = neon(process.env.DATABASE_URL!);
+                await sqlClient(
+                  "UPDATE payments SET status='failed', failed_at=$1, version=version+1 WHERE public_id=$2 AND status NOT IN ('succeeded','refunded')",
+                  [new Date().toISOString(), viewrrPaymentId]
+                );
+                await auditLog({
+                  actorType: "webhook",
+                  action: "payment_intent_failed",
+                  afterState: { paymentIntentId: intent.id, failureCode: intent.last_payment_error?.code },
+                  correlationId,
+                });
+              }
+              break;
+            }
+
+            case "payment_intent.canceled": {
+              const intent = event.data.object as Stripe.PaymentIntent;
+              const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
+              if (viewrrPaymentId) {
+                const sqlClient = neon(process.env.DATABASE_URL!);
+                await sqlClient(
+                  "UPDATE payments SET status='cancelled', cancelled_at=$1, version=version+1 WHERE public_id=$2",
+                  [new Date().toISOString(), viewrrPaymentId]
+                );
+              }
+              break;
+            }
+
+            case "charge.refunded": {
+              // Handled by refund workflow — log for audit
+              const charge = event.data.object as Stripe.Charge;
+              console.log("[webhook] charge.refunded:", charge.id, "amount_refunded:", charge.amount_refunded);
+              break;
+            }
+
+            case "refund.created":
+            case "refund.updated": {
+              const refund = event.data.object as Stripe.Refund;
+              const viewrrRefundId = refund.metadata?.viewrr_refund_id;
+              if (viewrrRefundId && refund.status) {
+                const sqlClient = neon(process.env.DATABASE_URL!);
+                const newStatus = refund.status === "succeeded" ? "succeeded" : refund.status === "failed" ? "failed" : "processing";
+                await sqlClient(
+                  "UPDATE payment_refunds SET status=$1, stripe_refund_id=$2 WHERE public_id=$3",
+                  [newStatus, refund.id, viewrrRefundId]
+                );
+              }
+              break;
+            }
+
+            case "transfer.reversed": {
+              const transfer = event.data.object as Stripe.Transfer;
+              const sqlClient = neon(process.env.DATABASE_URL!);
+              await sqlClient(
+                "UPDATE payment_transfers SET status='partially_reversed', reversed_pence=$1 WHERE stripe_transfer_id=$2",
+                [transfer.amount_reversed, transfer.id]
+              );
+              break;
+            }
+
+            // FR-13: account.updated — sync readiness + release held earnings
+            case "account.updated": {
+              const account = event.data.object as Stripe.Account;
+              const viewrrUserId = Number(account.metadata?.viewrr_user_id);
+              if (!viewrrUserId) break;
+
+              const user = await storage.getUser(viewrrUserId);
+              if (!user) break;
+
+              // Sync Connect account state
+              await syncConnectAccount(viewrrUserId, account.id);
+
+              const isReady =
+                account.charges_enabled === true &&
+                (account.capabilities as any)?.transfers === "active";
+
+              if (isReady) {
+                // FR-12: NO 35p payout clock transfer
+                // FR-08: release held earnings from ledger (not stripePendingPence)
+                await releaseHeldEarnings(viewrrUserId, account.id, correlationId);
+                await storage.createNotification({
+                  recipientId: viewrrUserId,
+                  actorId: viewrrUserId,
+                  actorName: "Viewrr",
+                  actorAvatar: null,
+                  type: "payment_received",
+                  // FR-16: accurate messaging — "allocated to Stripe balance" not "paid to bank"
+                  message: "Your Stripe account is verified. Any pending earnings have been allocated to your Stripe balance.",
+                  link: "/your-work",
+                  read: 0,
+                });
+              }
+              break;
+            }
+
+            // FR-10: P1 payout events
+            case "payout.created":
+            case "payout.updated":
+            case "payout.paid":
+            case "payout.failed": {
+              const payout = event.data.object as Stripe.Payout;
+              // Find freelancer by connected account
+              const accountId = (event as any).account as string | undefined;
+              if (accountId) {
+                const sqlClient = neon(process.env.DATABASE_URL!);
+                const users = await sqlClient(
+                  "SELECT id FROM users WHERE stripe_account_id = $1 LIMIT 1",
+                  [accountId]
+                );
+                if (users.length) {
+                  const freelancerId = users[0].id;
+                  const status =
+                    event.type === "payout.paid" ? "paid" :
+                    event.type === "payout.failed" ? "failed" :
+                    event.type === "payout.created" ? "pending" : "in_transit";
+
+                  await sqlClient(
+                    `INSERT INTO payment_payouts (freelancer_id, stripe_payout_id, amount_pence, currency, status, arrival_date, failure_code, created_at, paid_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                     ON CONFLICT (stripe_payout_id) DO UPDATE SET status=$5, paid_at=$9`,
+                    [
+                      freelancerId,
+                      payout.id,
+                      payout.amount,
+                      payout.currency,
+                      status,
+                      payout.arrival_date ? new Date(payout.arrival_date * 1000).toISOString() : null,
+                      (payout as any).failure_code ?? null,
+                      new Date().toISOString(),
+                      event.type === "payout.paid" ? new Date().toISOString() : null,
+                    ]
+                  );
+
+                  if (event.type === "payout.paid") {
+                    // FR-16: accurate "Stripe has marked your payout as paid"
+                    await storage.createNotification({
+                      recipientId: freelancerId,
+                      actorId: null,
+                      actorName: "Viewrr",
+                      actorAvatar: null,
+                      type: "payment_received",
+                      message: `Stripe has marked your payout of £${(payout.amount / 100).toFixed(2)} as paid.`,
+                      link: "/your-work",
+                      read: 0,
+                    });
+                  } else if (event.type === "payout.failed") {
+                    await storage.createNotification({
+                      recipientId: freelancerId,
+                      actorId: null,
+                      actorName: "Viewrr",
+                      actorAvatar: null,
+                      type: "payment_received",
+                      message: `A payout of £${(payout.amount / 100).toFixed(2)} failed. Please check your Stripe account.`,
+                      link: "/your-work",
+                      read: 0,
+                    });
+                  }
+                }
+              }
+              break;
+            }
+
+            case "charge.dispute.created": {
+              const dispute = event.data.object as Stripe.Dispute;
+              console.warn("[webhook] Dispute created:", dispute.id, "charge:", dispute.charge);
+              // Alert admin — in production this would create an admin exception record
+              await auditLog({
+                actorType: "webhook",
+                action: "dispute_created",
+                afterState: { disputeId: dispute.id, chargeId: dispute.charge, amount: dispute.amount },
+                correlationId,
+              });
+              break;
+            }
+
+            default:
+              // Log unhandled event types for observability
+              console.log("[webhook] Unhandled event type:", event.type);
           }
+
+          await markEventProcessed(event.id);
+          res.json({ received: true });
+
+        } catch (processingError: any) {
+          console.error("[webhook] Processing error:", processingError.message);
+          await markEventProcessed(event.id, processingError.message);
+          // Still return 200 to prevent Stripe retrying — we handle internally
+          res.json({ received: true, error: "processing_failed" });
         }
 
-        res.json({ received: true });
       } catch (e: any) {
-        console.error("[stripe/webhook] Error:", e.message);
+        console.error("[stripe/webhook] Fatal error:", e.message);
         res.status(500).json({ error: e.message });
       }
     }
   );
+
+  // ─── PRD-007: Admin Refund & Reconciliation Routes ────────────────────────────
+
+  // FR-05: Admin-only refund endpoint
+  app.post("/api/admin/payments/:paymentPublicId/refunds", async (req, res) => {
+    try {
+      const { userId, amountPence, reasonCode, internalNote, notifyParties } = req.body;
+      if (!userId) return res.status(401).json({ error: "userId required" });
+      const admin = await storage.getUser(Number(userId));
+      if (!admin?.isAdmin) return res.status(403).json({ error: "Admin access required" });
+
+      const refund = await initiateRefund({
+        paymentPublicId: req.params.paymentPublicId,
+        amountPence: Number(amountPence),
+        reasonCode,
+        internalNote,
+        requestedBy: admin.id,
+        notifyParties: notifyParties !== false,
+      });
+
+      res.json(refund);
+    } catch (e: any) {
+      const status = (e as any).status ?? 500;
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  // FR-07, FR-18: Admin reconciliation
+  app.post("/api/admin/payments/:paymentId/reconcile", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      const admin = await storage.getUser(Number(userId));
+      if (!admin?.isAdmin) return res.status(403).json({ error: "Admin access required" });
+
+      const result = await reconcilePayment(Number(req.params.paymentId));
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Admin ledger view
+  app.get("/api/admin/payments", async (req, res) => {
+    try {
+      const { userId } = req.query;
+      const admin = await storage.getUser(Number(userId));
+      if (!admin?.isAdmin) return res.status(403).json({ error: "Admin access required" });
+
+      const sqlClient = neon(process.env.DATABASE_URL!);
+      const rows = await sqlClient(
+        "SELECT p.*, pt.stripe_transfer_id, pt.status as transfer_status, pt.reversed_pence FROM payments p LEFT JOIN payment_transfers pt ON pt.payment_id = p.id ORDER BY p.created_at DESC LIMIT 100"
+      );
+      res.json({ payments: rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/admin/payments/:paymentPublicId", async (req, res) => {
+    try {
+      const { userId } = req.query;
+      const admin = await storage.getUser(Number(userId));
+      if (!admin?.isAdmin) return res.status(403).json({ error: "Admin access required" });
+
+      const sqlClient = neon(process.env.DATABASE_URL!);
+      const [payment] = await sqlClient(
+        "SELECT * FROM payments WHERE public_id=$1 LIMIT 1",
+        [req.params.paymentPublicId]
+      );
+      if (!payment) return res.status(404).json({ error: "Payment not found" });
+
+      const transfers = await sqlClient("SELECT * FROM payment_transfers WHERE payment_id=$1", [payment.id]);
+      const refunds = await sqlClient("SELECT * FROM payment_refunds WHERE payment_id=$1", [payment.id]);
+      const audit = await sqlClient("SELECT * FROM payment_audit_log WHERE payment_id=$1 ORDER BY created_at ASC", [payment.id]);
+
+      res.json({ payment, transfers, refunds, audit });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // ─── Agency Routes ────────────────────────────────────────────────────────────────
 
