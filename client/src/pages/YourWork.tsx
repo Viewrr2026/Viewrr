@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/components/AuthProvider";
@@ -1819,18 +1819,32 @@ function EarningsBanner({ userId, onSetupClick }: { userId: number; onSetupClick
 
 // ── Payouts Panel (freelancer only) ───────────────────────────────────────────
 function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSetup?: number }) {
+  const queryClient = useQueryClient();
   const [popupOpen, setPopupOpen] = useState(false);
   const [popupDone, setPopupDone] = useState(false);
+  const [showTermsModal, setShowTermsModal] = useState(false);
+  const [termsRead, setTermsRead] = useState(false);
+  const [acceptingTerms, setAcceptingTerms] = useState(false);
   const popupRef = useRef<Window | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevTrigger = useRef(0);
 
+  // FR-09: always refetch on mount (auto-sync)
   const { data: status, isLoading, refetch } = useQuery<{
     connected: boolean;
-    onboarded: boolean;
+    stripeAccountId?: string;
+    onboarded?: boolean;
     chargesEnabled?: boolean;
-    pendingPence: number;
-    error?: string;
+    payoutsEnabled?: boolean;
+    identityVerified?: boolean;
+    automaticPayoutsEnabled?: boolean;
+    viewrrTermsAccepted?: boolean;
+    viewrrTermsAcceptedAt?: string | null;
+    transfersReady?: boolean;
+    pendingPence?: number;
+    readinessState?: string;
+    disabledReason?: string | null;
+    pendingRequirements?: string[];
   }>({
     queryKey: ["/api/stripe/status", userId],
     queryFn: async () => {
@@ -1838,28 +1852,26 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
       if (!res.ok) return { connected: false, onboarded: false, pendingPence: 0 };
       return res.json();
     },
-    staleTime: 30_000,
+    staleTime: 0,          // always fresh — FR-09
     refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 
-  // Poll for status while popup is open, detect when it closes
   const startPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
-      // If popup closed by user
       if (popupRef.current?.closed) {
         clearInterval(pollRef.current!);
         setPopupOpen(false);
         await refetch();
         return;
       }
-      // Poll status
       try {
         const res = await apiRequest("GET", `/api/stripe/status/${userId}`);
         if (res.ok) {
           const data = await res.json();
           queryClient.setQueryData(["/api/stripe/status", userId], data);
-          if (data.onboarded) {
+          if (data.chargesEnabled || data.identityVerified) {
             clearInterval(pollRef.current!);
             popupRef.current?.close();
             setPopupOpen(false);
@@ -1874,13 +1886,49 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
+  // FR-03/FR-04: Accept Viewrr terms via dedicated endpoint
+  const handleAcceptTerms = async () => {
+    setAcceptingTerms(true);
+    try {
+      const res = await apiRequest("POST", "/api/stripe/accept-terms", { userId });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || "Could not save terms acceptance");
+      }
+      setShowTermsModal(false);
+      // Now proceed with the connect flow
+      await refetch();
+      connectMutation.mutate();
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setAcceptingTerms(false);
+    }
+  };
+
   const connectMutation = useMutation({
     mutationFn: async () => {
+      // FR-01/FR-02: send userId only — server handles existing account detection
       const res1 = await apiRequest("POST", "/api/stripe/connect-account", { userId });
-      if (!res1.ok) {
-        const b = await res1.json().catch(() => ({}));
-        throw new Error(b.error || "Could not create Stripe account");
+      const data1 = await res1.json().catch(() => ({}));
+
+      // FR-07: Handle structured VIEWRR_PAYMENT_TERMS_REQUIRED response
+      if (data1.code === "VIEWRR_PAYMENT_TERMS_REQUIRED") {
+        setShowTermsModal(true);
+        return "terms_required";
       }
+
+      if (!res1.ok) {
+        throw new Error(data1.error || "Could not set up Stripe account");
+      }
+
+      // If existing verified account with terms already accepted — no onboarding needed
+      if (data1.alreadyExists && data1.viewrrTermsAccepted) {
+        await refetch();
+        return "already_connected";
+      }
+
+      // Proceed to onboarding link
       const res2 = await apiRequest("POST", "/api/stripe/onboarding-link", { userId });
       if (!res2.ok) {
         const b = await res2.json().catch(() => ({}));
@@ -1889,29 +1937,24 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
       const { url } = await res2.json();
       return url as string;
     },
-    onSuccess: (url) => {
-      // Open centered popup instead of redirecting
+    onSuccess: (result) => {
+      if (result === "terms_required" || result === "already_connected") return;
+      const url = result as string;
       const w = 520, h = 720;
       const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
       const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
-      const popup = window.open(
-        url,
-        "stripe_onboarding",
-        `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
-      );
+      const popup = window.open(url, "stripe_onboarding", `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`);
       if (popup) {
         popupRef.current = popup;
         setPopupOpen(true);
         setPopupDone(false);
         startPolling();
       } else {
-        // Popup blocked — fallback to redirect
         window.location.href = url;
       }
     },
   });
 
-  // When EarningsBanner "Collect now" is clicked, auto-fire the setup
   useEffect(() => {
     if (triggerSetup > 0 && triggerSetup !== prevTrigger.current && !popupOpen) {
       prevTrigger.current = triggerSetup;
@@ -1920,82 +1963,110 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [triggerSetup]);
 
-  const pendingGBP = status ? (status.pendingPence / 100).toFixed(2) : "0.00";
+  const pendingGBP = ((status?.pendingPence ?? 0) / 100).toFixed(2);
+  const isFullyActive = status?.connected && (status?.chargesEnabled || status?.identityVerified) && status?.viewrrTermsAccepted;
+  const needsTermsOnly = status?.connected && !status?.viewrrTermsAccepted;
+
+  // FR-06: Status items for the status card
+  const statusItems = status?.connected ? [
+    { label: "Connected", ok: !!status.connected },
+    { label: "Identity Verified", ok: !!(status.identityVerified || status.detailsSubmitted) },
+    { label: "Transfers Enabled", ok: !!(status.transfersReady || status.chargesEnabled) },
+    { label: "Automatic Payouts", ok: !!(status.automaticPayoutsEnabled || status.payoutsEnabled) },
+    { label: "Viewrr Terms Accepted", ok: !!status.viewrrTermsAccepted },
+  ] : null;
 
   return (
     <>
-      {/* Popup waiting overlay */}
-      {popupOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center"
-          style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}
-        >
-          <div
-            className="relative w-full max-w-sm mx-4 rounded-2xl border border-border bg-card p-8 flex flex-col items-center text-center"
-            style={{ boxShadow: "0 24px 64px rgba(0,0,0,0.3)" }}
-          >
-            {/* Animated ring */}
-            <div className="relative mb-6">
-              <div
-                className="w-16 h-16 rounded-full flex items-center justify-center"
-                style={{ background: "rgba(255,90,31,0.12)" }}
+      {/* FR-05: Viewrr terms modal */}
+      {showTermsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}>
+          <div className="relative w-full max-w-md mx-4 rounded-2xl border border-border bg-card p-6 flex flex-col gap-4" style={{ boxShadow: "0 24px 64px rgba(0,0,0,0.3)" }}>
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-2xl flex items-center justify-center shrink-0" style={{ background: "rgba(255,90,31,0.1)" }}>
+                <Banknote size={18} style={{ color: "#FF5A1F" }} />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">Accept Viewrr Payment Terms</p>
+                <p className="text-xs text-muted-foreground">Your Stripe account is already connected</p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border bg-secondary/40 px-4 py-3 space-y-2 text-xs text-muted-foreground leading-relaxed max-h-56 overflow-y-auto">
+              <p className="font-semibold text-foreground">Viewrr Payments & Stripe Connect Disclosure</p>
+              <p>By accepting, you confirm:</p>
+              <ul className="list-disc list-inside space-y-1 pl-1">
+                <li>Viewrr collects an 11% platform fee on each payment.</li>
+                <li>Payments are processed by Stripe on behalf of Viewrr.</li>
+                <li>Funds are allocated to your Stripe balance after payment confirmation. Arrival at your bank depends on your Stripe payout schedule.</li>
+                <li>Refunds may be initiated by Viewrr if a valid dispute is upheld.</li>
+                <li>You authorise Viewrr to use Stripe Connect to facilitate transfers to your connected account.</li>
+                <li>You have read and agree to <a href="https://stripe.com/gb/connect-account/legal" target="_blank" rel="noopener noreferrer" className="underline text-foreground">Stripe Connected Account Agreement</a>.</li>
+              </ul>
+              <p className="text-[10px] text-muted-foreground/70 mt-2">Version 1.0 — effective 1 January 2026</p>
+            </div>
+
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={termsRead}
+                onChange={e => setTermsRead(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-xs text-muted-foreground">I have read and agree to the Viewrr payment terms above.</span>
+            </label>
+
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                className="flex-1 text-white rounded-full text-xs"
+                style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                disabled={!termsRead || acceptingTerms}
+                onClick={handleAcceptTerms}
               >
+                {acceptingTerms ? <><LoaderIcon size={12} className="animate-spin mr-1.5" />Saving…</> : "Accept & continue"}
+              </Button>
+              <Button size="sm" variant="outline" className="rounded-full text-xs" onClick={() => setShowTermsModal(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stripe popup overlay */}
+      {popupOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)" }}>
+          <div className="relative w-full max-w-sm mx-4 rounded-2xl border border-border bg-card p-8 flex flex-col items-center text-center" style={{ boxShadow: "0 24px 64px rgba(0,0,0,0.3)" }}>
+            <div className="relative mb-6">
+              <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ background: "rgba(255,90,31,0.12)" }}>
                 <Banknote size={28} style={{ color: "#FF5A1F" }} />
               </div>
-              {/* Spinning ring */}
               <svg className="absolute inset-0 w-16 h-16" viewBox="0 0 64 64" style={{ animation: "spin 2s linear infinite" }}>
-                <circle cx="32" cy="32" r="29" fill="none" stroke="#FF5A1F" strokeWidth="2.5"
-                  strokeDasharray="60 120" strokeLinecap="round" />
+                <circle cx="32" cy="32" r="29" fill="none" stroke="#FF5A1F" strokeWidth="2.5" strokeDasharray="60 120" strokeLinecap="round" />
               </svg>
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
-
             <h3 className="text-base font-semibold mb-1">Verifying your identity</h3>
             <p className="text-xs text-muted-foreground leading-relaxed mb-6">
               Complete the steps in the Stripe window that just opened.<br />
               This page will update automatically when you're done.
             </p>
-
-            {/* Pulse dots */}
             <div className="flex items-center gap-1.5 mb-6">
               {[0, 1, 2].map((i) => (
-                <span
-                  key={i}
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{
-                    background: "#FF5A1F",
-                    animation: `pulse-dot 1.4s ease-in-out ${i * 0.2}s infinite`,
-                    opacity: 0.3,
-                  }}
-                />
+                <span key={i} className="w-1.5 h-1.5 rounded-full" style={{ background: "#FF5A1F", animation: `pulse-dot 1.4s ease-in-out ${i * 0.2}s infinite`, opacity: 0.3 }} />
               ))}
-              <style>{`
-                @keyframes pulse-dot {
-                  0%, 80%, 100% { opacity: 0.3; transform: scale(1); }
-                  40% { opacity: 1; transform: scale(1.4); }
-                }
-              `}</style>
+              <style>{`@keyframes pulse-dot { 0%, 80%, 100% { opacity: 0.3; transform: scale(1); } 40% { opacity: 1; transform: scale(1.4); } }`}</style>
             </div>
-
             <div className="flex items-center gap-3 w-full">
-              <Button
-                variant="outline"
-                size="sm"
-                className="flex-1 rounded-full text-xs"
-                onClick={() => { popupRef.current?.focus(); }}
-              >
+              <Button variant="outline" size="sm" className="flex-1 rounded-full text-xs" onClick={() => popupRef.current?.focus()}>
                 Bring window to front
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="rounded-full text-xs text-muted-foreground"
-                onClick={() => {
-                  popupRef.current?.close();
-                  if (pollRef.current) clearInterval(pollRef.current);
-                  setPopupOpen(false);
-                }}
-              >
+              <Button size="sm" variant="ghost" className="rounded-full text-xs text-muted-foreground" onClick={() => {
+                popupRef.current?.close();
+                if (pollRef.current) clearInterval(pollRef.current);
+                setPopupOpen(false);
+              }}>
                 Cancel
               </Button>
             </div>
@@ -2009,12 +2080,17 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
             <Banknote size={16} className="text-primary" />
             <span className="text-sm font-semibold">Payouts</span>
           </div>
-          {status?.onboarded && (
+          {isFullyActive && (
             <span className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full" style={{ background: "rgba(34,197,94,0.1)", color: "#16a34a" }}>
               <BadgeCheck size={12} /> Active
             </span>
           )}
-          {status?.connected && !status.onboarded && (
+          {needsTermsOnly && (
+            <span className="text-xs font-medium text-amber-600 dark:text-amber-400 px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-900/20">
+              Terms needed
+            </span>
+          )}
+          {status?.connected && !status?.identityVerified && !needsTermsOnly && (
             <span className="text-xs font-medium text-amber-600 dark:text-amber-400 px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-900/20">
               Verification needed
             </span>
@@ -2027,77 +2103,121 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
               <LoaderIcon size={14} className="animate-spin" />
               Checking payout status…
             </div>
-          ) : popupDone || status?.onboarded ? (
-            <div className="space-y-3">
-              {popupDone && !status?.onboarded && (
-                <div
-                  className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium"
-                  style={{ background: "rgba(34,197,94,0.08)", color: "#16a34a", border: "1px solid rgba(34,197,94,0.2)" }}
-                >
+          ) : (
+            <div className="space-y-4">
+              {/* FR-06: Status card — always shown when connected */}
+              {statusItems && (
+                <div className="rounded-xl border border-border bg-secondary/30 p-3 space-y-2">
+                  {statusItems.map(item => (
+                    <div key={item.label} className="flex items-center gap-2.5">
+                      {item.ok
+                        ? <CheckCircle2 size={13} className="text-green-500 shrink-0" />
+                        : <AlertCircle size={13} className="text-amber-500 shrink-0" />}
+                      <span className={`text-xs ${item.ok ? "text-foreground" : "text-muted-foreground"}`}>{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Submission pending state */}
+              {popupDone && !status?.identityVerified && (
+                <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium" style={{ background: "rgba(34,197,94,0.08)", color: "#16a34a", border: "1px solid rgba(34,197,94,0.2)" }}>
                   <CheckCircle2 size={14} />
                   Verification submitted — Stripe is processing your details.
                 </div>
               )}
-              <div className="flex items-center gap-2.5 text-sm">
-                <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />
-                <span className="text-muted-foreground">Your bank account is connected. Payments go to you automatically.</span>
-              </div>
-              {status && status.pendingPence > 0 && (
-                <div className="flex items-center justify-between px-4 py-3 rounded-xl bg-secondary/60 border border-border">
-                  <div className="flex items-center gap-2">
-                    <DollarSign size={14} className="text-primary" />
-                    <span className="text-xs font-semibold">Pending earnings</span>
+
+              {/* FR-05: Existing account + missing Viewrr terms — friendly message, no raw 400 */}
+              {needsTermsOnly && (
+                <div className="space-y-3">
+                  <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.2)" }}>
+                    <CheckCircle2 size={15} style={{ color: "#FF5A1F" }} className="mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-xs font-semibold">Your Stripe account is already connected</p>
+                      <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                        You just need to accept Viewrr's payment terms to start receiving payments. This takes under 30 seconds.
+                      </p>
+                    </div>
                   </div>
-                  <span className="text-sm font-bold" style={{ color: "#FF5A1F" }}>£{pendingGBP}</span>
+                  <Button
+                    size="sm"
+                    className="text-white rounded-full gap-2 text-xs w-full"
+                    style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                    onClick={() => setShowTermsModal(true)}
+                    data-testid="btn-review-terms"
+                  >
+                    Review & Accept Terms →
+                  </Button>
                 </div>
               )}
-            </div>
-          ) : status?.connected && !status.onboarded ? (
-            <div className="space-y-3">
-              <div className="flex items-start gap-2.5">
-                <AlertCircle size={15} className="text-amber-500 mt-0.5 flex-shrink-0" />
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Your Stripe account exists but needs verification to receive payments. Complete your details to unlock payouts.
-                  {status.pendingPence > 0 && (
-                    <span className="block mt-1 font-medium text-foreground">£{pendingGBP} is held and will be released once verified.</span>
+
+              {/* Active state */}
+              {isFullyActive && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2.5 text-sm">
+                    <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />
+                    <span className="text-muted-foreground">Your bank account is connected. Payments are paid out automatically.</span>
+                  </div>
+                  {(status?.pendingPence ?? 0) > 0 && (
+                    <div className="flex items-center justify-between px-4 py-3 rounded-xl bg-secondary/60 border border-border">
+                      <div className="flex items-center gap-2">
+                        <DollarSign size={14} className="text-primary" />
+                        <span className="text-xs font-semibold">Pending earnings</span>
+                      </div>
+                      <span className="text-sm font-bold" style={{ color: "#FF5A1F" }}>£{pendingGBP}</span>
+                    </div>
                   )}
-                </p>
-              </div>
-              <Button
-                size="sm"
-                className="text-white rounded-full gap-2 text-xs"
-                style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                onClick={() => connectMutation.mutate()}
-                disabled={connectMutation.isPending}
-                data-testid="btn-complete-verification"
-              >
-                {connectMutation.isPending
-                  ? <><LoaderIcon size={12} className="animate-spin" /> Opening…</>
-                  : <>Complete verification →</>}
-              </Button>
-              {connectMutation.isError && (
-                <p className="text-xs text-destructive">{(connectMutation.error as any)?.message}</p>
+                </div>
               )}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                Connect your bank account to receive payments from clients directly. It takes about 2 minutes.
-              </p>
-              <Button
-                size="sm"
-                className="text-white rounded-full gap-2 text-xs"
-                style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                onClick={() => connectMutation.mutate()}
-                disabled={connectMutation.isPending}
-                data-testid="btn-connect-bank"
-              >
-                {connectMutation.isPending
-                  ? <><LoaderIcon size={12} className="animate-spin" /> Opening…</>
-                  : <><Banknote size={12} /> Set up payouts</>}
-              </Button>
-              {connectMutation.isError && (
-                <p className="text-xs text-destructive">{(connectMutation.error as any)?.message}</p>
+
+              {/* Connected but needs verification */}
+              {status?.connected && !status?.identityVerified && !needsTermsOnly && !popupDone && (
+                <div className="space-y-3">
+                  <div className="flex items-start gap-2.5">
+                    <AlertCircle size={15} className="text-amber-500 mt-0.5 flex-shrink-0" />
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Your Stripe account exists but needs verification to receive payments.
+                      {(status?.pendingPence ?? 0) > 0 && (
+                        <span className="block mt-1 font-medium text-foreground">£{pendingGBP} is held and will be released once verified.</span>
+                      )}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="text-white rounded-full gap-2 text-xs"
+                    style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                    onClick={() => connectMutation.mutate()}
+                    disabled={connectMutation.isPending}
+                    data-testid="btn-complete-verification"
+                  >
+                    {connectMutation.isPending ? <><LoaderIcon size={12} className="animate-spin" /> Opening…</> : <>Complete verification →</>}
+                  </Button>
+                  {connectMutation.isError && (
+                    <p className="text-xs text-destructive">{(connectMutation.error as any)?.message}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Not connected at all */}
+              {!status?.connected && (
+                <div className="space-y-3">
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Connect your bank account to receive payments from clients directly. It takes about 2 minutes.
+                  </p>
+                  <Button
+                    size="sm"
+                    className="text-white rounded-full gap-2 text-xs"
+                    style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                    onClick={() => connectMutation.mutate()}
+                    disabled={connectMutation.isPending}
+                    data-testid="btn-connect-bank"
+                  >
+                    {connectMutation.isPending ? <><LoaderIcon size={12} className="animate-spin" /> Opening…</> : <><Banknote size={12} /> Set up payouts</>}
+                  </Button>
+                  {connectMutation.isError && (
+                    <p className="text-xs text-destructive">{(connectMutation.error as any)?.message}</p>
+                  )}
+                </div>
               )}
             </div>
           )}

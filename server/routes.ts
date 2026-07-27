@@ -1882,29 +1882,192 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── PRD-007: Hardened Stripe Payment Routes ─────────────────────────────────
 
   // FR-14: Explicit freelancer Connect account creation (must be initiated by freelancer)
-  app.post("/api/stripe/connect-account", async (req, res) => {
+  // ─── PRD-009: Dedicated Viewrr payment terms acceptance (FR-03, FR-04) ──────────
+  // POST /api/stripe/accept-terms
+  // Records Viewrr payment terms acceptance server-side. Never trust a frontend boolean.
+  app.post("/api/stripe/accept-terms", async (req, res) => {
     try {
-      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { userId, termsAccepted } = req.body;
+      const db = neon(process.env.DATABASE_URL!);
+      const { userId } = req.body;
       if (!userId) return res.status(400).json({ error: "userId required" });
-      if (!termsAccepted) return res.status(400).json({ error: "You must accept the payment terms before connecting Stripe" });
 
       const user = await storage.getUser(Number(userId));
       if (!user) return res.status(404).json({ error: "User not found" });
-      // FR-02: must be a freelancer
+      if (user.role !== "freelancer") return res.status(403).json({ error: "Only freelancers need payment terms" });
+
+      const PAYMENT_TERMS_VERSION = "v1.0";
+      const PAYMENT_TERMS_DOCUMENT = "stripe_connect_disclosure";
+
+      // Ensure terms version record exists
+      await db`
+        INSERT INTO terms_versions (document, version, effective_date, content_hash)
+        VALUES (
+          ${PAYMENT_TERMS_DOCUMENT},
+          ${PAYMENT_TERMS_VERSION},
+          '2026-01-01',
+          'prd009_v1_sha256_placeholder'
+        )
+        ON CONFLICT (document, version) DO NOTHING
+      `;
+
+      const tv = await db`
+        SELECT id FROM terms_versions
+        WHERE document = ${PAYMENT_TERMS_DOCUMENT} AND version = ${PAYMENT_TERMS_VERSION}
+        LIMIT 1
+      `;
+
+      const ip = req.headers["x-forwarded-for"]?.toString() ?? req.socket?.remoteAddress ?? "";
+      const ua = (req.headers["user-agent"] ?? "").slice(0, 500);
+
+      await db`
+        INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
+        VALUES (
+          ${Number(userId)}, ${tv[0].id},
+          ${PAYMENT_TERMS_DOCUMENT}, ${PAYMENT_TERMS_VERSION},
+          'stripe_connect_onboarding', ${ip}, ${ua}
+        )
+        ON CONFLICT (user_id, terms_version_id) DO UPDATE
+          SET accepted_at = NOW()::TEXT
+      `;
+
+      await auditLog({
+        actorType: "user",
+        actorId: Number(userId),
+        action: "payment_terms_accepted",
+        afterState: JSON.stringify({ document: PAYMENT_TERMS_DOCUMENT, version: PAYMENT_TERMS_VERSION }),
+      });
+
+      res.json({ accepted: true, document: PAYMENT_TERMS_DOCUMENT, version: PAYMENT_TERMS_VERSION });
+    } catch (e: any) {
+      console.error("[stripe/accept-terms]", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-009: GET terms acceptance status ──────────────────────────────────────
+  app.get("/api/stripe/terms-status/:userId", async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const userId = Number(req.params.userId);
+      const PAYMENT_TERMS_DOCUMENT = "stripe_connect_disclosure";
+
+      const acceptance = await db`
+        SELECT ta.accepted_at, ta.version, tv.effective_date
+        FROM terms_acceptances ta
+        JOIN terms_versions tv ON tv.id = ta.terms_version_id
+        WHERE ta.user_id = ${userId} AND ta.document = ${PAYMENT_TERMS_DOCUMENT}
+        ORDER BY ta.accepted_at DESC
+        LIMIT 1
+      `;
+
+      res.json({
+        accepted: acceptance.length > 0,
+        acceptedAt: acceptance[0]?.accepted_at ?? null,
+        version: acceptance[0]?.version ?? null,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-009: Connect account — correct FR-02 flow order ───────────────────────
+  // Flow: Authenticate → Detect existing → Sync Stripe → Check Viewrr terms →
+  //        If needed return VIEWRR_PAYMENT_TERMS_REQUIRED → Create only if none exists
+  // NEVER creates a second account for the same user (FR-08).
+  app.post("/api/stripe/connect-account", async (req, res) => {
+    try {
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+
+      const user = await storage.getUser(Number(userId));
+      if (!user) return res.status(404).json({ error: "User not found" });
       if (user.role !== "freelancer") return res.status(403).json({ error: "Only freelancers can connect Stripe" });
 
+      const db = neon(process.env.DATABASE_URL!);
+      const PAYMENT_TERMS_DOCUMENT = "stripe_connect_disclosure";
+
+      // ─ STEP 1: Check for existing Stripe account FIRST (FR-01, FR-08) ───────────
       if (user.stripeAccountId) {
-        // Re-use existing account — sync readiness state
+        // Sync current readiness state from Stripe
         const connectState = await syncConnectAccount(user.id, user.stripeAccountId).catch(() => null);
+
+        // Check Viewrr payment terms separately (FR-03)
+        const termsAcceptance = await db`
+          SELECT ta.accepted_at FROM terms_acceptances ta
+          JOIN terms_versions tv ON tv.id = ta.terms_version_id
+          WHERE ta.user_id = ${user.id} AND ta.document = ${PAYMENT_TERMS_DOCUMENT}
+          ORDER BY ta.accepted_at DESC LIMIT 1
+        `;
+
+        const viewrrTermsAccepted = termsAcceptance.length > 0;
+
+        if (!viewrrTermsAccepted) {
+          // FR-07: Structured response — Stripe already connected, only Viewrr terms needed
+          return res.status(200).json({
+            code: "VIEWRR_PAYMENT_TERMS_REQUIRED",
+            accountExists: true,
+            stripeConnected: true,
+            accountId: user.stripeAccountId,
+            readinessState: connectState?.readinessState ?? "verification_pending",
+            chargesEnabled: connectState?.chargesEnabled === 1,
+            payoutsEnabled: connectState?.payoutsEnabled === 1,
+            message: "Your Stripe account is already connected. Please accept the Viewrr payment terms to continue.",
+          });
+        }
+
+        // All good — existing account, terms accepted
         return res.json({
           accountId: user.stripeAccountId,
           readinessState: connectState?.readinessState ?? "verification_pending",
+          chargesEnabled: connectState?.chargesEnabled === 1,
+          payoutsEnabled: connectState?.payoutsEnabled === 1,
           alreadyExists: true,
+          viewrrTermsAccepted: true,
         });
       }
 
-      // FR-07: deterministic idempotency key
+      // ─ STEP 2: No existing account — check Viewrr terms before creating ────────
+      const termsAcceptance = await db`
+        SELECT ta.accepted_at FROM terms_acceptances ta
+        JOIN terms_versions tv ON tv.id = ta.terms_version_id
+        WHERE ta.user_id = ${user.id} AND ta.document = ${PAYMENT_TERMS_DOCUMENT}
+        ORDER BY ta.accepted_at DESC LIMIT 1
+      `;
+
+      // Also accept the legacy termsAccepted boolean in body for backward-compat,
+      // but immediately persist it server-side — never just trust the boolean alone.
+      const legacyTermsFlag = req.body?.termsAccepted === true;
+      const viewrrTermsAccepted = termsAcceptance.length > 0;
+
+      if (!viewrrTermsAccepted && !legacyTermsFlag) {
+        // FR-07: structured error
+        return res.status(200).json({
+          code: "VIEWRR_PAYMENT_TERMS_REQUIRED",
+          accountExists: false,
+          stripeConnected: false,
+          message: "Please accept the Viewrr payment terms to set up your Stripe account.",
+        });
+      }
+
+      // Persist terms acceptance if passed via legacy flag (idempotent)
+      if (legacyTermsFlag && !viewrrTermsAccepted) {
+        await db`
+          INSERT INTO terms_versions (document, version, effective_date, content_hash)
+          VALUES ('stripe_connect_disclosure', 'v1.0', '2026-01-01', 'prd009_v1_sha256_placeholder')
+          ON CONFLICT (document, version) DO NOTHING
+        `;
+        const tv = await db`SELECT id FROM terms_versions WHERE document = 'stripe_connect_disclosure' AND version = 'v1.0' LIMIT 1`;
+        const ip = req.headers["x-forwarded-for"]?.toString() ?? req.socket?.remoteAddress ?? "";
+        const ua = (req.headers["user-agent"] ?? "").slice(0, 500);
+        await db`
+          INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
+          VALUES (${user.id}, ${tv[0].id}, 'stripe_connect_disclosure', 'v1.0', 'stripe_connect_onboarding', ${ip}, ${ua})
+          ON CONFLICT (user_id, terms_version_id) DO UPDATE SET accepted_at = NOW()::TEXT
+        `;
+      }
+
+      // ─ STEP 3: Create new Stripe account ───────────────────────────────
       const idempotencyKey = `connect_account:${userId}:v1`;
       const account = await stripe.accounts.create({
         type: "express",
@@ -1916,7 +2079,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         metadata: { viewrr_user_id: String(userId) },
       }, { idempotencyKey });
 
-      // Store in legacy field for backward compat + new connect accounts table
       await storage.updateStripeAccount(user.id, { stripeAccountId: account.id, stripeOnboarded: 0 });
       await syncConnectAccount(user.id, account.id);
 
@@ -1924,10 +2086,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         actorType: "user",
         actorId: user.id,
         action: "stripe_account_created",
-        afterState: { stripeAccountId: account.id },
+        afterState: JSON.stringify({ stripeAccountId: account.id }),
       });
 
-      res.json({ accountId: account.id, readinessState: "onboarding_required" });
+      res.json({
+        accountId: account.id,
+        readinessState: "onboarding_required",
+        alreadyExists: false,
+        viewrrTermsAccepted: true,
+      });
     } catch (e: any) {
       console.error("[stripe/connect-account]", e.message);
       res.status(500).json({ error: e.message });
@@ -1962,6 +2129,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // FR-13: Full Connect readiness status (richer than before)
+  // PRD-009 FR-09: auto-sync on page open — always syncs Stripe on every GET
   app.get("/api/stripe/status/:userId", async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
@@ -1969,6 +2137,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
+
+      const db = neon(process.env.DATABASE_URL!);
+      const PAYMENT_TERMS_DOCUMENT = "stripe_connect_disclosure";
+
+      // FR-09: check Viewrr terms acceptance
+      const termsRows = await db`
+        SELECT ta.accepted_at, ta.version FROM terms_acceptances ta
+        JOIN terms_versions tv ON tv.id = ta.terms_version_id
+        WHERE ta.user_id = ${userId} AND ta.document = ${PAYMENT_TERMS_DOCUMENT}
+        ORDER BY ta.accepted_at DESC LIMIT 1
+      `;
+      const viewrrTermsAccepted = termsRows.length > 0;
+      const viewrrTermsAcceptedAt = termsRows[0]?.accepted_at ?? null;
 
       if (!user.stripeAccountId) {
         return res.json({
@@ -1978,19 +2159,27 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           payoutsEnabled: false,
           transfersReady: false,
           pendingRequirements: [],
+          viewrrTermsAccepted,
+          viewrrTermsAcceptedAt,
+          identityVerified: false,
         });
       }
 
-      // Sync from Stripe
+      // FR-09: Always sync from Stripe when page opens
       const connectState = await syncConnectAccount(userId, user.stripeAccountId);
 
       res.json({
         connected: true,
+        stripeAccountId: user.stripeAccountId,
         readinessState: connectState.readinessState,
         detailsSubmitted: connectState.detailsSubmitted === 1,
         chargesEnabled: connectState.chargesEnabled === 1,
         payoutsEnabled: connectState.payoutsEnabled === 1,
         transfersReady: connectState.readinessState === "transfers_ready" || connectState.readinessState === "payouts_ready",
+        identityVerified: connectState.detailsSubmitted === 1 && connectState.chargesEnabled === 1,
+        automaticPayoutsEnabled: connectState.readinessState === "payouts_ready",
+        viewrrTermsAccepted,
+        viewrrTermsAcceptedAt,
         currentlyDue: JSON.parse(connectState.currentlyDue ?? "[]"),
         pastDue: JSON.parse(connectState.pastDue ?? "[]"),
         disabledReason: connectState.disabledReason,
