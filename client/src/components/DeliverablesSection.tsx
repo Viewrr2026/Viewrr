@@ -8,12 +8,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   X, ExternalLink, Play, Trash2, Plus, Upload, Link as LinkIcon,
-  Lock, CheckCircle, CreditCard, ShieldCheck, Loader2, Sparkles, FileText, Eye,
+  Lock, CheckCircle, CreditCard, ShieldCheck, Loader2, Sparkles, FileText, Eye, Banknote,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { loadStripe } from "@stripe/stripe-js";
 import {
   Elements,
@@ -732,6 +733,7 @@ export default function DeliverablesSection({
   onPaymentConfirmed,
 }: Props) {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [showAdd, setShowAdd] = useState(false);
   const [urlInput, setUrlInput] = useState("");
