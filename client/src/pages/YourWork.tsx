@@ -22,6 +22,7 @@ import {
   Sparkles, FolderOpen, ThumbsUp, Zap, Info, TrendingUp, ArrowDownToLine,
 } from "lucide-react";
 import { safeGet, safeSet } from "@/lib/storage";
+import { PaymentJourneyBar } from "@/components/PaymentJourney";
 
 import type { ProjectWithDetails } from "../../../server/storage";
 
@@ -2228,8 +2229,11 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
 }
 
 
-// ── FR-07 (PRD-010): Freelancer Earnings Dashboard ────────────────────────
+// ── FR-07/PRD-010 + FR-01/04/05/06/PRD-011: Freelancer Earnings Dashboard ──
 function FreelancerEarningsPanel({ userId }: { userId: number }) {
+  const [educationOpen, setEducationOpen] = useState(false);
+  const [expandedPayment, setExpandedPayment] = useState<string | null>(null);
+
   const { data, isLoading } = useQuery<{
     lifetimeEarnedPence: number;
     lifetimeVolumePence: number;
@@ -2251,7 +2255,6 @@ function FreelancerEarningsPanel({ userId }: { userId: number }) {
 
   const fmt = (p: number) => `£${(p / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  // FR-08: friendly payout status
   const friendlyPayout = (status: string) => ({
     paid: "Paid to bank",
     in_transit: "In transit",
@@ -2260,14 +2263,85 @@ function FreelancerEarningsPanel({ userId }: { userId: number }) {
     failed: "Failed",
   }[status] ?? status);
 
+  // Map payment status → journey stage
+  const paymentToJourneyStatus = (p: any) => ({
+    paymentStatus: p.status ?? "pending",
+    transferStatus: p.transfer_status ?? null,
+    payoutStatus: null,
+    grossPence: p.gross_pence,
+    freelancerPence: p.freelancer_pence,
+    platformFeePence: p.platform_fee_pence,
+    timestamps: {
+      paid: p.succeeded_at ?? p.created_at,
+      authorised: p.succeeded_at,
+      transferred: p.transferred_at ?? null,
+    },
+  });
+
   return (
     <div className="mb-8 rounded-2xl border border-border bg-card overflow-hidden" data-testid="panel-earnings">
-      <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
-        <TrendingUp size={16} className="text-primary" />
-        <span className="text-sm font-semibold">Earnings</span>
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+        <div className="flex items-center gap-2">
+          <TrendingUp size={16} className="text-primary" />
+          <span className="text-sm font-semibold">Earnings</span>
+        </div>
+        {/* FR-07: Help Centre link */}
+        <a
+          href="/#/help/payments"
+          className="text-[11px] text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
+        >
+          <Info size={11} /> Help
+        </a>
       </div>
 
       <div className="px-5 py-4">
+        {/* FR-04: Education banner — How payments work */}
+        <div className="mb-4 rounded-xl border border-border overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-secondary/30 transition-colors"
+            onClick={() => setEducationOpen(o => !o)}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold">How payments work</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground">{educationOpen ? "Hide" : "Learn More"}</span>
+              {educationOpen ? <ChevronUp size={12} className="text-muted-foreground" /> : <ChevronDown size={12} className="text-muted-foreground" />}
+            </div>
+          </button>
+          {educationOpen && (
+            <div className="px-4 pb-4 space-y-2 text-xs text-muted-foreground leading-relaxed border-t border-border pt-3">
+              {[
+                "Your client pays securely through Viewrr.",
+                "Stripe securely processes the payment.",
+                "Stripe may temporarily hold the funds during its availability period — this is normal and protects both parties.",
+                "Automatic payouts send the funds to your bank.",
+                "You'll receive your earnings automatically — no action needed.",
+              ].map((line, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <span
+                    className="w-4 h-4 rounded-full flex items-center justify-center shrink-0 text-white text-[9px] font-bold mt-0.5"
+                    style={{ background: "#FF5A1F" }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span>{line}</span>
+                </div>
+              ))}
+              <div className="pt-1">
+                <a
+                  href="/#/help/payments"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold"
+                  style={{ color: "#FF5A1F" }}
+                >
+                  Learn More →
+                </a>
+              </div>
+            </div>
+          )}
+        </div>
+
         {isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <LoaderIcon size={14} className="animate-spin" /> Loading earnings…
@@ -2289,22 +2363,75 @@ function FreelancerEarningsPanel({ userId }: { userId: number }) {
               ))}
             </div>
 
-            {/* Next payout */}
+            {/* FR-06: Next payout with estimated arrival */}
             {data?.nextPayout && (
               <div className="flex items-center gap-3 px-4 py-3 rounded-xl" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.2)" }}>
                 <ArrowDownToLine size={15} style={{ color: "#FF5A1F" }} className="shrink-0" />
                 <div>
                   <p className="text-xs font-semibold">Next automatic payout: {fmt(data.nextPayout.amount)}</p>
                   {data.nextPayout.arrivalDate && (
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Estimated bank arrival: {data.nextPayout.arrivalDate}
-                    </p>
+                    <>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Estimated bank arrival: {data.nextPayout.arrivalDate}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5 italic">
+                        Estimated dates depend on Stripe and your bank.
+                      </p>
+                    </>
                   )}
                 </div>
               </div>
             )}
 
-            {/* Recent payouts */}
+            {/* FR-01: Recent payment journeys */}
+            {(data?.recentPayments ?? []).length > 0 && (
+              <div>
+                <p className="text-xs font-semibold mb-2">Recent payments</p>
+                <div className="space-y-2">
+                  {data!.recentPayments.slice(0, 5).map((p: any) => {
+                    const isExpanded = expandedPayment === p.public_id;
+                    const jStatus = paymentToJourneyStatus(p);
+                    return (
+                      <div key={p.public_id} className="rounded-xl border border-border overflow-hidden">
+                        <button
+                          className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-secondary/20 transition-colors"
+                          onClick={() => setExpandedPayment(isExpanded ? null : p.public_id)}
+                        >
+                          <div>
+                            <p className="text-xs font-semibold">{p.project_title ?? "Payment"}</p>
+                            <p className="text-[11px] text-muted-foreground">{fmt(p.freelancer_pence ?? 0)} · {p.status}</p>
+                          </div>
+                          {isExpanded ? <ChevronUp size={13} className="text-muted-foreground shrink-0" /> : <ChevronDown size={13} className="text-muted-foreground shrink-0" />}
+                        </button>
+                        {isExpanded && (
+                          <div className="px-4 pb-4 border-t border-border pt-3">
+                            {/* FR-02: Stripe availability explainer when in that stage */}
+                            {(p.status === "succeeded" && !p.transfer_status) && (
+                              <div className="mb-3 px-3 py-2.5 rounded-xl text-xs" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.18)" }}>
+                                <p className="font-semibold mb-1" style={{ color: "#FF5A1F" }}>Why haven't I received this yet?</p>
+                                <p className="text-muted-foreground">Your client has paid. Your payment has reached Stripe and is in its standard availability period. Stripe will automatically send it to your bank once this period ends. No action is needed.</p>
+                              </div>
+                            )}
+                            <PaymentJourneyBar
+                              paymentStatus={jStatus.paymentStatus}
+                              transferStatus={jStatus.transferStatus}
+                              payoutStatus={jStatus.payoutStatus}
+                              grossPence={jStatus.grossPence}
+                              freelancerPence={jStatus.freelancerPence}
+                              platformFeePence={jStatus.platformFeePence}
+                              timestamps={jStatus.timestamps}
+                              role="freelancer"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Payout history */}
             {(data?.payouts ?? []).length > 0 && (
               <div>
                 <p className="text-xs font-semibold mb-2">Payout history</p>

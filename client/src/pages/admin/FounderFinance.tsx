@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PaymentJourneyBar } from "@/components/PaymentJourney";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/components/AuthProvider";
 import AdminLayout from "@/components/dashboard/AdminLayout";
@@ -14,6 +15,20 @@ type Period = "today" | "7d" | "30d";
 
 function fmtGBP(pence: number) {
   return `£${(pence / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// FR-08 (PRD-011): Payment Confidence Score
+function paymentConfidenceScore(p: any): { score: number; label: string; colour: string; note: string } {
+  if (p.status === "failed" || p.status === "cancelled") return { score: 0, label: "Failed", colour: "#ef4444", note: "Payment did not complete." };
+  if (p.refund_count > 0) return { score: 40, label: "Refunded", colour: "#f59e0b", note: "A refund has been issued on this payment." };
+  if (p.status === "pending" || p.status === "requires_action") return { score: 55, label: "Pending", colour: "#f59e0b", note: "Awaiting client payment confirmation." };
+  if (p.status === "succeeded" && (p.transfer_count ?? 0) === 0) return { score: 75, label: "Needs Attention", colour: "#f59e0b", note: "Payment confirmed but no transfer recorded yet." };
+  if (p.status === "succeeded" && (p.transfer_count ?? 0) > 0) {
+    const disputes = p.dispute_count ?? 0;
+    if (disputes > 0) return { score: 60, label: "Disputed", colour: "#ef4444", note: "This payment has an open dispute." };
+    return { score: 95, label: "Everything progressing normally.", colour: "#22c55e", note: "Payment confirmed, funds allocated, automatic payout scheduled." };
+  }
+  return { score: 70, label: "In Progress", colour: "#FF5A1F", note: "Payment is progressing through standard stages." };
 }
 
 // FR-08: friendly status labels
@@ -516,17 +531,69 @@ export default function FounderFinance() {
                       </tr>
                       {expandedPayment === p.public_id && (
                         <tr key={`${p.public_id}-detail`} className="bg-zinc-50 dark:bg-zinc-900">
-                          <td colSpan={10} className="px-4 py-3">
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                              <div><span className="text-muted-foreground block">Stripe fee</span>{p.stripe_fee_pence != null ? fmtGBP(p.stripe_fee_pence) : "—"}</div>
-                              <div><span className="text-muted-foreground block">Net revenue</span>{p.net_platform_revenue_pence != null ? fmtGBP(p.net_platform_revenue_pence) : "—"}</div>
-                              <div><span className="text-muted-foreground block">Transfer strategy</span>{p.transfer_strategy}</div>
-                              <div><span className="text-muted-foreground block">Transfers</span>{p.transfer_count}</div>
-                              <div><span className="text-muted-foreground block">Refunds</span>{p.refund_count}</div>
-                              <div className="col-span-2"><span className="text-muted-foreground block">Stripe PI</span><span className="font-mono text-[10px] break-all">{p.stripe_payment_intent_id ?? "—"}</span></div>
-                              {p.stripe_charge_id && (
-                                <div className="col-span-2"><span className="text-muted-foreground block">Stripe Charge</span><span className="font-mono text-[10px] break-all">{p.stripe_charge_id}</span></div>
-                              )}
+                          <td colSpan={10} className="px-4 py-4">
+                            <div className="space-y-4">
+                              {/* FR-08: Confidence score */}
+                              {(() => {
+                                const conf = paymentConfidenceScore(p);
+                                return (
+                                  <div className="flex items-center gap-4 p-3 rounded-xl border border-border bg-card">
+                                    <div className="text-center shrink-0">
+                                      <div className="text-2xl font-bold tabular-nums" style={{ color: conf.colour }}>
+                                        {conf.score === 95 ? "95%" : conf.score === 0 ? "—" : `${conf.score}%`}
+                                      </div>
+                                      <div className="text-[9px] text-muted-foreground">Confidence</div>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs font-semibold" style={{ color: conf.colour }}>{conf.label}</p>
+                                      <p className="text-[11px] text-muted-foreground mt-0.5">{conf.note}</p>
+                                    </div>
+                                    {/* progress bar */}
+                                    <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
+                                      <div className="h-full rounded-full transition-all" style={{ width: `${conf.score}%`, background: conf.colour }} />
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
+                              {/* FR-03: Payment stage grid */}
+                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                                {[
+                                  { label: "Client Paid", done: ["succeeded","authorised","processing"].includes(p.status), pending: p.status === "pending" },
+                                  { label: "Commission Collected", done: (p.platform_fee_pence ?? 0) > 0 && p.status === "succeeded", pending: p.status !== "succeeded" },
+                                  { label: "Transfer Complete", done: (p.transfer_count ?? 0) > 0, pending: p.status === "succeeded" && (p.transfer_count ?? 0) === 0 },
+                                  { label: "Funds Available", done: (p.transfer_count ?? 0) > 0, pending: (p.transfer_count ?? 0) === 0 },
+                                  { label: "Automatic Payout", done: false, pending: true, scheduled: (p.transfer_count ?? 0) > 0 },
+                                  { label: "Estimated Bank Arrival", done: false, pending: true, date: p.payout_arrival_date ?? null },
+                                ].map(stage => (
+                                  <div key={stage.label} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-background">
+                                    <span className={`w-2 h-2 rounded-full shrink-0 ${
+                                      stage.done ? "bg-green-500" :
+                                      (stage as any).scheduled ? "bg-amber-400" :
+                                      "bg-border"
+                                    }`} />
+                                    <div>
+                                      <p className="text-[10px] font-medium text-muted-foreground">{stage.label}</p>
+                                      <p className="text-[10px] font-semibold">
+                                        {stage.done ? "✓" : (stage as any).scheduled ? "Scheduled" : (stage as any).date ? (stage as any).date : "Pending"}
+                                      </p>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* Stripe IDs + detail */}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                                <div><span className="text-muted-foreground block">Stripe fee</span>{p.stripe_fee_pence != null ? fmtGBP(p.stripe_fee_pence) : "—"}</div>
+                                <div><span className="text-muted-foreground block">Net revenue</span>{p.net_platform_revenue_pence != null ? fmtGBP(p.net_platform_revenue_pence) : "—"}</div>
+                                <div><span className="text-muted-foreground block">Transfer strategy</span>{p.transfer_strategy}</div>
+                                <div><span className="text-muted-foreground block">Transfers</span>{p.transfer_count}</div>
+                                <div><span className="text-muted-foreground block">Refunds</span>{p.refund_count}</div>
+                                <div className="col-span-2"><span className="text-muted-foreground block">Stripe PI</span><span className="font-mono text-[10px] break-all">{p.stripe_payment_intent_id ?? "—"}</span></div>
+                                {p.stripe_charge_id && (
+                                  <div className="col-span-2"><span className="text-muted-foreground block">Stripe Charge</span><span className="font-mono text-[10px] break-all">{p.stripe_charge_id}</span></div>
+                                )}
+                              </div>
                             </div>
                           </td>
                         </tr>

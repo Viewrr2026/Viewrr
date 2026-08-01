@@ -35,6 +35,7 @@ import AgencyProfile from "@/pages/AgencyProfile";
 import AgencyHQ from "@/pages/AgencyHQ";
 import Invoice from "@/pages/Invoice";
 import NotificationPreferences from "@/pages/NotificationPreferences";
+import HelpCentre from "@/pages/HelpCentre";
 import CookieBanner from "@/components/CookieBanner";
 import GetNoticedBanner from "@/components/GetNoticedBanner";
 
@@ -76,6 +77,8 @@ export default function App() {
               <Route path="/agency-hq" component={AgencyHQ} />
               <Route path="/invoice/:projectId" component={Invoice} />
               <Route path="/settings/notifications" component={NotificationPreferences} />
+              <Route path="/help" component={HelpCentre} />
+              <Route path="/help/:category" component={HelpCentre} />
               <Route component={NotFound} />
             </Switch>
           </Router>
