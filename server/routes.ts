@@ -2325,8 +2325,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           return res.json({ received: true, duplicate: true });
         }
 
-        // Acknowledge receipt immediately (Stripe requires 200 within 30s)
-        // Processing happens synchronously here but with idempotency guard
+        // Acknowledge receipt to Stripe immediately — must be within 30s.
+        // All processing runs in setImmediate so the response is never blocked.
+        res.json({ received: true });
+
+        setImmediate(async () => {
         try {
           // FR-10: P0 event handlers
           switch (event.type) {
@@ -2555,14 +2558,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           }
 
           await markEventProcessed(event.id);
-          res.json({ received: true });
 
         } catch (processingError: any) {
           console.error("[webhook] Processing error:", processingError.message);
           await markEventProcessed(event.id, processingError.message);
-          // Still return 200 to prevent Stripe retrying — we handle internally
-          res.json({ received: true, error: "processing_failed" });
         }
+        }); // end setImmediate
 
       } catch (e: any) {
         console.error("[stripe/webhook] Fatal error:", e.message);
