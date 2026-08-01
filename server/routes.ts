@@ -2292,12 +2292,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── PRD-007: Hardened Stripe Webhook ─────────────────────────────────────────
   // MUST be before any JSON body parser — raw body required for signature verification
   app.post("/api/stripe/webhook",
-    (req, res, next) => {
-      let data = Buffer.alloc(0);
-      req.on("data", chunk => { data = Buffer.concat([data, chunk]); });
-      req.on("end",  () => { (req as any).rawBody = data; next(); });
-    },
     async (req, res) => {
+      // rawBody is populated by the global express.json verify callback in index.ts
       const correlationId = `wh_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       try {
         if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
