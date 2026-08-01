@@ -2082,11 +2082,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       await storage.updateStripeAccount(user.id, { stripeAccountId: account.id, stripeOnboarded: 0 });
       await syncConnectAccount(user.id, account.id);
 
+      // FR-01 (PRD-010): set daily payout schedule immediately on creation
+      await configureNewAccountDailyPayout(account.id);
+
       await auditLog({
         actorType: "user",
         actorId: user.id,
         action: "stripe_account_created",
-        afterState: JSON.stringify({ stripeAccountId: account.id }),
+        afterState: JSON.stringify({ stripeAccountId: account.id, payoutSchedule: "daily" }),
       });
 
       res.json({
@@ -3124,6 +3127,33 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!freelancerId || !clientId || !lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
         return res.status(400).json({ error: 'freelancerId, clientId and lineItems required' });
       }
+
+      // FR-03 (PRD-010): Stripe readiness gate — must be connected, verified, transfers + payouts enabled
+      if (stripe) {
+        const freelancerUser = await storage.getUser(Number(freelancerId));
+        if (!freelancerUser?.stripeAccountId) {
+          return res.status(402).json({
+            error: "stripe_not_connected",
+            message: "You must connect your Stripe account before issuing an invoice.",
+          });
+        }
+        try {
+          const acct = await stripe.accounts.retrieve(freelancerUser.stripeAccountId);
+          const transfersOk = (acct.capabilities as any)?.transfers === "active";
+          const payoutsOk = acct.payouts_enabled === true;
+          const chargesOk = acct.charges_enabled === true;
+          if (!chargesOk || !transfersOk || !payoutsOk) {
+            return res.status(402).json({
+              error: "stripe_not_ready",
+              message: "Your Stripe account must have charges, transfers and payouts enabled before you can issue an invoice.",
+              details: { chargesOk, transfersOk, payoutsOk },
+            });
+          }
+        } catch (e: any) {
+          console.warn("[invoice gate] Could not verify Stripe readiness:", e.message);
+          // Non-fatal — allow invoice creation if Stripe is unreachable
+        }
+      }
       // Calculate totals
       const subtotalPence = lineItems.reduce((sum: number, item: any) => sum + (item.totalPence || 0), 0);
       const vatPence = vatPercent ? Math.round(subtotalPence * vatPercent / 100) : 0;
@@ -3429,7 +3459,35 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── PRD-008: Payment money timeline ─────────────────────────────────────
+  // FR-05 (PRD-010): GET /api/founder/finance/payments/:id/timeline — full Stripe ID timeline
+  app.get("/api/founder/finance/payments/:paymentPublicId/timeline", requireFinancePermission("finance.payment.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const { paymentPublicId } = req.params;
+
+      const paymentRows = await db`SELECT * FROM payments WHERE public_id = ${paymentPublicId} LIMIT 1`;
+      if (!paymentRows.length) return res.status(404).json({ error: "Payment not found" });
+      const payment = paymentRows[0];
+
+      const events = await db`
+        SELECT * FROM payment_timeline_events WHERE payment_id = ${payment.id} ORDER BY occurred_at ASC
+      `;
+      const transfers = await db`
+        SELECT * FROM payment_transfers WHERE payment_id = ${payment.id} ORDER BY created_at ASC
+      `;
+      const auditLogs = await db`
+        SELECT action, actor_type, after_state, created_at FROM payment_audit_log
+        WHERE payment_id = ${payment.id} ORDER BY created_at ASC
+      `;
+
+      res.json({ paymentPublicId, payment, events, transfers, auditLogs });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // GET /api/payments/:paymentPublicId/timeline
+
   app.get("/api/payments/:paymentPublicId/timeline", async (req, res) => {
     try {
       const db = neon(process.env.DATABASE_URL!);
@@ -3456,6 +3514,72 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // GET /api/stripe/earnings/:userId — FR-07 (PRD-010): freelancer earnings dashboard data
+  app.get("/api/stripe/earnings/:userId", async (req, res) => {
+    try {
+      const userId = Number(req.params.userId);
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const db = neon(process.env.DATABASE_URL!);
+
+      const [totals] = await db`
+        SELECT
+          COALESCE(SUM(CASE WHEN status='succeeded' THEN freelancer_pence ELSE 0 END),0) AS lifetime_earned,
+          COALESCE(SUM(CASE WHEN status='succeeded' THEN gross_pence ELSE 0 END),0) AS lifetime_volume
+        FROM payments WHERE freelancer_id = ${userId}
+      `;
+      const lifetimeEarned = Number(totals?.lifetime_earned ?? 0);
+      const lifetimeVolume = Number(totals?.lifetime_volume ?? 0);
+
+      const recentPayments = await db`
+        SELECT p.public_id, p.gross_pence, p.freelancer_pence, p.platform_fee_pence,
+               p.status, p.succeeded_at, p.created_at,
+               pr.title AS project_title,
+               pt.stripe_transfer_id, pt.status AS transfer_status
+        FROM payments p
+        LEFT JOIN projects pr ON pr.id = p.project_id
+        LEFT JOIN payment_transfers pt ON pt.payment_id = p.id AND pt.status = 'transferred'
+        WHERE p.freelancer_id = ${userId}
+        ORDER BY p.created_at DESC
+        LIMIT 20
+      `;
+
+      let availablePence = 0, pendingPence = 0, payouts: any[] = [], nextPayout: any = null;
+      if (stripe) {
+        const connectRow = await db`
+          SELECT stripe_account_id, payout_schedule FROM stripe_connect_accounts WHERE user_id = ${userId} LIMIT 1
+        `;
+        if (connectRow.length && connectRow[0].stripe_account_id) {
+          const acctId = connectRow[0].stripe_account_id;
+          try {
+            const [balance, payoutList] = await Promise.all([
+              stripe.balance.retrieve({}, { stripeAccount: acctId }),
+              stripe.payouts.list({ limit: 10 }, { stripeAccount: acctId }),
+            ]);
+            const avail = balance.available.find((b: any) => b.currency === "gbp");
+            const pend = balance.pending.find((b: any) => b.currency === "gbp");
+            availablePence = avail?.amount ?? 0;
+            pendingPence = pend?.amount ?? 0;
+            payouts = payoutList.data.map((p: any) => ({
+              id: p.id, amount: p.amount, status: p.status,
+              arrivalDate: p.arrival_date ? new Date(p.arrival_date * 1000).toISOString().slice(0, 10) : null,
+              created: new Date(p.created * 1000).toISOString(),
+              automatic: p.automatic,
+            }));
+            const nextInTransit = payoutList.data.find((p: any) => p.status === "in_transit" || p.status === "pending");
+            if (nextInTransit) nextPayout = {
+              id: nextInTransit.id, amount: nextInTransit.amount,
+              arrivalDate: nextInTransit.arrival_date ? new Date(nextInTransit.arrival_date * 1000).toISOString().slice(0, 10) : null,
+            };
+          } catch (e: any) { console.warn("[earnings] Stripe balance fetch failed:", e.message); }
+        }
+      }
+
+      res.json({ lifetimeEarnedPence: lifetimeEarned, lifetimeVolumePence: lifetimeVolume,
+        availableBalancePence: availablePence, pendingBalancePence: pendingPence,
+        nextPayout, payouts, recentPayments });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // ─── PRD-008: Freelancer payout timeline ─────────────────────────────────
@@ -3562,11 +3686,30 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         SELECT COALESCE(SUM(p.freelancer_pence),0) AS pending
         FROM payments p
         WHERE p.status='succeeded'
-          AND p.transfer_strategy='platform_held'
-          AND NOT EXISTS (SELECT 1 FROM payment_transfers pt WHERE pt.payment_id=p.id)
+          AND NOT EXISTS (SELECT 1 FROM payment_transfers pt WHERE pt.payment_id=p.id AND pt.status='transferred')
       `;
       const openExceptions = (await db`SELECT COUNT(*) AS c FROM finance_exceptions WHERE status='open'`)[0]?.c ?? 0;
       const failedJobs = (await db`SELECT COUNT(*) AS c FROM background_jobs WHERE status='dead_letter'`)[0]?.c ?? 0;
+
+      // FR-06: connected account and payout summary metrics
+      const connectRows = await db`
+        SELECT payout_schedule, readiness_state, payouts_enabled
+        FROM stripe_connect_accounts WHERE stripe_account_id IS NOT NULL
+      `;
+      let manualPayoutCount = 0, automaticPayoutCount = 0;
+      for (const row of connectRows) {
+        try {
+          const s = JSON.parse(row.payout_schedule ?? "{}");
+          if (s.interval === "daily") automaticPayoutCount++;
+          else manualPayoutCount++;
+        } catch { manualPayoutCount++; }
+      }
+      const disputeCount = (await db`
+        SELECT COUNT(*) AS c FROM payment_refunds WHERE reason_code='fraud' AND created_at >= ${since}
+      `)[0]?.c ?? 0;
+      const webhookFailures = (await db`
+        SELECT COUNT(*) AS c FROM stripe_events WHERE processing_status='failed'
+      `)[0]?.c ?? 0;
 
       res.json({
         period, since,
@@ -3581,6 +3724,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         openExceptions: Number(openExceptions),
         failedWebhookJobs: Number(failedJobs),
         totalPayments: Number(volumeRow.total_payments),
+        // FR-06 additions
+        connectedAccountCount: connectRows.length,
+        automaticPayoutCount,
+        manualPayoutCount,
+        disputeCount: Number(disputeCount),
+        webhookFailureCount: Number(webhookFailures),
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -3837,6 +3986,67 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         ORDER BY sca.created_at DESC
       `;
       res.json({ accounts });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/manual-accounts — FR-09 (PRD-010): alert for manual payout accounts
+  app.get("/api/founder/finance/manual-accounts", requireFinancePermission("finance.dashboard.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const accounts = await db`
+        SELECT sca.user_id, sca.stripe_account_id, sca.readiness_state,
+               sca.payout_schedule, sca.charges_enabled, sca.payouts_enabled,
+               u.email
+        FROM stripe_connect_accounts sca
+        LEFT JOIN users u ON u.id = sca.user_id
+        WHERE sca.stripe_account_id IS NOT NULL
+      `;
+      const manualAccounts = accounts.filter((a: any) => {
+        try {
+          const s = JSON.parse(a.payout_schedule ?? "{}");
+          return s.interval !== "daily";
+        } catch { return true; }
+      });
+      res.json({
+        totalConnected: accounts.length,
+        manualCount: manualAccounts.length,
+        hasManual: manualAccounts.length > 0,
+        accounts: manualAccounts.map((a: any) => ({
+          userId: a.user_id,
+          stripeAccountId: a.stripe_account_id,
+          email: a.email,
+          readinessState: a.readiness_state,
+          payoutSchedule: (() => { try { return JSON.parse(a.payout_schedule ?? "{}"); } catch { return null; } })(),
+        })),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // FR-10 (PRD-010): GET /api/founder/finance/migration-status — verification of migration state
+  app.get("/api/founder/finance/migration-status", requireFinancePermission("finance.dashboard.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const accounts = await db`
+        SELECT sca.stripe_account_id, sca.payout_schedule, sca.readiness_state, u.email
+        FROM stripe_connect_accounts sca
+        LEFT JOIN users u ON u.id = sca.user_id
+        WHERE sca.stripe_account_id IS NOT NULL
+      `;
+      let daily = 0, manual = 0, unknown = 0;
+      const breakdown: any[] = [];
+      for (const a of accounts) {
+        let interval = "unknown";
+        try { interval = JSON.parse(a.payout_schedule ?? "{}").interval ?? "unknown"; } catch {}
+        if (interval === "daily") daily++;
+        else if (interval === "manual") manual++;
+        else unknown++;
+        breakdown.push({ email: a.email, stripeAccountId: a.stripe_account_id, interval, readinessState: a.readiness_state });
+      }
+      res.json({ total: accounts.length, daily, manual, unknown, breakdown });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

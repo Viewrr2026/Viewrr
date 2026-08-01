@@ -6,13 +6,40 @@ import DashboardHeader from "@/components/dashboard/DashboardHeader";
 import {
   Loader2, AlertTriangle, CheckCircle2, RefreshCw, Download,
   BarChart3, AlertCircle, Clock, ArrowDownToLine, Zap,
-  ChevronDown, ChevronRight, ExternalLink, Play,
+  ChevronDown, ChevronRight, ExternalLink, Play, Wrench,
+  TrendingUp, Users, CreditCard, ShieldAlert, Banknote,
 } from "lucide-react";
 
 type Period = "today" | "7d" | "30d";
 
 function fmtGBP(pence: number) {
   return `£${(pence / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// FR-08: friendly status labels
+const FRIENDLY_STATUS: Record<string, string> = {
+  pending:                 "Awaiting payment",
+  requires_payment_method: "Awaiting card details",
+  requires_confirmation:   "Confirming",
+  requires_action:         "Action required",
+  processing:              "Processing",
+  succeeded:               "Payment confirmed",
+  failed:                  "Payment failed",
+  cancelled:               "Cancelled",
+  refunded:                "Refunded",
+  partially_refunded:      "Partially refunded",
+  disputed:                "Under dispute",
+  transferred:             "Funds allocated",
+  paid:                    "Paid to bank",
+  in_transit:              "In transit",
+  open:                    "Open",
+  resolved:                "Resolved",
+  ignored_with_reason:     "Ignored",
+  dead_letter:             "Failed — needs review",
+};
+
+function friendly(status: string) {
+  return FRIENDLY_STATUS[status] ?? status.replace(/_/g, " ");
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -26,32 +53,40 @@ function StatusBadge({ status }: { status: string }) {
     failed: "bg-red-100 text-red-800",
     pending: "bg-amber-100 text-amber-700",
     dead_letter: "bg-red-200 text-red-900",
+    in_transit: "bg-blue-100 text-blue-800",
+    paid: "bg-green-100 text-green-800",
+    transferred: "bg-emerald-100 text-emerald-800",
   };
   return (
     <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${colours[status] ?? "bg-zinc-100 text-zinc-600"}`}>
-      {status.replace(/_/g, " ")}
+      {friendly(status)}
     </span>
   );
 }
 
 function MetricCard({
-  label, value, sub, accent, onClick,
-}: { label: string; value: string; sub?: string; accent?: boolean; onClick?: () => void }) {
+  label, value, sub, accent, warn, onClick, icon,
+}: { label: string; value: string; sub?: string; accent?: boolean; warn?: boolean; onClick?: () => void; icon?: React.ReactNode }) {
   return (
     <button
       onClick={onClick}
       className={`flex flex-col gap-1 p-4 rounded-2xl border transition-shadow text-left w-full ${
-        accent ? "border-red-200 bg-red-50 dark:bg-red-950/20" : "border-border bg-card"
+        accent ? "border-red-200 bg-red-50 dark:bg-red-950/20" :
+        warn ? "border-amber-200 bg-amber-50 dark:bg-amber-950/20" :
+        "border-border bg-card"
       } hover:shadow-md`}
     >
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <span className={`text-2xl font-bold tabular-nums ${accent ? "text-red-600" : ""}`}>{value}</span>
+      <div className="flex items-center gap-1.5">
+        {icon && <span className={`${accent ? "text-red-500" : warn ? "text-amber-500" : "text-muted-foreground"}`}>{icon}</span>}
+        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      </div>
+      <span className={`text-2xl font-bold tabular-nums ${accent ? "text-red-600" : warn ? "text-amber-700" : ""}`}>{value}</span>
       {sub && <span className="text-[11px] text-muted-foreground">{sub}</span>}
     </button>
   );
 }
 
-type Tab = "overview" | "payments" | "exceptions" | "payouts" | "refunds" | "connected" | "jobs";
+type Tab = "overview" | "payments" | "exceptions" | "payouts" | "refunds" | "connected" | "timeline";
 
 export default function FounderFinance() {
   const { user } = useAuth();
@@ -59,6 +94,7 @@ export default function FounderFinance() {
   const [period, setPeriod] = useState<Period>("today");
   const [tab, setTab] = useState<Tab>("overview");
   const [expandedPayment, setExpandedPayment] = useState<string | null>(null);
+  const [selectedPaymentForTimeline, setSelectedPaymentForTimeline] = useState<string | null>(null);
 
   const overviewQuery = useQuery({
     queryKey: ["finance-overview", user?.id, period],
@@ -69,6 +105,28 @@ export default function FounderFinance() {
     },
     enabled: !!user?.id,
     staleTime: 60_000,
+  });
+
+  const manualAccountsQuery = useQuery({
+    queryKey: ["finance-manual-accounts", user?.id],
+    queryFn: async () => {
+      const res = await fetch(`/api/founder/finance/manual-accounts?userId=${user?.id}`);
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+    enabled: !!user?.id,
+    staleTime: 120_000,
+  });
+
+  const migrationStatusQuery = useQuery({
+    queryKey: ["finance-migration-status", user?.id],
+    queryFn: async () => {
+      const res = await fetch(`/api/founder/finance/migration-status?userId=${user?.id}`);
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+    enabled: !!user?.id,
+    staleTime: 120_000,
   });
 
   const paymentsQuery = useQuery({
@@ -126,11 +184,23 @@ export default function FounderFinance() {
     staleTime: 60_000,
   });
 
+  // FR-05: Payment timeline for a specific payment
+  const timelineQuery = useQuery({
+    queryKey: ["finance-payment-timeline", selectedPaymentForTimeline],
+    queryFn: async () => {
+      if (!selectedPaymentForTimeline) return null;
+      const res = await fetch(`/api/founder/finance/payments/${selectedPaymentForTimeline}/timeline?userId=${user?.id}`);
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+    enabled: !!selectedPaymentForTimeline && tab === "timeline",
+    staleTime: 30_000,
+  });
+
   const scanMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch("/api/founder/finance/run-exception-scan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user?.id }),
       });
       return res.json();
@@ -141,19 +211,35 @@ export default function FounderFinance() {
   const payoutMigrationMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch("/api/founder/finance/payout-migration", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user?.id }),
       });
       return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["finance-manual-accounts"] });
+      qc.invalidateQueries({ queryKey: ["finance-migration-status"] });
+    },
+  });
+
+  const repairAccountMutation = useMutation({
+    mutationFn: async (stripeAccountId: string) => {
+      const res = await fetch("/api/founder/finance/payout-migration", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user?.id, stripeAccountId }),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["finance-manual-accounts"] });
+      qc.invalidateQueries({ queryKey: ["finance-connected"] });
     },
   });
 
   const resolveException = useMutation({
     mutationFn: async ({ publicId, status, note }: { publicId: string; status: string; note?: string }) => {
       const res = await fetch(`/api/founder/finance/exceptions/${publicId}/resolve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user?.id, status, resolutionNote: note }),
       });
       return res.json();
@@ -162,10 +248,12 @@ export default function FounderFinance() {
   });
 
   const ov = overviewQuery.data;
+  const manualAccts = manualAccountsQuery.data;
 
   const TABS: { key: Tab; label: string }[] = [
     { key: "overview", label: "Overview" },
     { key: "payments", label: "Payments" },
+    { key: "timeline", label: "Payment Timeline" },
     { key: "exceptions", label: `Exceptions${ov?.openExceptions ? ` (${ov.openExceptions})` : ""}` },
     { key: "payouts", label: "Payouts" },
     { key: "refunds", label: "Refunds" },
@@ -179,8 +267,40 @@ export default function FounderFinance() {
         description="Payments, transfers, payouts, refunds, reconciliation and exceptions."
       />
 
+      {/* FR-09: Manual payout account alert banner */}
+      {manualAccts?.hasManual && (
+        <div className="flex items-start gap-3 p-4 rounded-2xl bg-red-50 dark:bg-red-950/20 border border-red-200 mb-6">
+          <ShieldAlert size={18} className="text-red-600 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-red-900 dark:text-red-200">
+              {manualAccts.manualCount} connected account{manualAccts.manualCount !== 1 ? "s" : ""} using Manual payouts
+            </p>
+            <p className="text-xs text-red-700 dark:text-red-300 mt-0.5">
+              These accounts will not receive automatic payouts. Freelancers must manually request each payout from their Stripe dashboard.
+              Run the migration to fix this.
+            </p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {manualAccts.accounts.map((a: any) => (
+                <span key={a.stripeAccountId} className="text-[10px] bg-red-100 text-red-800 px-2 py-0.5 rounded-full font-mono">
+                  {a.email ?? a.stripeAccountId}
+                </span>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={() => payoutMigrationMutation.mutate()}
+            disabled={payoutMigrationMutation.isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-white shrink-0"
+            style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+          >
+            {payoutMigrationMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : <Wrench size={11} />}
+            Repair
+          </button>
+        </div>
+      )}
+
       {/* Period selector */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6 flex-wrap">
         {(["today", "7d", "30d"] as Period[]).map(p => (
           <button
             key={p}
@@ -246,7 +366,7 @@ export default function FounderFinance() {
                     </p>
                     <p className="text-xs text-amber-700 dark:text-amber-300 mt-0.5">
                       {ov.openExceptions > 0 && `${ov.openExceptions} open reconciliation exception${ov.openExceptions !== 1 ? "s" : ""}. `}
-                      {ov.failedWebhookJobs > 0 && `${ov.failedWebhookJobs} background job${ov.failedWebhookJobs !== 1 ? "s" : ""} in dead letter queue.`}
+                      {ov.failedWebhookJobs > 0 && `${ov.failedWebhookJobs} background job${ov.failedWebhookJobs !== 1 ? "s" : ""} need review.`}
                     </p>
                     <button onClick={() => setTab("exceptions")} className="text-xs text-amber-700 font-semibold underline mt-1">View exceptions →</button>
                   </div>
@@ -261,42 +381,86 @@ export default function FounderFinance() {
                 </div>
               )}
 
-              {/* Metrics grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                <MetricCard label="Gross volume" value={fmtGBP(ov.grossVolumePence)} onClick={() => setTab("payments")} />
-                <MetricCard label="Viewrr commission" value={fmtGBP(ov.grossCommissionPence)} />
-                <MetricCard label="Stripe fees" value={fmtGBP(ov.stripeFeesPence)} />
-                <MetricCard label="Net revenue" value={fmtGBP(ov.netRevenuePence)} />
-                <MetricCard label="Freelancer earnings" value={fmtGBP(ov.freelancerEarningsPence)} />
-                <MetricCard label="Pending transfers" value={fmtGBP(ov.pendingTransfersPence)} accent={ov.pendingTransfersPence > 0} />
-                <MetricCard label="Refunds" value={fmtGBP(ov.refundsTotalPence)} onClick={() => setTab("refunds")} />
-                <MetricCard label="Failed payments" value={String(ov.failedPaymentCount)} accent={ov.failedPaymentCount > 0} />
-                <MetricCard label="Open exceptions" value={String(ov.openExceptions)} accent={ov.openExceptions > 0} onClick={() => setTab("exceptions")} />
-                <MetricCard label="Failed jobs" value={String(ov.failedWebhookJobs)} accent={ov.failedWebhookJobs > 0} />
-                <MetricCard label="Total payments" value={String(ov.totalPayments)} onClick={() => setTab("payments")} />
+              {/* FR-06: Full metrics grid */}
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">Marketplace Volume</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  <MetricCard label="Gross volume" value={fmtGBP(ov.grossVolumePence)} icon={<TrendingUp size={12} />} onClick={() => setTab("payments")} />
+                  <MetricCard label="Viewrr commission (11%)" value={fmtGBP(ov.grossCommissionPence)} icon={<BarChart3 size={12} />} />
+                  <MetricCard label="Stripe fees" value={fmtGBP(ov.stripeFeesPence)} icon={<CreditCard size={12} />} />
+                  <MetricCard label="Net revenue" value={fmtGBP(ov.netRevenuePence)} icon={<Banknote size={12} />} />
+                  <MetricCard label="Freelancer earnings" value={fmtGBP(ov.freelancerEarningsPence)} />
+                  <MetricCard label="Total payments" value={String(ov.totalPayments)} onClick={() => setTab("payments")} />
+                  <MetricCard label="Refunds issued" value={fmtGBP(ov.refundsTotalPence)} onClick={() => setTab("refunds")} />
+                  <MetricCard label="Disputes" value={String(ov.disputeCount ?? 0)} accent={(ov.disputeCount ?? 0) > 0} />
+                </div>
               </div>
 
-              {/* Payout migration */}
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">Payout Health</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  <MetricCard label="Connected accounts" value={String(ov.connectedAccountCount ?? 0)} icon={<Users size={12} />} onClick={() => setTab("connected")} />
+                  <MetricCard label="Automatic payouts" value={String(ov.automaticPayoutCount ?? 0)} icon={<ArrowDownToLine size={12} />} />
+                  <MetricCard
+                    label="Manual accounts"
+                    value={String(ov.manualPayoutCount ?? 0)}
+                    warn={(ov.manualPayoutCount ?? 0) > 0}
+                    icon={<AlertCircle size={12} />}
+                    onClick={() => setTab("connected")}
+                  />
+                  <MetricCard
+                    label="Pending transfers"
+                    value={fmtGBP(ov.pendingTransfersPence)}
+                    accent={ov.pendingTransfersPence > 0}
+                    sub={ov.pendingTransfersPence > 0 ? "Action needed" : undefined}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">System Health</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  <MetricCard label="Failed payments" value={String(ov.failedPaymentCount)} accent={ov.failedPaymentCount > 0} />
+                  <MetricCard label="Open exceptions" value={String(ov.openExceptions)} accent={ov.openExceptions > 0} onClick={() => setTab("exceptions")} />
+                  <MetricCard label="Webhook failures" value={String(ov.webhookFailureCount ?? ov.failedWebhookJobs)} accent={(ov.webhookFailureCount ?? ov.failedWebhookJobs) > 0} />
+                  <MetricCard label="Failed jobs" value={String(ov.failedWebhookJobs)} accent={ov.failedWebhookJobs > 0} />
+                </div>
+              </div>
+
+              {/* Payout migration panel */}
               <div className="p-4 rounded-2xl border border-border bg-card">
-                <p className="text-sm font-semibold mb-1">Automatic daily payouts</p>
-                <p className="text-xs text-muted-foreground mb-3">
-                  Configure all eligible connected accounts to receive automatic daily payouts through Stripe.
-                  Eligibility depends on account type and verification status.
-                </p>
-                <button
-                  onClick={() => payoutMigrationMutation.mutate()}
-                  disabled={payoutMigrationMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold text-white transition-colors"
-                  style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                >
-                  {payoutMigrationMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-                  Run payout migration
-                </button>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold mb-1">Automatic daily payouts</p>
+                    <p className="text-xs text-muted-foreground mb-1">
+                      Configure all eligible connected accounts to receive automatic daily payouts through Stripe.
+                    </p>
+                    {migrationStatusQuery.data && (
+                      <p className="text-xs text-muted-foreground">
+                        Status: <span className="font-semibold text-foreground">{migrationStatusQuery.data.daily}</span> daily,{" "}
+                        <span className={`font-semibold ${migrationStatusQuery.data.manual > 0 ? "text-amber-600" : "text-foreground"}`}>
+                          {migrationStatusQuery.data.manual}
+                        </span> manual,{" "}
+                        <span className="font-semibold text-foreground">{migrationStatusQuery.data.unknown}</span> unknown
+                        {" "}of {migrationStatusQuery.data.total} total
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => payoutMigrationMutation.mutate()}
+                    disabled={payoutMigrationMutation.isPending}
+                    className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold text-white transition-colors shrink-0"
+                    style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                  >
+                    {payoutMigrationMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                    Run migration
+                  </button>
+                </div>
                 {payoutMigrationMutation.data && (
                   <div className="mt-3 text-xs text-muted-foreground">
-                    Updated {payoutMigrationMutation.data.updated} accounts,
-                    {" "}{payoutMigrationMutation.data.alreadyDaily} already daily,
-                    {" "}{payoutMigrationMutation.data.requiresReview} require review.
+                    Updated {payoutMigrationMutation.data.updated} accounts,{" "}
+                    {payoutMigrationMutation.data.alreadyDaily} already daily,{" "}
+                    {payoutMigrationMutation.data.requiresReview} require review.
                   </div>
                 )}
               </div>
@@ -315,7 +479,7 @@ export default function FounderFinance() {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border bg-zinc-50 dark:bg-zinc-900">
-                    {["Date","Payment ID","Project","Client","Freelancer","Gross","Viewrr Fee","Freelancer","Status","Type"].map(h => (
+                    {["Date","Payment ID","Project","Client","Freelancer","Gross","Viewrr Fee","Freelancer","Status","Timeline"].map(h => (
                       <th key={h} className="px-3 py-2.5 text-left font-semibold text-muted-foreground whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -337,7 +501,14 @@ export default function FounderFinance() {
                         <td className="px-3 py-2 tabular-nums text-muted-foreground">{fmtGBP(p.platform_fee_pence)}</td>
                         <td className="px-3 py-2 tabular-nums text-muted-foreground">{fmtGBP(p.freelancer_pence)}</td>
                         <td className="px-3 py-2"><StatusBadge status={p.status} /></td>
-                        <td className="px-3 py-2 text-muted-foreground">{p.payment_kind}</td>
+                        <td className="px-3 py-2">
+                          <button
+                            onClick={e => { e.stopPropagation(); setSelectedPaymentForTimeline(p.public_id); setTab("timeline"); }}
+                            className="flex items-center gap-1 text-[10px] text-[#FF5A1F] hover:underline"
+                          >
+                            <Clock size={10} /> View
+                          </button>
+                        </td>
                       </tr>
                       {expandedPayment === p.public_id && (
                         <tr key={`${p.public_id}-detail`} className="bg-zinc-50 dark:bg-zinc-900">
@@ -349,6 +520,9 @@ export default function FounderFinance() {
                               <div><span className="text-muted-foreground block">Transfers</span>{p.transfer_count}</div>
                               <div><span className="text-muted-foreground block">Refunds</span>{p.refund_count}</div>
                               <div className="col-span-2"><span className="text-muted-foreground block">Stripe PI</span><span className="font-mono text-[10px] break-all">{p.stripe_payment_intent_id ?? "—"}</span></div>
+                              {p.stripe_charge_id && (
+                                <div className="col-span-2"><span className="text-muted-foreground block">Stripe Charge</span><span className="font-mono text-[10px] break-all">{p.stripe_charge_id}</span></div>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -362,6 +536,101 @@ export default function FounderFinance() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── FR-05: Payment Timeline Tab ── */}
+      {tab === "timeline" && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <input
+              type="text"
+              placeholder="Enter payment ID (pay_vrr_…)"
+              value={selectedPaymentForTimeline ?? ""}
+              onChange={e => setSelectedPaymentForTimeline(e.target.value)}
+              className="flex-1 px-4 py-2 text-xs border border-border rounded-xl bg-background"
+            />
+            <button
+              onClick={() => qc.invalidateQueries({ queryKey: ["finance-payment-timeline"] })}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-zinc-100 dark:bg-zinc-800 text-muted-foreground"
+            >
+              <RefreshCw size={11} /> Load
+            </button>
+          </div>
+
+          {!selectedPaymentForTimeline && (
+            <p className="text-center text-xs text-muted-foreground py-12">
+              Enter a payment ID above, or click "View" on any payment in the Payments tab.
+            </p>
+          )}
+
+          {timelineQuery.isLoading && (
+            <div className="flex items-center justify-center py-16"><Loader2 size={24} className="animate-spin text-zinc-400" /></div>
+          )}
+
+          {timelineQuery.data && (() => {
+            const tl = timelineQuery.data;
+            return (
+              <div className="space-y-4">
+                {/* Payment summary */}
+                <div className="p-4 rounded-2xl border border-border bg-card grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div><span className="text-muted-foreground block mb-0.5">Amount</span><span className="font-bold text-base">{fmtGBP(tl.payment?.gross_pence ?? 0)}</span></div>
+                  <div><span className="text-muted-foreground block mb-0.5">Viewrr fee</span><span className="font-semibold">{fmtGBP(tl.payment?.platform_fee_pence ?? 0)}</span></div>
+                  <div><span className="text-muted-foreground block mb-0.5">Freelancer</span><span className="font-semibold">{fmtGBP(tl.payment?.freelancer_pence ?? 0)}</span></div>
+                  <div><span className="text-muted-foreground block mb-0.5">Status</span><StatusBadge status={tl.payment?.status ?? "—"} /></div>
+                  <div className="col-span-2"><span className="text-muted-foreground block mb-0.5">Stripe PaymentIntent</span><span className="font-mono text-[10px]">{tl.payment?.stripe_payment_intent_id ?? "—"}</span></div>
+                  <div className="col-span-2"><span className="text-muted-foreground block mb-0.5">Stripe Charge</span><span className="font-mono text-[10px]">{tl.payment?.stripe_charge_id ?? "—"}</span></div>
+                  {tl.payment?.stripe_application_fee_id && (
+                    <div className="col-span-2"><span className="text-muted-foreground block mb-0.5">Application Fee</span><span className="font-mono text-[10px]">{tl.payment.stripe_application_fee_id}</span></div>
+                  )}
+                </div>
+
+                {/* Timeline events */}
+                <div className="space-y-0">
+                  {(tl.events ?? []).map((ev: any, i: number) => (
+                    <div key={ev.id} className="flex gap-3">
+                      <div className="flex flex-col items-center">
+                        <div className={`w-2.5 h-2.5 rounded-full mt-1 shrink-0 ${
+                          ev.event_type?.includes("confirmed") || ev.event_type?.includes("succeeded") || ev.event_type?.includes("paid")
+                            ? "bg-green-500"
+                            : ev.event_type?.includes("failed")
+                            ? "bg-red-500"
+                            : "bg-zinc-300"
+                        }`} />
+                        {i < (tl.events?.length ?? 1) - 1 && <div className="w-px flex-1 bg-border mt-1" />}
+                      </div>
+                      <div className="pb-4 flex-1">
+                        <p className="text-xs font-semibold">{ev.title ?? ev.event_type}</p>
+                        {ev.description && <p className="text-xs text-muted-foreground mt-0.5">{ev.description}</p>}
+                        <div className="flex items-center gap-3 mt-0.5">
+                          <span className="text-[10px] text-muted-foreground">{ev.occurred_at?.slice(0, 16).replace("T", " ")}</span>
+                          {ev.amount_pence != null && <span className="text-[10px] font-semibold text-foreground">{fmtGBP(ev.amount_pence)}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {(!tl.events || tl.events.length === 0) && (
+                    <p className="text-xs text-muted-foreground py-4">No timeline events recorded yet.</p>
+                  )}
+                </div>
+
+                {/* Transfers */}
+                {tl.transfers?.length > 0 && (
+                  <div className="p-4 rounded-2xl border border-border bg-card">
+                    <p className="text-xs font-semibold mb-2">Stripe Transfers</p>
+                    {tl.transfers.map((tr: any) => (
+                      <div key={tr.id} className="flex items-center justify-between text-xs py-1.5 border-b border-border last:border-0">
+                        <span className="font-mono text-[10px]">{tr.stripe_transfer_id}</span>
+                        <span>{fmtGBP(tr.amount_pence)}</span>
+                        <StatusBadge status={tr.status} />
+                        <span className="text-muted-foreground">{tr.created_at?.slice(0, 10)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -494,7 +763,7 @@ export default function FounderFinance() {
                       <td className="px-3 py-2">{r.client_email ?? "—"}</td>
                       <td className="px-3 py-2">{r.freelancer_email ?? "—"}</td>
                       <td className="px-3 py-2 font-semibold">{fmtGBP(r.amount_pence ?? 0)}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{r.reason_code ?? "—"}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{r.reason_code?.replace(/_/g, " ") ?? "—"}</td>
                       <td className="px-3 py-2"><StatusBadge status={r.status ?? "unknown"} /></td>
                     </tr>
                   ))}
@@ -516,50 +785,63 @@ export default function FounderFinance() {
           ) : (connectedQuery.data?.accounts ?? []).length === 0 ? (
             <p className="text-center text-xs text-muted-foreground py-12">No connected Stripe accounts yet.</p>
           ) : (
-            (connectedQuery.data?.accounts ?? []).map((acct: any) => (
-              <div key={acct.id} className="p-4 rounded-2xl border border-border bg-card">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold">{acct.email ?? `User #${acct.user_id}`}</p>
-                    <p className="text-xs text-muted-foreground font-mono mt-0.5">{acct.stripe_account_id}</p>
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      <StatusBadge status={acct.readiness_state ?? "unknown"} />
-                      {acct.charges_enabled ? (
-                        <span className="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded-full font-semibold">Charges enabled</span>
-                      ) : (
-                        <span className="text-[10px] bg-red-100 text-red-800 px-2 py-0.5 rounded-full font-semibold">Charges disabled</span>
+            (connectedQuery.data?.accounts ?? []).map((acct: any) => {
+              const schedule = (() => { try { return JSON.parse(acct.payout_schedule ?? "{}"); } catch { return null; } })();
+              const isManual = !schedule?.interval || schedule.interval !== "daily";
+              return (
+                <div key={acct.id} className={`p-4 rounded-2xl border bg-card ${isManual && acct.payouts_enabled ? "border-amber-200" : "border-border"}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold">{acct.email ?? `User #${acct.user_id}`}</p>
+                        {isManual && acct.payouts_enabled && (
+                          <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-semibold">Manual payouts</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground font-mono mt-0.5">{acct.stripe_account_id}</p>
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        <StatusBadge status={acct.readiness_state ?? "unknown"} />
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${acct.charges_enabled ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
+                          {acct.charges_enabled ? "Charges enabled" : "Charges disabled"}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${acct.payouts_enabled ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"}`}>
+                          {acct.payouts_enabled ? "Payouts enabled" : "Payouts disabled"}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${!isManual ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"}`}>
+                          {!isManual ? "Daily payouts" : "Manual schedule"}
+                        </span>
+                      </div>
+                      {acct.disabled_reason && (
+                        <p className="text-xs text-red-600 mt-1">Disabled: {acct.disabled_reason}</p>
                       )}
-                      {acct.payouts_enabled ? (
-                        <span className="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded-full font-semibold">Payouts enabled</span>
-                      ) : (
-                        <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-semibold">Payouts disabled</span>
+                      {acct.last_synced_at && (
+                        <p className="text-[10px] text-muted-foreground mt-1">Last synced: {acct.last_synced_at?.slice(0, 16)}</p>
                       )}
                     </div>
-                    {acct.payout_schedule && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Payout schedule: {(() => {
-                          try { const s = JSON.parse(acct.payout_schedule); return s.interval ?? "—"; } catch { return "—"; }
-                        })()}
-                      </p>
-                    )}
-                    {acct.disabled_reason && (
-                      <p className="text-xs text-red-600 mt-1">Disabled: {acct.disabled_reason}</p>
-                    )}
-                    {acct.last_synced_at && (
-                      <p className="text-[10px] text-muted-foreground mt-1">Last synced: {acct.last_synced_at?.slice(0, 16)}</p>
-                    )}
+                    <div className="flex flex-col gap-2 items-end shrink-0">
+                      <a
+                        href={`https://dashboard.stripe.com/connect/accounts/${acct.stripe_account_id}`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1 text-xs text-[#FF5A1F] hover:underline"
+                      >
+                        <ExternalLink size={11} /> Stripe
+                      </a>
+                      {/* FR-09: Repair configuration button for manual accounts */}
+                      {isManual && acct.payouts_enabled && (
+                        <button
+                          onClick={() => repairAccountMutation.mutate(acct.stripe_account_id)}
+                          disabled={repairAccountMutation.isPending}
+                          className="flex items-center gap-1 text-xs text-amber-700 hover:underline"
+                        >
+                          {repairAccountMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : <Wrench size={10} />}
+                          Repair
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <a
-                    href={`https://dashboard.stripe.com/connect/accounts/${acct.stripe_account_id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-xs text-[#FF5A1F] hover:underline shrink-0"
-                  >
-                    <ExternalLink size={11} /> Stripe
-                  </a>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       )}

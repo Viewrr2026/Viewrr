@@ -19,7 +19,7 @@ import {
   Eye, EyeOff, Globe, Lock, AlertTriangle, RefreshCw,
   Plus, Send, Inbox, Check, XCircle, Upload, Trash2, ExternalLink, Star,
   Pause, Play, FileText, DollarSign, Banknote, BadgeCheck, Loader2 as LoaderIcon, AlertCircle,
-  Sparkles, FolderOpen, ThumbsUp, Zap, Info,
+  Sparkles, FolderOpen, ThumbsUp, Zap, Info, TrendingUp, ArrowDownToLine,
 } from "lucide-react";
 import { safeGet, safeSet } from "@/lib/storage";
 
@@ -2227,6 +2227,119 @@ function PayoutsPanel({ userId, triggerSetup = 0 }: { userId: number; triggerSet
   );
 }
 
+
+// ── FR-07 (PRD-010): Freelancer Earnings Dashboard ────────────────────────
+function FreelancerEarningsPanel({ userId }: { userId: number }) {
+  const { data, isLoading } = useQuery<{
+    lifetimeEarnedPence: number;
+    lifetimeVolumePence: number;
+    availableBalancePence: number;
+    pendingBalancePence: number;
+    nextPayout?: { id: string; amount: number; arrivalDate?: string | null } | null;
+    payouts: Array<{ id: string; amount: number; status: string; arrivalDate?: string | null; created: string; automatic?: boolean }>;
+    recentPayments: Array<any>;
+  }>({
+    queryKey: ["/api/stripe/earnings", userId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/stripe/earnings/${userId}`);
+      if (!res.ok) return { lifetimeEarnedPence: 0, lifetimeVolumePence: 0, availableBalancePence: 0, pendingBalancePence: 0, payouts: [], recentPayments: [] };
+      return res.json();
+    },
+    staleTime: 0,
+    refetchOnMount: true,
+  });
+
+  const fmt = (p: number) => `£${(p / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // FR-08: friendly payout status
+  const friendlyPayout = (status: string) => ({
+    paid: "Paid to bank",
+    in_transit: "In transit",
+    pending: "Pending",
+    canceled: "Cancelled",
+    failed: "Failed",
+  }[status] ?? status);
+
+  return (
+    <div className="mb-8 rounded-2xl border border-border bg-card overflow-hidden" data-testid="panel-earnings">
+      <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
+        <TrendingUp size={16} className="text-primary" />
+        <span className="text-sm font-semibold">Earnings</span>
+      </div>
+
+      <div className="px-5 py-4">
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <LoaderIcon size={14} className="animate-spin" /> Loading earnings…
+          </div>
+        ) : (
+          <div className="space-y-5">
+            {/* Balance cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { label: "Available balance", value: fmt(data?.availableBalancePence ?? 0), highlight: true },
+                { label: "Pending balance", value: fmt(data?.pendingBalancePence ?? 0) },
+                { label: "Lifetime earnings", value: fmt(data?.lifetimeEarnedPence ?? 0) },
+                { label: "Project volume", value: fmt(data?.lifetimeVolumePence ?? 0) },
+              ].map(card => (
+                <div key={card.label} className="flex flex-col gap-0.5 p-3 rounded-xl border border-border bg-secondary/30">
+                  <span className="text-[10px] text-muted-foreground">{card.label}</span>
+                  <span className={`text-lg font-bold tabular-nums ${card.highlight ? "text-foreground" : "text-muted-foreground"}`}>{card.value}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Next payout */}
+            {data?.nextPayout && (
+              <div className="flex items-center gap-3 px-4 py-3 rounded-xl" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.2)" }}>
+                <ArrowDownToLine size={15} style={{ color: "#FF5A1F" }} className="shrink-0" />
+                <div>
+                  <p className="text-xs font-semibold">Next automatic payout: {fmt(data.nextPayout.amount)}</p>
+                  {data.nextPayout.arrivalDate && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Estimated bank arrival: {data.nextPayout.arrivalDate}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Recent payouts */}
+            {(data?.payouts ?? []).length > 0 && (
+              <div>
+                <p className="text-xs font-semibold mb-2">Payout history</p>
+                <div className="space-y-1.5">
+                  {data!.payouts.slice(0, 6).map(p => (
+                    <div key={p.id} className="flex items-center justify-between text-xs py-1.5 border-b border-border last:border-0">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.status === "paid" ? "bg-green-500" : p.status === "failed" ? "bg-red-500" : "bg-amber-400"}`} />
+                        <span className="text-muted-foreground">{p.created?.slice(0, 10)}</span>
+                        {p.automatic && <span className="text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold">Auto</span>}
+                      </div>
+                      <span className="font-semibold">{fmt(p.amount)}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                        p.status === "paid" ? "bg-green-100 text-green-800" :
+                        p.status === "failed" ? "bg-red-100 text-red-800" :
+                        "bg-amber-100 text-amber-800"
+                      }`}>{friendlyPayout(p.status)}</span>
+                      {p.arrivalDate && <span className="text-[10px] text-muted-foreground">→ {p.arrivalDate}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* No data state */}
+            {!data?.payouts?.length && !data?.lifetimeEarnedPence && (
+              <p className="text-xs text-muted-foreground text-center py-4">No earnings yet. Complete a project to see your balance here.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function YourWork() {
   const { user } = useAuth();
   const [openProject, setOpenProject] = useState<ProjectWithDetails | null>(null);
@@ -2399,6 +2512,11 @@ export default function YourWork() {
         {/* ── Payouts panel (freelancers only) ── */}
         {user.role === "freelancer" && (
           <PayoutsPanel userId={user.id} triggerSetup={payoutsTrigger} />
+        )}
+
+        {/* ── FR-07 (PRD-010): Earnings dashboard (freelancers only) ── */}
+        {user.role === "freelancer" && (
+          <FreelancerEarningsPanel userId={user.id} />
         )}
 
         {/* ── Pending Invitations panel ── */}

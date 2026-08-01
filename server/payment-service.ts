@@ -261,19 +261,37 @@ export async function createPayment(
   const clientRows = await db.select().from(schema.users).where(eq(schema.users.id, actingUserId));
   const client = clientRows[0];
 
-  // FR-14: Do NOT silently create a Stripe account during payment
-  // Freelancer must have explicitly connected Stripe beforehand
-  let transferStrategy: "direct_transfer" | "platform_held" = "platform_held";
-  let stripeAccountId = freelancer.stripeAccountId;
+  // FR-02 (PRD-010): platform_held removed — destination charges only.
+  // FR-03 (PRD-010): Freelancer MUST be Stripe-ready before any payment proceeds.
+  // Readiness gate is enforced at invoice issuance; this is the final check.
+  const stripeAccountId = freelancer.stripeAccountId;
+  const transferStrategy: "direct_transfer" = "direct_transfer";
 
-  if (stripeAccountId) {
-    try {
-      const connectAcct = await stripe.accounts.retrieve(stripeAccountId);
-      const isReady =
-        connectAcct.charges_enabled === true &&
-        (connectAcct.capabilities as any)?.transfers === "active";
-      if (isReady) transferStrategy = "direct_transfer";
-    } catch { /* use platform_held */ }
+  if (!stripeAccountId) {
+    throw Object.assign(
+      new Error("Freelancer has not connected Stripe. Payment cannot proceed."),
+      { status: 402 }
+    );
+  }
+
+  // Verify readiness
+  try {
+    const connectAcct = await stripe.accounts.retrieve(stripeAccountId);
+    const isReady =
+      connectAcct.charges_enabled === true &&
+      (connectAcct.capabilities as any)?.transfers === "active";
+    if (!isReady) {
+      throw Object.assign(
+        new Error("Freelancer Stripe account is not ready to receive payments."),
+        { status: 402 }
+      );
+    }
+  } catch (e: any) {
+    if (e.status === 402) throw e;
+    throw Object.assign(
+      new Error("Could not verify freelancer Stripe readiness."),
+      { status: 502 }
+    );
   }
 
   // 6. Create internal payment record BEFORE Stripe call (FR-04)
@@ -325,12 +343,10 @@ export async function createPayment(
       payment_kind: "one_off",
       transfer_strategy: transferStrategy,
     },
-    ...(transferStrategy === "direct_transfer" && stripeAccountId
-      ? {
-          application_fee_amount: platformFeePence,
-          transfer_data: { destination: stripeAccountId },
-        }
-      : {}),
+    // FR-04 (PRD-010): on_behalf_of for clear merchant attribution
+    application_fee_amount: platformFeePence,
+    transfer_data: { destination: stripeAccountId },
+    on_behalf_of: stripeAccountId,
   };
 
   const intent = await stripe.paymentIntents.create(intentParams, {
@@ -548,20 +564,15 @@ export async function handlePaymentIntentSucceeded(
     .set({ paymentStatus: "paid" })
     .where(eq(schema.projects.id, payment.projectId));
 
-  // Handle transfer for platform_held strategy
-  if (payment.transferStrategy === "platform_held") {
-    await handleTransfer(payment, chargeId, correlationId);
-  } else {
-    // Direct transfer — Stripe handles it automatically via transfer_data
-    // Record the transfer in our ledger from intent metadata
-    await auditLog({
-      paymentId: payment.id,
-      actorType: "webhook",
-      action: "direct_transfer_confirmed",
-      afterState: { transferStrategy: "direct_transfer" },
-      correlationId,
-    });
-  }
+  // FR-02 (PRD-010): Destination charge — Stripe handles transfer automatically via transfer_data.
+  // Log confirmation; no manual transfer needed.
+  await auditLog({
+    paymentId: payment.id,
+    actorType: "webhook",
+    action: "destination_transfer_confirmed",
+    afterState: { transferStrategy: "direct_transfer", stripeChargeId: chargeId },
+    correlationId,
+  });
 
   // Send accurate notifications (FR-16)
   await sendPaymentNotifications(payment, "succeeded");
@@ -685,10 +696,8 @@ async function handleTransfer(
 }
 
 /**
- * Release held earnings when freelancer completes Stripe onboarding.
- * Called from account.updated webhook.
- * FR-08: derives pending from payment rows, not stripePendingPence aggregate.
- * FR-12: removes 35p clock starter.
+ * @deprecated PRD-010 FR-02: platform_held removed. This function is a no-op kept for
+ * backward compatibility with existing webhook handlers until the next cleanup sprint.
  */
 export async function releaseHeldEarnings(
   userId: number,
@@ -1060,6 +1069,47 @@ async function sendRefundNotifications(
   } catch (e: any) {
     console.error("[notifications] Failed to send refund notification:", e.message);
   }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// FR-08 (PRD-010): Friendly payment statuses
+// ────────────────────────────────────────────────────────────────────────────
+
+export function friendlyPaymentStatus(status: string): string {
+  const map: Record<string, string> = {
+    pending:                   "Awaiting payment",
+    requires_payment_method:   "Awaiting card details",
+    requires_confirmation:     "Confirming payment",
+    requires_action:           "Action required",
+    processing:                "Processing",
+    succeeded:                 "Payment confirmed",
+    failed:                    "Payment failed",
+    cancelled:                 "Cancelled",
+    refunded:                  "Refunded",
+    partially_refunded:        "Partially refunded",
+    disputed:                  "Under dispute",
+  };
+  return map[status] ?? status;
+}
+
+export function friendlyTransferStatus(status: string): string {
+  const map: Record<string, string> = {
+    transferred:  "Funds allocated to Stripe balance",
+    pending:      "Transfer pending",
+    failed:       "Transfer failed — under review",
+  };
+  return map[status] ?? status;
+}
+
+export function friendlyPayoutStatus(status: string): string {
+  const map: Record<string, string> = {
+    paid:        "Paid to bank",
+    pending:     "Payout in transit",
+    in_transit:  "Payout in transit",
+    canceled:    "Payout cancelled",
+    failed:      "Payout failed",
+  };
+  return map[status] ?? status;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
