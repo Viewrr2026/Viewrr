@@ -4052,6 +4052,36 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  // POST /api/founder/finance/repair-account — FR-09 single-account repair
+  app.post("/api/founder/finance/repair-account", requireFinancePermission("finance.settings.payout"), async (req, res) => {
+    try {
+      const { stripeAccountId } = req.body;
+      if (!stripeAccountId) return res.status(400).json({ error: "stripeAccountId required" });
+
+      const db = neon(process.env.DATABASE_URL!);
+      // Find the user for this account (check both tables)
+      const rows = await db`
+        SELECT COALESCE(sca.user_id, u.id) AS user_id
+        FROM users u
+        LEFT JOIN stripe_connect_accounts sca ON sca.user_id = u.id
+        WHERE sca.stripe_account_id = ${stripeAccountId}
+           OR u.stripe_account_id = ${stripeAccountId}
+        LIMIT 1
+      `;
+      if (!rows.length) return res.status(404).json({ error: "Account not found in DB" });
+      const userId = rows[0].user_id;
+
+      const result = await configureAutoDailyPayout(userId, stripeAccountId);
+
+      // Ensure account is in stripe_connect_accounts (sync if needed)
+      await syncConnectAccount(userId, stripeAccountId);
+
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // POST /api/founder/finance/payout-migration — trigger the daily payout migration
   app.post("/api/founder/finance/payout-migration", requireFinancePermission("finance.settings.payout"), async (req, res) => {
     try {

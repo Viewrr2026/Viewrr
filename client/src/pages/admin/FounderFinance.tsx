@@ -224,15 +224,19 @@ export default function FounderFinance() {
 
   const repairAccountMutation = useMutation({
     mutationFn: async (stripeAccountId: string) => {
-      const res = await fetch("/api/founder/finance/payout-migration", {
+      const res = await fetch("/api/founder/finance/repair-account", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user?.id, stripeAccountId }),
       });
-      return res.json();
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Repair failed");
+      return data;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["finance-manual-accounts"] });
       qc.invalidateQueries({ queryKey: ["finance-connected"] });
+      qc.invalidateQueries({ queryKey: ["finance-migration-status"] });
+      qc.invalidateQueries({ queryKey: ["finance-overview"] });
     },
   });
 
@@ -828,14 +832,23 @@ export default function FounderFinance() {
                       </a>
                       {/* FR-09: Repair configuration button for manual accounts */}
                       {isManual && acct.payouts_enabled && (
-                        <button
-                          onClick={() => repairAccountMutation.mutate(acct.stripe_account_id)}
-                          disabled={repairAccountMutation.isPending}
-                          className="flex items-center gap-1 text-xs text-amber-700 hover:underline"
-                        >
-                          {repairAccountMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : <Wrench size={10} />}
-                          Repair
-                        </button>
+                        <div className="flex flex-col items-end gap-1">
+                          <button
+                            onClick={() => repairAccountMutation.mutate(acct.stripe_account_id)}
+                            disabled={repairAccountMutation.isPending}
+                            className="flex items-center gap-1 text-xs font-semibold text-white px-2 py-1 rounded-full"
+                            style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                          >
+                            {repairAccountMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : <Wrench size={10} />}
+                            Set to daily
+                          </button>
+                          {repairAccountMutation.isError && (
+                            <p className="text-[10px] text-red-600">{(repairAccountMutation.error as any)?.message}</p>
+                          )}
+                          {repairAccountMutation.isSuccess && (
+                            <p className="text-[10px] text-green-600">{repairAccountMutation.data?.success ? "Done — set to daily" : repairAccountMutation.data?.error}</p>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>

@@ -115,11 +115,17 @@ export async function migrateAllAccountsToAutoDailyPayout(): Promise<{
   const db = getDb();
   const stripe = getStripe();
 
-  // Get all connected accounts from our DB
+  // Get all connected accounts — union stripe_connect_accounts + users table
+  // to catch accounts created before the connect-accounts table existed (pre-PRD-007)
   const accounts = await db`
-    SELECT sca.user_id, sca.stripe_account_id, sca.payouts_enabled
-    FROM stripe_connect_accounts sca
-    WHERE sca.stripe_account_id IS NOT NULL
+    SELECT DISTINCT ON (u.id)
+      u.id AS user_id,
+      COALESCE(sca.stripe_account_id, u.stripe_account_id) AS stripe_account_id,
+      COALESCE(sca.payouts_enabled, 1) AS payouts_enabled
+    FROM users u
+    LEFT JOIN stripe_connect_accounts sca ON sca.user_id = u.id
+    WHERE COALESCE(sca.stripe_account_id, u.stripe_account_id) IS NOT NULL
+    ORDER BY u.id
   `;
 
   const results: PayoutConfigResult[] = [];
