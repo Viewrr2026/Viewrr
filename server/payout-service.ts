@@ -17,7 +17,10 @@ function getStripe() {
 
 const DAILY_PAYOUT_SCHEDULE = {
   interval: "daily" as const,
-  delay_days: 2, // T+2 standard for UK bank transfers
+  // delay_days intentionally omitted — Stripe enforces a per-account minimum
+  // (typically 7 days for established UK accounts). Setting an explicit value
+  // below that floor causes a 400 "cannot lower delay" error. Omitting it keeps
+  // the account's existing minimum and only changes the interval to daily.
 };
 
 export interface PayoutConfigResult {
