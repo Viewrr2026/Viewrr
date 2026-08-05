@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import { registerRetainerBuilderRoutes } from "./retainer-builder-routes";
 import { Server } from "http";
 import { storage } from "./storage";
 import {
@@ -4169,5 +4170,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // Start the worker (non-blocking)
   startWorker();
+
+  // PRD-012: Retainer builder + workspace routes
+  registerRetainerBuilderRoutes(app);
 }
 

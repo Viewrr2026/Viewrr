@@ -36,6 +36,8 @@ import AgencyHQ from "@/pages/AgencyHQ";
 import Invoice from "@/pages/Invoice";
 import NotificationPreferences from "@/pages/NotificationPreferences";
 import HelpCentre from "@/pages/HelpCentre";
+import RetainerBuilder from "@/pages/RetainerBuilder";
+import RetainerWorkspace from "@/pages/RetainerWorkspace";
 import CookieBanner from "@/components/CookieBanner";
 import GetNoticedBanner from "@/components/GetNoticedBanner";
 
@@ -79,6 +81,9 @@ export default function App() {
               <Route path="/settings/notifications" component={NotificationPreferences} />
               <Route path="/help" component={HelpCentre} />
               <Route path="/help/:category" component={HelpCentre} />
+              <Route path="/retainer/new" component={RetainerBuilder} />
+              <Route path="/retainer/new/:templateId" component={RetainerBuilder} />
+              <Route path="/retainer/:publicId" component={RetainerWorkspace} />
               <Route component={NotFound} />
             </Switch>
           </Router>

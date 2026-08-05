@@ -2622,13 +2622,21 @@ export default function YourWork() {
                 : "See exactly where every project stands — from kick-off to final delivery."}
             </p>
           </div>
-          <Button
-            onClick={() => setShowCreateModal(true)}
-            className="bg-primary hover:bg-primary/90 text-white rounded-full px-5 text-sm flex items-center gap-2 flex-shrink-0"
-            data-testid="btn-create-project"
-          >
-            <Plus size={15} /> Create Project
-          </Button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <a
+              href="/#/retainer/new"
+              className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-full border border-primary text-primary hover:bg-primary/10 transition-colors"
+            >
+              <RefreshCw size={14} /> New Retainer
+            </a>
+            <Button
+              onClick={() => setShowCreateModal(true)}
+              className="bg-primary hover:bg-primary/90 text-white rounded-full px-5 text-sm flex items-center gap-2"
+              data-testid="btn-create-project"
+            >
+              <Plus size={15} /> Create Project
+            </Button>
+          </div>
         </div>
 
         {/* ── Earnings banner — shown only when funds held and not verified ── */}

@@ -101,7 +101,7 @@ function MetricCard({
   );
 }
 
-type Tab = "overview" | "payments" | "exceptions" | "payouts" | "refunds" | "connected" | "timeline";
+type Tab = "overview" | "payments" | "exceptions" | "payouts" | "refunds" | "connected" | "timeline" | "retainers";
 
 export default function FounderFinance() {
   const { user } = useAuth();
@@ -277,6 +277,7 @@ export default function FounderFinance() {
     { key: "payouts", label: "Payouts" },
     { key: "refunds", label: "Refunds" },
     { key: "connected", label: "Connected Accounts" },
+    { key: "retainers", label: "Retainers" },
   ];
 
   return (
@@ -925,6 +926,98 @@ export default function FounderFinance() {
           )}
         </div>
       )}
+      {/* FR-16: Retainer metrics tab */}
+      {tab === "retainers" && (
+        <RetainerMetricsPanel userId={user?.id ?? 0} />
+      )}
     </AdminLayout>
+  );
+}
+
+function RetainerMetricsPanel({ userId }: { userId: number }) {
+  const { data, isLoading } = useQuery<{
+    active_count: number;
+    monthly_recurring_value_pence: number;
+    renewal_rate: number;
+    pause_count: number;
+    overdue_cycles: number;
+    recent_agreements: any[];
+  }>({
+    queryKey: ["founder-retainer-metrics", userId],
+    queryFn: async () => {
+      const res = await fetch(`/api/founder/retainer-metrics?userId=${userId}`);
+      if (!res.ok) throw new Error("Failed to load");
+      return res.json();
+    },
+    staleTime: 30_000,
+  });
+
+  const fmt = (p: number) => `£${(p / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  return (
+    <div className="space-y-6">
+      {isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground p-6"><Loader2 size={14} className="animate-spin" /> Loading retainer metrics…</div>
+      ) : (
+        <>
+          {/* KPI row */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {[
+              { label: "Active retainers", value: String(data?.active_count ?? 0) },
+              { label: "Monthly recurring value", value: fmt(data?.monthly_recurring_value_pence ?? 0), highlight: true },
+              { label: "Renewal rate", value: `${data?.renewal_rate ?? 0}%` },
+              { label: "Paused", value: String(data?.pause_count ?? 0) },
+              { label: "Overdue cycles", value: String(data?.overdue_cycles ?? 0), warn: (data?.overdue_cycles ?? 0) > 0 },
+            ].map(m => (
+              <div key={m.label} className="p-3 rounded-xl border border-border bg-card flex flex-col gap-0.5">
+                <span className="text-[10px] text-muted-foreground">{m.label}</span>
+                <span className={`text-xl font-bold tabular-nums ${
+                  (m as any).highlight ? "text-foreground" : (m as any).warn ? "text-red-500" : "text-muted-foreground"
+                }`}>{m.value}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Recent agreements table */}
+          <div className="rounded-2xl border border-border bg-card overflow-hidden">
+            <div className="px-5 py-3 border-b border-border text-xs font-semibold">Recent Retainer Agreements</div>
+            {(data?.recent_agreements ?? []).length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-8">No retainer agreements yet. <a href="/#/retainer/new" className="text-primary underline">Create the first one →</a></p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="bg-secondary/30">
+                  <tr>
+                    {["Retainer", "Freelancer", "Client", "Status", "Cycle amount", "Billing"].map(h => (
+                      <th key={h} className="text-left px-4 py-2 text-muted-foreground font-medium">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data!.recent_agreements.map((a: any) => (
+                    <tr key={a.id} className="border-t border-border hover:bg-secondary/20">
+                      <td className="px-4 py-2.5 font-medium">
+                        <a href={`/#/retainer/${a.public_id}`} className="hover:text-primary transition-colors">{a.project_title ?? "Untitled"}</a>
+                      </td>
+                      <td className="px-4 py-2.5 text-muted-foreground">{a.freelancer_name ?? "—"}</td>
+                      <td className="px-4 py-2.5 text-muted-foreground">{a.client_name ?? "—"}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                          a.status === "active" ? "bg-green-100 text-green-800" :
+                          a.status === "paused" ? "bg-amber-100 text-amber-800" :
+                          a.status === "ended" ? "bg-red-100 text-red-800" :
+                          "bg-blue-100 text-blue-800"
+                        }`}>{a.status}</span>
+                      </td>
+                      <td className="px-4 py-2.5 font-semibold tabular-nums">{fmt(a.agreed_cycle_amount_pence ?? 0)}</td>
+                      <td className="px-4 py-2.5 text-muted-foreground">{a.billing_frequency ?? "monthly"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
