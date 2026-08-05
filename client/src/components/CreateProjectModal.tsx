@@ -318,11 +318,12 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                   <ChevronRight size={16} className="text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />
                 </button>
 
-                {/* Retainer */}
-                <button
-                  onClick={() => { setIsRetainer(true); setStep(1); }}
+                {/* Retainer — navigates to dedicated RetainerBuilder wizard */}
+                <a
+                  href="/#/retainer/new"
+                  onClick={() => onClose()}
                   data-testid="btn-type-retainer"
-                  className="group flex items-center gap-4 px-5 py-4 rounded-2xl border-2 border-border bg-card hover:border-primary/40 hover:bg-primary/3 text-left transition-all relative overflow-hidden"
+                  className="group flex items-center gap-4 px-5 py-4 rounded-2xl border-2 border-border bg-card hover:border-primary/40 hover:bg-primary/3 text-left transition-all relative overflow-hidden no-underline"
                 >
                   {/* Orange accent line */}
                   <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-2xl" style={{ background: "linear-gradient(180deg,#FF5A1F,#FF8C42)" }} />
@@ -334,10 +335,10 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                       <p className="font-bold text-sm text-foreground group-hover:text-primary transition-colors">Retainer</p>
                       <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background: "#FF5A1F20", color: "#FF5A1F" }}>New</span>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-0.5 leading-snug">Recurring cycles of work with flexible billing. Ideal for ongoing content, editing, or creative partnerships.</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 leading-snug">Recurring work with a dedicated builder — set deliverables, billing periods, workflows and more.</p>
                   </div>
                   <ChevronRight size={16} className="text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />
-                </button>
+                </a>
               </div>
             </div>
           )}
