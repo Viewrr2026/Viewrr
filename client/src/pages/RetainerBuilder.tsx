@@ -15,7 +15,7 @@ import {
   FileText, Camera, Video, Palette, Globe, Megaphone, Sparkles, Layers,
   CalendarDays, Plus, Trash2, ChevronLeft, ChevronRight, Check,
   ArrowLeftRight, Coins, Boxes, Shuffle, Wand2, GripVertical,
-  Rocket, Send, MessageSquarePlus, CalendarClock, Eye, PartyPopper,
+  Rocket, Send, MessageSquarePlus, CalendarClock, Eye, PartyPopper, Search, UserCircle2,
   Loader2, Clock, Info,
 } from "lucide-react";
 
@@ -52,7 +52,7 @@ type RenewalMode = "rolling" | "fixed" | "trial";
 
 interface DraftState {
   step: number;
-  templateId: TemplateId | null;
+  templateIds: TemplateId[];  // multi-select — merge deliverables from all
   commercialModel: CommercialModel | null;
   goal: string;
   successMeasures: string;
@@ -158,7 +158,7 @@ const STEP_TIMES = ["~1 min", "~2 min", "~3 min", "~2 min", "~2 min", "~2 min", 
 function defaultDraft(): DraftState {
   return {
     step: 1,
-    templateId: null,
+    templateIds: [],  // multi-select
     commercialModel: null,
     goal: "",
     successMeasures: "",
@@ -306,6 +306,27 @@ export default function RetainerBuilder() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [launched, setLaunched] = useState(false);
+  const [clientSearch, setClientSearch] = useState("");
+  const [showClientSearch, setShowClientSearch] = useState(false);
+
+  // Load existing connections — maps storage shape { id, name, role, headline } → { userId, name, email }
+  const { data: connections } = useQuery<Array<{ userId: number; name: string; email: string; avatar?: string }>>({
+    queryKey: ["/api/connections", user?.id],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/connections?userId=${user?.id}`);
+      if (!res.ok) return [];
+      const raw: Array<{ id: number; name: string; headline?: string | null; role?: string }> = await res.json();
+      return raw.map(c => ({ userId: c.id, name: c.name ?? "Unknown", email: c.headline ?? c.role ?? "", avatar: undefined }));
+    },
+    enabled: !!user?.id,
+    staleTime: 60_000,
+  });
+
+  const filteredConnections = (connections ?? []).filter(c =>
+    !clientSearch ||
+    c.name?.toLowerCase().includes(clientSearch.toLowerCase()) ||
+    c.email?.toLowerCase().includes(clientSearch.toLowerCase())
+  );
 
   // Load draft on mount
   useEffect(() => {
@@ -409,7 +430,7 @@ export default function RetainerBuilder() {
     try {
       await apiRequest("POST", "/api/retainer-builder/create", {
         userId: user.id,
-        templateId: draft.templateId,
+        templateIds: draft.templateIds,
         commercialModel: draft.commercialModel,
         goal: draft.goal,
         successMeasures: draft.successMeasures,
@@ -440,7 +461,8 @@ export default function RetainerBuilder() {
     }
   }
 
-  const template = TEMPLATES.find(t => t.id === draft.templateId);
+  // For display: primary template is first selected, or first matching
+  const template = TEMPLATES.find(t => draft.templateIds.includes(t.id)) ?? null;
   const model = COMMERCIAL_MODELS.find(m => m.id === draft.commercialModel);
 
   return (
@@ -455,7 +477,7 @@ export default function RetainerBuilder() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8">
             {TEMPLATES.map(t => {
               const Icon = t.icon;
-              const active = draft.templateId === t.id;
+              const active = draft.templateIds.includes(t.id);
               return (
                 <button
                   key={t.id}
@@ -502,7 +524,7 @@ export default function RetainerBuilder() {
             })}
           </div>
 
-          <NavButtons onNext={next} nextDisabled={!draft.templateId || !draft.commercialModel} />
+          <NavButtons onNext={next} nextDisabled={draft.templateIds.length === 0 || !draft.commercialModel} />
         </div>
       )}
 
@@ -700,6 +722,7 @@ export default function RetainerBuilder() {
       {draft.step === 4 && (
         <div>
           <StepHeader step={4} title="Schedule & Workflow" time={STEP_TIMES[3]} />
+          <p className="text-sm text-muted-foreground mb-4 -mt-1">A <strong>billing period</strong> (also called a cycle) is one repeating unit of your retainer — typically one month. You and your client work through deliverables, then review at the end of each period.</p>
           <p className="text-sm font-semibold mb-2">Cycle workflow</p>
           <p className="text-xs text-muted-foreground mb-4">This is the pipeline every cycle will move through.</p>
 
@@ -752,7 +775,7 @@ export default function RetainerBuilder() {
             <div>
               <label className="text-sm font-semibold block mb-1.5">Estimated first cycle end date</label>
               <div className="px-3.5 py-2.5 text-sm border border-input rounded-lg bg-zinc-50 dark:bg-zinc-900 text-muted-foreground">
-                {estimatedFirstCycleEnd}
+                {estimatedFirstCycleEnd ?? (draft.startDate ? 'Select a billing frequency above' : 'Select a start date above')}
               </div>
             </div>
           </div>
@@ -764,10 +787,11 @@ export default function RetainerBuilder() {
       {/* ── Step 5: Pricing & Commitment ── */}
       {draft.step === 5 && (
         <div>
-          <StepHeader step={5} title="Pricing & Commitment" time={STEP_TIMES[4]} />
+          <StepHeader step={5} title="Pricing & Billing Period" time={STEP_TIMES[4]} />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="text-sm font-semibold block mb-1.5">Billing frequency</label>
+              <p className="text-xs text-muted-foreground mb-2">Each billing period (called a <strong>cycle</strong>) is one payment + delivery unit — usually one month. Each cycle has its own deliverables, invoice, and review.</p>
               <Select value={draft.billingFrequency} onValueChange={(v) => update("billingFrequency", v as BillingFrequency)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -1001,16 +1025,76 @@ export default function RetainerBuilder() {
                 <p className="text-sm text-red-600 mt-4 text-center">{submitError}</p>
               )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6">
+              {/* Client selector */}
+              <div className="mt-6 mb-4 rounded-2xl border border-border bg-card overflow-hidden">
+                <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                  <span className="text-sm font-semibold">Send to</span>
+                  {draft.recipientUserId && (
+                    <button type="button" onClick={() => update("recipientUserId", null)} className="text-xs text-muted-foreground hover:text-primary">Change</button>
+                  )}
+                </div>
+                {draft.recipientUserId ? (
+                  <div className="px-4 py-3 flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                      <UserCircle2 size={18} className="text-primary" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold">{connections?.find(c => c.userId === draft.recipientUserId)?.name ?? "Selected client"}</p>
+                      <p className="text-xs text-muted-foreground">{connections?.find(c => c.userId === draft.recipientUserId)?.email ?? ""}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="px-4 py-3">
+                    <div className="relative mb-2">
+                      <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        value={clientSearch}
+                        onChange={e => setClientSearch(e.target.value)}
+                        placeholder="Search your connections by name or email…"
+                        className="w-full pl-8 pr-3 py-2 text-sm border border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      />
+                    </div>
+                    {(filteredConnections.length > 0 || clientSearch) ? (
+                      <div className="space-y-1 max-h-48 overflow-y-auto">
+                        {filteredConnections.length === 0 ? (
+                          <p className="text-xs text-muted-foreground py-3 text-center">No connections found matching "{clientSearch}"</p>
+                        ) : filteredConnections.map(c => (
+                          <button
+                            key={c.userId}
+                            type="button"
+                            onClick={() => { update("recipientUserId", c.userId); setClientSearch(""); }}
+                            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-secondary/50 text-left transition-colors"
+                          >
+                            <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                              <UserCircle2 size={15} className="text-primary" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold leading-tight">{c.name}</p>
+                              <p className="text-xs text-muted-foreground">{c.email}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground text-center py-2">
+                        Start typing to search your connections, or <a href="/#/your-work" className="text-primary underline">go to Your Work</a> to start a project with a new client first.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
                   onClick={handleSendToClient}
-                  disabled={submitting}
-                  className="flex items-center justify-center gap-2 px-4 py-3 rounded-full text-sm font-semibold text-white disabled:opacity-60 sm:col-span-2"
+                  disabled={submitting || !draft.recipientUserId}
+                  className="flex items-center justify-center gap-2 px-4 py-3 rounded-full text-sm font-semibold text-white disabled:opacity-60 sm:col-span-2 transition-opacity"
                   style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                  title={!draft.recipientUserId ? "Select a client above first" : ""}
                 >
                   {submitting ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                  Send to Client
+                  {draft.recipientUserId ? "Send to Client" : "Select a client above to send"}
                 </button>
                 <button type="button" className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:bg-zinc-50 dark:hover:bg-zinc-900">
                   <MessageSquarePlus size={15} /> Add Welcome Message

@@ -91,7 +91,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
     try {
       const {
         userId,
-        templateId,
+        templateIds,
         commercialModel,
         goal,
         successMeasures,
@@ -167,7 +167,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
           response_time_hours, client_input_deadline_days, excluded_work,
           draft_step, status, proposal_sent_at, created_by, created_at
         ) VALUES (
-          ${agreementPublicId}, ${projectId}, ${agreementTitle}, ${templateId ?? null}, ${commercialModel ?? null},
+          ${agreementPublicId}, ${projectId}, ${agreementTitle}, ${(templateIds && templateIds[0]) ?? null}, ${commercialModel ?? null},
           ${goal ?? null}, ${asJson(successMeasures)}, ${asJson(keyChannels)}, ${asJson(priorityOutcomes)},
           ${startDate ?? null}, ${billingFrequency}, ${Number(amountPerCyclePence)},
           ${minimumTermCycles ?? null}, ${renewalMode ?? null}, ${noticePeriodCycles ?? null},
@@ -209,7 +209,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       const fullSnapshot = {
         title: agreementTitle,
-        templateId, commercialModel, goal, successMeasures, keyChannels,
+        templateIds, commercialModel, goal, successMeasures, keyChannels,
         priorityOutcomes, deliverables, workflowStages, startDate,
         billingFrequency, amountPerCyclePence, minimumTermCycles, renewalMode,
         noticePeriodCycles, introPrice, introCycles, setupFeePence, maxRevisions,
