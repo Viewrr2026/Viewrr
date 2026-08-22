@@ -19,7 +19,7 @@ import {
   Eye, EyeOff, Globe, Lock, AlertTriangle, RefreshCw,
   Plus, Send, Inbox, Check, XCircle, Upload, Trash2, ExternalLink, Star,
   Pause, Play, FileText, DollarSign, Banknote, BadgeCheck, Loader2 as LoaderIcon, AlertCircle,
-  Sparkles, FolderOpen, ThumbsUp, Zap, Info, TrendingUp, ArrowDownToLine,
+  Sparkles, FolderOpen, ThumbsUp, Zap, Info, TrendingUp, ArrowDownToLine, MoreVertical,
 } from "lucide-react";
 import { safeGet, safeSet } from "@/lib/storage";
 import { PaymentJourneyBar } from "@/components/PaymentJourney";
@@ -1440,11 +1440,12 @@ function SendWorkModal({
 }
 
 // ── Compact project card (list view) ─────────────────────────────────────────
-function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen }: {
+function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
   pw: ProjectWithDetails;
   currentUserId: number;
   onOpen: () => void;
   onReviewOpen?: () => void;
+  onRefresh?: () => void;
 }) {
   const isFreelancer = currentUserId === pw.freelancer.id;
   const isClient = currentUserId === pw.client.id;
@@ -1453,6 +1454,38 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen }: {
   const isCompleted = pw.project.status === "completed";
   const visKey = `project_visibility_${pw.project.id}`;
   const [isPublic, setIsPublic] = useState(() => safeGet(visKey) !== "private");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<"complete" | "delete" | null>(null);
+  const { toast } = useToast();
+  const qc = useQueryClient();
+
+  const forceCompleteMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${pw.project.id}/force-complete`, { freelancerId: currentUserId });
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error((b as any).error || "Failed"); }
+    },
+    onSuccess: () => {
+      toast({ title: "Project marked as complete" });
+      qc.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
+      onRefresh?.();
+      setConfirmAction(null);
+    },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("DELETE", `/api/projects/${pw.project.id}?freelancerId=${currentUserId}`);
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error((b as any).error || "Failed"); }
+    },
+    onSuccess: () => {
+      toast({ title: "Project deleted" });
+      qc.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
+      onRefresh?.();
+      setConfirmAction(null);
+    },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
 
   // Retainer data
   const retainer = (pw.project as any);
@@ -1520,11 +1553,96 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen }: {
               {isPublic ? "Feed" : "Private"}
             </span>
           )}
+          {/* Freelancer-only quick-action menu — active projects only */}
+          {isFreelancer && !isCompleted && (
+            <div className="relative" onClick={e => e.stopPropagation()}>
+              <button
+                className="w-7 h-7 rounded-full bg-secondary flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                onClick={() => setMenuOpen(o => !o)}
+                aria-label="Project actions"
+              >
+                <MoreVertical size={13} />
+              </button>
+              {menuOpen && (
+                <>
+                  {/* Backdrop */}
+                  <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute right-0 top-8 z-20 w-52 rounded-xl border border-border bg-card shadow-lg overflow-hidden">
+                    <button
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left hover:bg-secondary/60 transition-colors"
+                      onClick={() => { setMenuOpen(false); setConfirmAction("complete"); }}
+                    >
+                      <CheckCircle2 size={14} className="text-green-600 shrink-0" />
+                      <span>Mark as complete</span>
+                    </button>
+                    <button
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left hover:bg-secondary/60 transition-colors text-destructive"
+                      onClick={() => { setMenuOpen(false); setConfirmAction("delete"); }}
+                    >
+                      <Trash2 size={14} className="shrink-0" />
+                      <span>Delete project</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <div className="w-7 h-7 rounded-full bg-secondary flex items-center justify-center text-muted-foreground group-hover:text-primary group-hover:bg-primary/10 transition-colors">
             <Expand size={13} />
           </div>
         </div>
       </div>
+
+      {/* Confirm modals — rendered outside the card button to avoid nesting issues */}
+      {confirmAction === "complete" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)" }} onClick={() => setConfirmAction(null)}>
+          <div className="w-full max-w-sm mx-4 rounded-2xl border border-border bg-card p-6 shadow-2xl flex flex-col gap-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(34,197,94,0.1)" }}>
+                <CheckCircle2 size={18} className="text-green-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">Mark as complete?</p>
+                <p className="text-xs text-muted-foreground mt-0.5">This will move the project to your completed list and notify the client.</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground bg-secondary/40 rounded-xl px-3 py-2">
+              <span className="font-medium">Note:</span> This is a temporary feature to help you get comfortable with Viewrr. It skips the normal delivery flow.
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" className="flex-1 rounded-full text-xs text-white" style={{ background: "linear-gradient(135deg,#16a34a,#22c55e)" }} onClick={() => forceCompleteMutation.mutate()} disabled={forceCompleteMutation.isPending}>
+                {forceCompleteMutation.isPending ? <LoaderIcon size={12} className="animate-spin mr-1" /> : null} Yes, mark complete
+              </Button>
+              <Button size="sm" variant="outline" className="rounded-full text-xs" onClick={() => setConfirmAction(null)}>Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmAction === "delete" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)" }} onClick={() => setConfirmAction(null)}>
+          <div className="w-full max-w-sm mx-4 rounded-2xl border border-border bg-card p-6 shadow-2xl flex flex-col gap-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 bg-destructive/10">
+                <Trash2 size={18} className="text-destructive" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">Delete this project?</p>
+                <p className="text-xs text-muted-foreground mt-0.5">This permanently removes <span className="font-medium text-foreground">{pw.project.title}</span> and cannot be undone.</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground bg-secondary/40 rounded-xl px-3 py-2">
+              <span className="font-medium">Note:</span> This is a temporary feature to help you get comfortable with Viewrr.
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" variant="destructive" className="flex-1 rounded-full text-xs" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
+                {deleteMutation.isPending ? <LoaderIcon size={12} className="animate-spin mr-1" /> : null} Yes, delete
+              </Button>
+              <Button size="sm" variant="outline" className="rounded-full text-xs" onClick={() => setConfirmAction(null)}>Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Progress — retainer vs one-off */}
       {isRetainerProject ? (
@@ -2866,7 +2984,7 @@ export default function YourWork() {
                 </h2>
                 <div className="space-y-3">
                   {active.map(pw => (
-                    <ProjectCard key={pw.project.id} pw={pw} currentUserId={user.id} onOpen={() => setOpenProject(pw)} />
+                    <ProjectCard key={pw.project.id} pw={pw} currentUserId={user.id} onOpen={() => setOpenProject(pw)} onRefresh={refetch} />
                   ))}
                 </div>
               </section>
@@ -2878,7 +2996,7 @@ export default function YourWork() {
                 </h2>
                 <div className="space-y-3">
                   {completed.map(pw => (
-                    <ProjectCard key={pw.project.id} pw={pw} currentUserId={user.id} onOpen={() => setOpenProject(pw)} onReviewOpen={() => setReviewTarget(pw)} />
+                    <ProjectCard key={pw.project.id} pw={pw} currentUserId={user.id} onOpen={() => setOpenProject(pw)} onReviewOpen={() => setReviewTarget(pw)} onRefresh={refetch} />
                   ))}
                 </div>
               </section>

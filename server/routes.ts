@@ -1013,6 +1013,54 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  // ── Temporary onboarding helpers (freelancer only, ownership-checked) ──────
+  // Force-complete: marks active project as completed (stage 5)
+  app.post("/api/projects/:id/force-complete", async (req, res) => {
+    try {
+      const { freelancerId } = req.body;
+      const callerId = Number(freelancerId);
+      if (!callerId) return res.status(400).json({ error: "freelancerId required" });
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.freelancerId !== callerId) return res.status(403).json({ error: "Only the assigned freelancer can do this" });
+      if (pw.project.status === "completed") return res.status(400).json({ error: "Project is already completed" });
+      await storage.updateProjectStatus(projectId, "completed");
+      // Advance stage to final
+      await db.update(schema.projects).set({ currentStage: 5 }).where(eq(schema.projects.id, projectId));
+      await notify({
+        recipientId: pw.project.clientId,
+        actorId: callerId,
+        actorName: pw.freelancer?.name ?? "Freelancer",
+        actorAvatar: pw.freelancer?.avatar ?? null,
+        type: "stage_advanced",
+        message: `"${pw.project.title}" has been marked as complete`,
+        link: "/your-work",
+        read: 0,
+      });
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Delete project: removes it entirely (freelancer only, active projects only)
+  app.delete("/api/projects/:id", async (req, res) => {
+    try {
+      const freelancerId = Number(req.query.freelancerId);
+      if (!freelancerId) return res.status(400).json({ error: "freelancerId required" });
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Only the assigned freelancer can delete this project" });
+      await db.delete(schema.projects).where(eq(schema.projects.id, projectId));
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  // ────────────────────────────────────────────────────────────────────────────
+
   app.post("/api/projects/:id/updates", async (req, res) => {
     try {
       const data = insertProjectUpdateSchema.parse({ ...req.body, projectId: Number(req.params.id) });
