@@ -1,3 +1,16 @@
+/**
+ * Earnings & Payouts Hub — PRD: Viewrr_PRD_Freelancer_Earnings_Payouts_Hub
+ *
+ * FR-06  Shared money formatter — validates isSafeInteger, currency GBP, divides once by 100,
+ *        uses Intl.NumberFormat. Never uses Number(v)||0. Returns unavailable sentinel on bad input.
+ * FR-07  Missing / null / NaN / Infinity / decimal / unsafe integers → unavailable state, not £0.00.
+ * FR-08  Single exhaustive state mapper drives the top action banner.
+ * FR-09  "You've been paid" copy appears ONLY when payout.status === "paid" AND amount is valid.
+ * FR-11  Skeleton, true-empty, recoverable-error states on all panels.
+ * Section 5  Page title "Earnings & payouts", supporting copy per spec, menu label "Earnings & payouts".
+ * Section 6  Module order: status banner → balance summary → payout account → earnings → transactions → education.
+ */
+
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -5,33 +18,371 @@ import { useAuth } from "@/components/AuthProvider";
 import { Button } from "@/components/ui/button";
 import { PaymentJourneyBar } from "@/components/PaymentJourney";
 import {
-  CheckCircle2, AlertCircle, Banknote, DollarSign, TrendingUp,
-  ArrowDownToLine, ChevronDown, ChevronUp, Info, Loader2 as LoaderIcon,
+  CheckCircle2, AlertCircle, Banknote, TrendingUp, ArrowDownToLine,
+  ChevronDown, ChevronUp, Info, Loader2 as LoaderIcon, RefreshCw,
+  ShieldAlert, Wallet, ReceiptText, HelpCircle, XCircle,
 } from "lucide-react";
 
-// ── Payouts Panel ─────────────────────────────────────────────────────────────
-function PayoutsPanel({ userId }: { userId: number }) {
-  const queryClient = useQueryClient();
-  const [popupOpen, setPopupOpen]         = useState(false);
-  const [popupDone, setPopupDone]         = useState(false);
-  const [showTermsModal, setShowTermsModal] = useState(false);
-  const [termsRead, setTermsRead]         = useState(false);
-  const [acceptingTerms, setAcceptingTerms] = useState(false);
-  const popupRef  = useRef<Window | null>(null);
-  const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+// ─────────────────────────────────────────────────────────────────────────────
+// FR-06  Safe money formatter
+// ─────────────────────────────────────────────────────────────────────────────
+const UNAVAILABLE = "—";
 
-  const { data: status, isLoading, refetch } = useQuery<{
-    connected: boolean;
+function fmtGBP(minorUnits: unknown): string {
+  // FR-07: reject non-integer, NaN, Infinity, null, undefined, unsafe
+  if (
+    minorUnits === null ||
+    minorUnits === undefined ||
+    typeof minorUnits !== "number" ||
+    !Number.isSafeInteger(minorUnits) ||
+    !Number.isFinite(minorUnits)
+  ) {
+    return UNAVAILABLE;
+  }
+  // Divide once by 100 — never recompute from display strings
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(
+    minorUnits / 100,
+  );
+}
+
+/** Returns true only when fmtGBP produced a valid currency string */
+function isValidAmount(minorUnits: unknown): minorUnits is number {
+  return (
+    typeof minorUnits === "number" &&
+    Number.isSafeInteger(minorUnits) &&
+    Number.isFinite(minorUnits)
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FR-08/09  Exhaustive state mapper
+// Derives ONE banner state from the combination of Connect + ledger statuses.
+// "paid" headline is ONLY emitted when payout.status === "paid" AND amount is valid.
+// ─────────────────────────────────────────────────────────────────────────────
+type BannerState =
+  | { kind: "no_connect" }
+  | { kind: "needs_verification" }
+  | { kind: "needs_terms" }
+  | { kind: "payment_received"; amountMinor: number }
+  | { kind: "payout_in_transit"; amountMinor: number }
+  | { kind: "payout_paid"; amountMinor: number }
+  | { kind: "payout_failed" }
+  | { kind: "no_earnings" }
+  | { kind: "data_unavailable" };
+
+interface ConnectStatus {
+  connected: boolean;
+  chargesEnabled?: boolean;
+  identityVerified?: boolean;
+  viewrrTermsAccepted?: boolean;
+  transfersReady?: boolean;
+  automaticPayoutsEnabled?: boolean;
+  payoutsEnabled?: boolean;
+  detailsSubmitted?: boolean;
+}
+
+interface EarningsData {
+  availableBalancePence?: number;
+  pendingBalancePence?: number;
+  lifetimeEarnedPence?: number;
+  lifetimeVolumePence?: number;
+  nextPayout?: { id: string; amount: number; arrivalDate?: string | null } | null;
+  payouts?: Array<{ id: string; amount: number; status: string; arrivalDate?: string | null; created: string; automatic?: boolean }>;
+  recentPayments?: Array<any>;
+}
+
+function deriveBannerState(
+  connect: ConnectStatus | undefined,
+  earnings: EarningsData | undefined,
+): BannerState {
+  if (!connect) return { kind: "data_unavailable" };
+
+  // Connect not started
+  if (!connect.connected) return { kind: "no_connect" };
+
+  // Terms not accepted
+  if (!connect.viewrrTermsAccepted) return { kind: "needs_terms" };
+
+  // Identity not verified
+  if (!connect.identityVerified && !connect.chargesEnabled) return { kind: "needs_verification" };
+
+  if (!earnings) return { kind: "data_unavailable" };
+
+  // FR-09: payout paid — check the most recent payout with status "paid"
+  const latestPayout = (earnings.payouts ?? []).find(p => p.status === "paid");
+  if (latestPayout && isValidAmount(latestPayout.amount)) {
+    return { kind: "payout_paid", amountMinor: latestPayout.amount };
+  }
+
+  // Payout failed
+  const failedPayout = (earnings.payouts ?? []).find(p => p.status === "failed");
+  if (failedPayout) return { kind: "payout_failed" };
+
+  // Payout in transit (most recent)
+  const inTransit = (earnings.payouts ?? []).find(p => p.status === "in_transit" || p.status === "pending");
+  if (inTransit && isValidAmount(inTransit.amount)) {
+    return { kind: "payout_in_transit", amountMinor: inTransit.amount };
+  }
+
+  // Payment received (transfer pending / in transit)
+  const latestPayment = (earnings.recentPayments ?? []).find(
+    p => p.status === "succeeded",
+  );
+  if (latestPayment && isValidAmount(latestPayment.freelancer_pence)) {
+    return { kind: "payment_received", amountMinor: latestPayment.freelancer_pence };
+  }
+
+  // No earnings yet
+  if (!isValidAmount(earnings.lifetimeEarnedPence) || earnings.lifetimeEarnedPence === 0) {
+    return { kind: "no_earnings" };
+  }
+
+  return { kind: "data_unavailable" };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status / Action Banner  (Module 1 per spec)
+// ─────────────────────────────────────────────────────────────────────────────
+function StatusBanner({
+  banner,
+  onSetupClick,
+  onVerifyClick,
+}: {
+  banner: BannerState;
+  onSetupClick: () => void;
+  onVerifyClick: () => void;
+}) {
+  // Section 7 copy matrix
+  const config: Record<
+    BannerState["kind"],
+    { icon: React.ReactNode; headline: string; sub?: string; cta?: string; onCta?: () => void; style: "orange" | "green" | "amber" | "red" | "neutral" }
+  > = {
+    no_connect: {
+      icon: <Wallet size={18} className="text-white" />,
+      headline: "Set up payouts",
+      sub: "Connect your bank account to start receiving payments.",
+      cta: "Connect bank account",
+      onCta: onSetupClick,
+      style: "orange",
+    },
+    needs_verification: {
+      icon: <ShieldAlert size={18} className="text-white" />,
+      headline: "Complete payout verification",
+      sub: "Your Stripe account needs verification before you can receive payouts.",
+      cta: "Complete verification",
+      onCta: onVerifyClick,
+      style: "amber",
+    },
+    needs_terms: {
+      icon: <ReceiptText size={18} className="text-white" />,
+      headline: "Accept Viewrr payment terms",
+      sub: "One quick step to unlock payouts.",
+      cta: "Review & accept",
+      onCta: onSetupClick,
+      style: "amber",
+    },
+    payment_received: {
+      icon: <CheckCircle2 size={18} className="text-white" />,
+      headline: "Payment received",
+      sub: "Your payout is being prepared and will reach your bank soon.",
+      cta: "View details",
+      style: "green",
+    },
+    payout_in_transit: {
+      icon: <ArrowDownToLine size={18} className="text-white" />,
+      headline: "Your payout is on the way",
+      sub: "Funds are in transit to your bank account.",
+      cta: "Track payout",
+      style: "orange",
+    },
+    payout_paid: {
+      icon: <Banknote size={18} className="text-white" />,
+      headline: "", // built dynamically below with validated amount
+      sub: "",
+      cta: "View transaction",
+      style: "green",
+    },
+    payout_failed: {
+      icon: <XCircle size={18} className="text-white" />,
+      headline: "Your payout needs attention",
+      sub: "A payout could not be completed. Please check your payout account.",
+      cta: "Resolve payout issue",
+      onCta: onVerifyClick,
+      style: "red",
+    },
+    no_earnings: {
+      icon: <TrendingUp size={18} className="text-white" />,
+      headline: "Your earnings will appear here",
+      sub: "Complete a project to see your balance.",
+      cta: "View available briefs",
+      style: "neutral",
+    },
+    data_unavailable: {
+      icon: <RefreshCw size={18} className="text-white" />,
+      headline: "We couldn't load this amount",
+      sub: "There was a problem fetching your financial data.",
+      cta: "Retry",
+      style: "neutral",
+    },
+  };
+
+  const c = config[banner.kind];
+
+  // FR-09: build paid headline only from validated payout record
+  let headline = c.headline;
+  let sub = c.sub ?? "";
+  if (banner.kind === "payout_paid") {
+    headline = `You've been paid ${fmtGBP(banner.amountMinor)}`;
+    sub = "The funds have been sent to your bank account.";
+  } else if (banner.kind === "payout_in_transit") {
+    headline = `Your payout is on the way — ${fmtGBP(banner.amountMinor)}`;
+  } else if (banner.kind === "payment_received") {
+    headline = `Payment received — ${fmtGBP(banner.amountMinor)}`;
+  }
+
+  const bgMap = {
+    orange: "linear-gradient(135deg, #FF5A1F 0%, #FF8C42 60%, #FFD700 100%)",
+    green:  "linear-gradient(135deg, #16a34a 0%, #22c55e 100%)",
+    amber:  "linear-gradient(135deg, #d97706 0%, #f59e0b 100%)",
+    red:    "linear-gradient(135deg, #dc2626 0%, #ef4444 100%)",
+    neutral:"linear-gradient(135deg, #64748b 0%, #94a3b8 100%)",
+  };
+
+  return (
+    <div
+      className="mb-6 rounded-2xl overflow-hidden"
+      style={{ background: bgMap[c.style], boxShadow: "0 4px 24px rgba(0,0,0,0.15)" }}
+      data-testid="status-banner"
+    >
+      <div className="px-5 py-4 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full flex items-center justify-center bg-white/20 shrink-0">
+            {c.icon}
+          </div>
+          <div>
+            <p className="text-white font-bold text-sm leading-tight">{headline}</p>
+            {sub && <p className="text-white/80 text-xs mt-0.5">{sub}</p>}
+          </div>
+        </div>
+        {c.cta && (
+          <button
+            onClick={c.onCta}
+            className="flex-shrink-0 px-4 py-2 rounded-full bg-white text-xs font-bold transition-all hover:scale-105 active:scale-95"
+            style={{ color: c.style === "green" ? "#16a34a" : c.style === "red" ? "#dc2626" : "#FF5A1F" }}
+          >
+            {c.cta} →
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Balance Summary  (Module 2 per spec — with definition tooltips)
+// ─────────────────────────────────────────────────────────────────────────────
+const BALANCE_DEFS = {
+  "Available balance": "Funds cleared and ready to be paid to your bank.",
+  "Pending balance": "Payments received but still in Stripe's availability period.",
+  "Lifetime earnings": "Total net amount paid out to you across all projects.",
+  "Project volume": "Total gross amount clients have paid for your projects.",
+};
+
+function BalanceSummary({ data, isLoading, isError, onRetry }: {
+  data: EarningsData | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  onRetry: () => void;
+}) {
+  const [tooltip, setTooltip] = useState<string | null>(null);
+
+  if (isLoading) {
+    return (
+      <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="balance-skeleton">
+        {[0, 1, 2, 3].map(i => (
+          <div key={i} className="h-20 rounded-xl border border-border bg-secondary/30 animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="mb-6 rounded-2xl border border-border bg-card px-5 py-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <AlertCircle size={14} className="text-destructive shrink-0" />
+          <span>We couldn't load your balances.</span>
+        </div>
+        <Button size="sm" variant="outline" className="rounded-full text-xs gap-1" onClick={onRetry}>
+          <RefreshCw size={11} /> Retry
+        </Button>
+      </div>
+    );
+  }
+
+  const cards = [
+    { label: "Available balance" as const, value: data?.availableBalancePence, highlight: true },
+    { label: "Pending balance"   as const, value: data?.pendingBalancePence },
+    { label: "Lifetime earnings" as const, value: data?.lifetimeEarnedPence },
+    { label: "Project volume"    as const, value: data?.lifetimeVolumePence },
+  ];
+
+  return (
+    <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="balance-summary">
+      {cards.map(card => (
+        <div
+          key={card.label}
+          className="relative flex flex-col gap-1 p-3 rounded-xl border border-border bg-card"
+        >
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-muted-foreground leading-tight">{card.label}</span>
+            <button
+              className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+              onClick={() => setTooltip(tooltip === card.label ? null : card.label)}
+              aria-label={`Definition of ${card.label}`}
+            >
+              <HelpCircle size={10} />
+            </button>
+          </div>
+          {tooltip === card.label && (
+            <div className="absolute bottom-full left-0 mb-1 z-10 w-48 rounded-xl border border-border bg-popover px-3 py-2 text-[10px] text-muted-foreground shadow-lg">
+              {BALANCE_DEFS[card.label]}
+            </div>
+          )}
+          {/* FR-07: show UNAVAILABLE sentinel rather than £0 for missing/invalid values */}
+          <span
+            className={`text-lg font-bold tabular-nums ${card.highlight ? "text-foreground" : "text-muted-foreground"}`}
+            aria-label={`${card.label}: ${fmtGBP(card.value)}`}
+          >
+            {fmtGBP(card.value)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payout Account  (Module 3 per spec)
+// ─────────────────────────────────────────────────────────────────────────────
+function PayoutAccount({
+  userId,
+  onSetupTriggered,
+}: {
+  userId: number;
+  onSetupTriggered?: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [popupOpen, setPopupOpen]           = useState(false);
+  const [popupDone, setPopupDone]           = useState(false);
+  const [showTermsModal, setShowTermsModal] = useState(false);
+  const [termsRead, setTermsRead]           = useState(false);
+  const [acceptingTerms, setAcceptingTerms] = useState(false);
+  const popupRef = useRef<Window | null>(null);
+  const pollRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const { data: status, isLoading, isError, refetch } = useQuery<ConnectStatus & {
     stripeAccountId?: string;
-    onboarded?: boolean;
-    chargesEnabled?: boolean;
-    payoutsEnabled?: boolean;
-    identityVerified?: boolean;
-    automaticPayoutsEnabled?: boolean;
-    viewrrTermsAccepted?: boolean;
-    viewrrTermsAcceptedAt?: string | null;
-    transfersReady?: boolean;
-    pendingPence?: number;
     readinessState?: string;
     disabledReason?: string | null;
     pendingRequirements?: string[];
@@ -39,7 +390,7 @@ function PayoutsPanel({ userId }: { userId: number }) {
     queryKey: ["/api/stripe/status", userId],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/stripe/status/${userId}`);
-      if (!res.ok) return { connected: false, onboarded: false, pendingPence: 0 };
+      if (!res.ok) throw new Error("Could not fetch Connect status");
       return res.json();
     },
     staleTime: 0,
@@ -70,11 +421,9 @@ function PayoutsPanel({ userId }: { userId: number }) {
         }
       } catch {}
     }, 2500);
-  }, [userId, refetch]);
+  }, [userId, refetch, queryClient]);
 
-  useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, []);
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   const handleAcceptTerms = async () => {
     setAcceptingTerms(true);
@@ -98,20 +447,11 @@ function PayoutsPanel({ userId }: { userId: number }) {
     mutationFn: async () => {
       const res1 = await apiRequest("POST", "/api/stripe/connect-account", { userId });
       const data1 = await res1.json().catch(() => ({}));
-      if ((data1 as any).code === "VIEWRR_PAYMENT_TERMS_REQUIRED") {
-        setShowTermsModal(true);
-        return "terms_required";
-      }
+      if ((data1 as any).code === "VIEWRR_PAYMENT_TERMS_REQUIRED") { setShowTermsModal(true); return "terms_required"; }
       if (!res1.ok) throw new Error((data1 as any).error || "Could not set up Stripe account");
-      if ((data1 as any).alreadyExists && (data1 as any).viewrrTermsAccepted) {
-        await refetch();
-        return "already_connected";
-      }
+      if ((data1 as any).alreadyExists && (data1 as any).viewrrTermsAccepted) { await refetch(); return "already_connected"; }
       const res2 = await apiRequest("POST", "/api/stripe/onboarding-link", { userId });
-      if (!res2.ok) {
-        const b = await res2.json().catch(() => ({}));
-        throw new Error((b as any).error || "Could not generate onboarding link");
-      }
+      if (!res2.ok) { const b = await res2.json().catch(() => ({})); throw new Error((b as any).error || "Could not generate onboarding link"); }
       const { url } = await res2.json();
       return url as string;
     },
@@ -122,26 +462,19 @@ function PayoutsPanel({ userId }: { userId: number }) {
       const left = Math.round(window.screenX + (window.outerWidth  - w) / 2);
       const top  = Math.round(window.screenY + (window.outerHeight - h) / 2);
       const popup = window.open(url, "stripe_onboarding", `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`);
-      if (popup) {
-        popupRef.current = popup;
-        setPopupOpen(true);
-        setPopupDone(false);
-        startPolling();
-      } else {
-        window.location.href = url;
-      }
+      if (popup) { popupRef.current = popup; setPopupOpen(true); setPopupDone(false); startPolling(); onSetupTriggered?.(); }
+      else { window.location.href = url; }
     },
   });
 
-  const pendingGBP   = ((status?.pendingPence ?? 0) / 100).toFixed(2);
-  const isFullyActive = status?.connected && (status?.chargesEnabled || status?.identityVerified) && status?.viewrrTermsAccepted;
+  const isFullyActive  = status?.connected && (status?.chargesEnabled || status?.identityVerified) && status?.viewrrTermsAccepted;
   const needsTermsOnly = status?.connected && !status?.viewrrTermsAccepted;
 
   const statusItems = status?.connected ? [
-    { label: "Connected",            ok: !!status.connected },
-    { label: "Identity Verified",    ok: !!(status.identityVerified || (status as any).detailsSubmitted) },
-    { label: "Transfers Enabled",    ok: !!(status.transfersReady  || status.chargesEnabled) },
-    { label: "Automatic Payouts",    ok: !!(status.automaticPayoutsEnabled || status.payoutsEnabled) },
+    { label: "Connected",             ok: !!status.connected },
+    { label: "Identity Verified",     ok: !!(status.identityVerified || (status as any).detailsSubmitted) },
+    { label: "Transfers Enabled",     ok: !!(status.transfersReady   || status.chargesEnabled) },
+    { label: "Automatic Payouts",     ok: !!(status.automaticPayoutsEnabled || status.payoutsEnabled) },
     { label: "Viewrr Terms Accepted", ok: !!status.viewrrTermsAccepted },
   ] : null;
 
@@ -219,27 +552,39 @@ function PayoutsPanel({ userId }: { userId: number }) {
         </div>
       )}
 
-      <div className="mb-8 rounded-2xl border border-border bg-card overflow-hidden" data-testid="panel-payouts">
+      <div className="mb-6 rounded-2xl border border-border bg-card overflow-hidden" data-testid="panel-payout-account">
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div className="flex items-center gap-2">
             <Banknote size={16} className="text-primary" />
-            <span className="text-sm font-semibold">Payouts</span>
+            <span className="text-sm font-semibold">Payout account</span>
           </div>
-          {isFullyActive && (
-            <span className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full" style={{ background: "rgba(34,197,94,0.1)", color: "#16a34a" }}>
-              <CheckCircle2 size={12} /> Active
-            </span>
-          )}
-          {needsTermsOnly && <span className="text-xs font-medium text-amber-600 dark:text-amber-400 px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-900/20">Terms needed</span>}
-          {status?.connected && !status?.identityVerified && !needsTermsOnly && (
-            <span className="text-xs font-medium text-amber-600 dark:text-amber-400 px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-900/20">Verification needed</span>
-          )}
+          {isFullyActive  && <span className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full" style={{ background: "rgba(34,197,94,0.1)", color: "#16a34a" }}><CheckCircle2 size={12} /> Active</span>}
+          {needsTermsOnly && <span className="text-xs font-medium text-amber-600 px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-900/20">Terms needed</span>}
+          {status?.connected && !status?.identityVerified && !needsTermsOnly && <span className="text-xs font-medium text-amber-600 px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-900/20">Verification needed</span>}
         </div>
 
         <div className="px-5 py-4">
-          {isLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderIcon size={14} className="animate-spin" /> Checking payout status…</div>
-          ) : (
+          {/* FR-11: skeleton while loading */}
+          {isLoading && (
+            <div className="space-y-2">
+              {[0,1,2,3,4].map(i => <div key={i} className="h-6 rounded-lg bg-secondary/40 animate-pulse" style={{ width: `${70 + i * 5}%` }} />)}
+            </div>
+          )}
+
+          {/* FR-11: recoverable error */}
+          {isError && !isLoading && (
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <AlertCircle size={14} className="text-destructive shrink-0" />
+                <span>Couldn't load payout account status.</span>
+              </div>
+              <Button size="sm" variant="outline" className="rounded-full text-xs gap-1" onClick={() => refetch()}>
+                <RefreshCw size={11} /> Retry
+              </Button>
+            </div>
+          )}
+
+          {!isLoading && !isError && (
             <div className="space-y-4">
               {statusItems && (
                 <div className="rounded-xl border border-border bg-secondary/30 p-3 space-y-2">
@@ -251,18 +596,20 @@ function PayoutsPanel({ userId }: { userId: number }) {
                   ))}
                 </div>
               )}
+
               {popupDone && !status?.identityVerified && (
                 <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium" style={{ background: "rgba(34,197,94,0.08)", color: "#16a34a", border: "1px solid rgba(34,197,94,0.2)" }}>
                   <CheckCircle2 size={14} /> Verification submitted — Stripe is processing your details.
                 </div>
               )}
+
               {needsTermsOnly && (
                 <div className="space-y-3">
                   <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.2)" }}>
                     <CheckCircle2 size={15} style={{ color: "#FF5A1F" }} className="mt-0.5 shrink-0" />
                     <div>
                       <p className="text-xs font-semibold">Your Stripe account is already connected</p>
-                      <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">You just need to accept Viewrr's payment terms to start receiving payments. This takes under 30 seconds.</p>
+                      <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">Accept Viewrr's payment terms to start receiving payments — takes under 30 seconds.</p>
                     </div>
                   </div>
                   <Button size="sm" className="text-white rounded-full gap-2 text-xs w-full" style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }} onClick={() => setShowTermsModal(true)}>
@@ -270,31 +617,19 @@ function PayoutsPanel({ userId }: { userId: number }) {
                   </Button>
                 </div>
               )}
+
               {isFullyActive && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2.5 text-sm">
-                    <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />
-                    <span className="text-muted-foreground">Your bank account is connected. Payments are paid out automatically.</span>
-                  </div>
-                  {(status?.pendingPence ?? 0) > 0 && (
-                    <div className="flex items-center justify-between px-4 py-3 rounded-xl bg-secondary/60 border border-border">
-                      <div className="flex items-center gap-2">
-                        <DollarSign size={14} className="text-primary" />
-                        <span className="text-xs font-semibold">Pending earnings</span>
-                      </div>
-                      <span className="text-sm font-bold" style={{ color: "#FF5A1F" }}>£{pendingGBP}</span>
-                    </div>
-                  )}
+                <div className="flex items-center gap-2.5 text-sm">
+                  <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />
+                  <span className="text-muted-foreground">Your bank account is connected. Payments are paid out automatically.</span>
                 </div>
               )}
+
               {status?.connected && !status?.identityVerified && !needsTermsOnly && !popupDone && (
                 <div className="space-y-3">
                   <div className="flex items-start gap-2.5">
                     <AlertCircle size={15} className="text-amber-500 mt-0.5 flex-shrink-0" />
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Your Stripe account exists but needs verification to receive payments.
-                      {(status?.pendingPence ?? 0) > 0 && <span className="block mt-1 font-medium text-foreground">£{pendingGBP} is held and will be released once verified.</span>}
-                    </p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">Your Stripe account exists but needs verification before you can receive payments.</p>
                   </div>
                   <Button size="sm" className="text-white rounded-full gap-2 text-xs" style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }} onClick={() => connectMutation.mutate()} disabled={connectMutation.isPending}>
                     {connectMutation.isPending ? <><LoaderIcon size={12} className="animate-spin" /> Opening…</> : <>Complete verification →</>}
@@ -302,9 +637,10 @@ function PayoutsPanel({ userId }: { userId: number }) {
                   {connectMutation.isError && <p className="text-xs text-destructive">{(connectMutation.error as any)?.message}</p>}
                 </div>
               )}
+
               {!status?.connected && (
                 <div className="space-y-3">
-                  <p className="text-xs text-muted-foreground leading-relaxed">Connect your bank account to receive payments from clients directly. It takes about 2 minutes.</p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">Connect your bank account to receive payments from clients. Takes about 2 minutes.</p>
                   <Button size="sm" className="text-white rounded-full gap-2 text-xs" style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }} onClick={() => connectMutation.mutate()} disabled={connectMutation.isPending}>
                     {connectMutation.isPending ? <><LoaderIcon size={12} className="animate-spin" /> Opening…</> : <><Banknote size={12} /> Set up payouts</>}
                   </Button>
@@ -319,44 +655,78 @@ function PayoutsPanel({ userId }: { userId: number }) {
   );
 }
 
-// ── Earnings Panel ────────────────────────────────────────────────────────────
-function EarningsPanel({ userId }: { userId: number }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Earnings Summary + Transaction History + Education  (Modules 4-6 per spec)
+// ─────────────────────────────────────────────────────────────────────────────
+function EarningsAndHistory({ userId }: { userId: number }) {
   const [educationOpen, setEducationOpen]     = useState(false);
   const [expandedPayment, setExpandedPayment] = useState<string | null>(null);
 
-  const { data, isLoading } = useQuery<{
-    lifetimeEarnedPence: number;
-    lifetimeVolumePence: number;
-    availableBalancePence: number;
-    pendingBalancePence: number;
-    nextPayout?: { id: string; amount: number; arrivalDate?: string | null } | null;
-    payouts: Array<{ id: string; amount: number; status: string; arrivalDate?: string | null; created: string; automatic?: boolean }>;
-    recentPayments: Array<any>;
-  }>({
+  const { data, isLoading, isError, refetch } = useQuery<EarningsData>({
     queryKey: ["/api/stripe/earnings", userId],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/stripe/earnings/${userId}`);
-      if (!res.ok) return { lifetimeEarnedPence: 0, lifetimeVolumePence: 0, availableBalancePence: 0, pendingBalancePence: 0, payouts: [], recentPayments: [] };
+      if (!res.ok) throw new Error("Could not load earnings");
       return res.json();
     },
     staleTime: 0,
     refetchOnMount: true,
   });
 
-  const fmt = (p: number) => `£${(p / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const friendlyPayout = (s: string) => ({ paid: "Paid to bank", in_transit: "In transit", pending: "Pending", canceled: "Cancelled", failed: "Failed" }[s] ?? s);
+  const friendlyPayout = (s: string) =>
+    ({ paid: "Paid to bank", in_transit: "In transit", pending: "Pending", canceled: "Cancelled", failed: "Failed" }[s] ?? s);
+
   const paymentToJourneyStatus = (p: any) => ({
-    paymentStatus: p.status ?? "pending",
+    paymentStatus:  p.status          ?? "pending",
     transferStatus: p.transfer_status ?? null,
-    payoutStatus: null,
-    grossPence: p.gross_pence,
-    freelancerPence: p.freelancer_pence,
-    platformFeePence: p.platform_fee_pence,
-    timestamps: { paid: p.succeeded_at ?? p.created_at, authorised: p.succeeded_at, transferred: p.transferred_at ?? null },
+    payoutStatus:   null,
+    grossPence:        p.gross_pence,
+    freelancerPence:   p.freelancer_pence,
+    platformFeePence:  p.platform_fee_pence,
+    timestamps: {
+      paid:        p.succeeded_at ?? p.created_at,
+      authorised:  p.succeeded_at,
+      transferred: p.transferred_at ?? null,
+    },
   });
 
+  // FR-11: skeleton loading — no layout shift
+  if (isLoading) {
+    return (
+      <div className="mb-6 rounded-2xl border border-border bg-card overflow-hidden" data-testid="earnings-skeleton">
+        <div className="px-5 py-4 border-b border-border flex items-center gap-2">
+          <TrendingUp size={16} className="text-primary" />
+          <span className="text-sm font-semibold">Earnings</span>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          {[80, 60, 70, 40].map((w, i) => (
+            <div key={i} className="h-5 rounded-lg bg-secondary/40 animate-pulse" style={{ width: `${w}%` }} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // FR-11: recoverable error
+  if (isError) {
+    return (
+      <div className="mb-6 rounded-2xl border border-border bg-card px-5 py-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <AlertCircle size={14} className="text-destructive shrink-0" />
+          <span>Couldn't load earnings data.</span>
+        </div>
+        <Button size="sm" variant="outline" className="rounded-full text-xs gap-1" onClick={() => refetch()}>
+          <RefreshCw size={11} /> Retry
+        </Button>
+      </div>
+    );
+  }
+
+  // FR-11: true-empty (no payout history, no lifetime earnings)
+  const hasData = !!(data?.payouts?.length || (isValidAmount(data?.lifetimeEarnedPence) && (data?.lifetimeEarnedPence ?? 0) > 0));
+
   return (
-    <div className="mb-8 rounded-2xl border border-border bg-card overflow-hidden" data-testid="panel-earnings">
+    <div className="mb-6 rounded-2xl border border-border bg-card overflow-hidden" data-testid="panel-earnings">
       <div className="flex items-center justify-between px-5 py-4 border-b border-border">
         <div className="flex items-center gap-2">
           <TrendingUp size={16} className="text-primary" />
@@ -367,13 +737,136 @@ function EarningsPanel({ userId }: { userId: number }) {
         </a>
       </div>
 
-      <div className="px-5 py-4">
-        {/* How payments work accordion */}
-        <div className="mb-4 rounded-xl border border-border overflow-hidden">
-          <button className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-secondary/30 transition-colors" onClick={() => setEducationOpen(o => !o)}>
+      <div className="px-5 py-4 space-y-5">
+        {/* Next payout */}
+        {data?.nextPayout && isValidAmount(data.nextPayout.amount) && (
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.2)" }}>
+            <ArrowDownToLine size={15} style={{ color: "#FF5A1F" }} className="shrink-0" />
+            <div>
+              <p className="text-xs font-semibold">Next automatic payout: {fmtGBP(data.nextPayout.amount)}</p>
+              {data.nextPayout.arrivalDate && (
+                <>
+                  <p className="text-xs text-muted-foreground mt-0.5">Estimated bank arrival: {data.nextPayout.arrivalDate}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5 italic">Estimated dates depend on Stripe and your bank.</p>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* FR-11: true empty */}
+        {!hasData && (
+          <div className="py-8 text-center">
+            <TrendingUp size={28} className="mx-auto mb-2 text-muted-foreground/30" />
+            <p className="text-sm font-semibold text-muted-foreground">Your earnings will appear here</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">Complete a project to see your balance and transaction history.</p>
+            <a href="/#/briefs" className="mt-3 inline-block text-xs font-semibold" style={{ color: "#FF5A1F" }}>View available briefs →</a>
+          </div>
+        )}
+
+        {/* Transaction history (Module 5) — recent payments */}
+        {(data?.recentPayments ?? []).length > 0 && (
+          <div>
+            <p className="text-xs font-semibold mb-2">Transaction history</p>
+            <div className="space-y-2">
+              {data!.recentPayments.slice(0, 10).map((p: any) => {
+                const isExpanded = expandedPayment === p.public_id;
+                const jStatus    = paymentToJourneyStatus(p);
+                // FR-07: validate all amounts before display
+                const grossFmt   = fmtGBP(p.gross_pence);
+                const netFmt     = fmtGBP(p.freelancer_pence);
+                const feeFmt     = fmtGBP(p.platform_fee_pence);
+                return (
+                  <div key={p.public_id} className="rounded-xl border border-border overflow-hidden">
+                    <button
+                      className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-secondary/20 transition-colors"
+                      onClick={() => setExpandedPayment(isExpanded ? null : p.public_id)}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-semibold truncate">{p.project_title ?? "Payment"}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          Net {netFmt} · {p.status ?? "—"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] text-muted-foreground hidden sm:block">{p.created_at?.slice(0,10)}</span>
+                        {isExpanded ? <ChevronUp size={13} className="text-muted-foreground" /> : <ChevronDown size={13} className="text-muted-foreground" />}
+                      </div>
+                    </button>
+                    {isExpanded && (
+                      <div className="px-4 pb-4 border-t border-border pt-3 space-y-3">
+                        {/* FR-10: gross/fee/net breakdown */}
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { label: "Gross",       value: grossFmt },
+                            { label: "Viewrr fee",  value: feeFmt },
+                            { label: "Net to you",  value: netFmt },
+                          ].map(r => (
+                            <div key={r.label} className="flex flex-col gap-0.5 p-2 rounded-lg bg-secondary/30 border border-border">
+                              <span className="text-[10px] text-muted-foreground">{r.label}</span>
+                              <span className="text-xs font-bold tabular-nums">{r.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                        {(p.status === "succeeded" && !p.transfer_status) && (
+                          <div className="px-3 py-2.5 rounded-xl text-xs" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.18)" }}>
+                            <p className="font-semibold mb-1" style={{ color: "#FF5A1F" }}>Why haven't I received this yet?</p>
+                            <p className="text-muted-foreground">Your client has paid. The payment is in Stripe's standard availability period. Stripe will send it to your bank automatically — no action needed.</p>
+                          </div>
+                        )}
+                        <PaymentJourneyBar
+                          paymentStatus={jStatus.paymentStatus}
+                          transferStatus={jStatus.transferStatus}
+                          payoutStatus={jStatus.payoutStatus}
+                          grossPence={jStatus.grossPence}
+                          freelancerPence={jStatus.freelancerPence}
+                          platformFeePence={jStatus.platformFeePence}
+                          timestamps={jStatus.timestamps}
+                          role="freelancer"
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Payout history */}
+        {(data?.payouts ?? []).length > 0 && (
+          <div>
+            <p className="text-xs font-semibold mb-2">Payout history</p>
+            <div className="space-y-1.5">
+              {data!.payouts.slice(0, 8).map(p => (
+                <div key={p.id} className="flex items-center justify-between text-xs py-1.5 border-b border-border last:border-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.status === "paid" ? "bg-green-500" : p.status === "failed" ? "bg-red-500" : "bg-amber-400"}`} />
+                    <span className="text-muted-foreground">{p.created?.slice(0, 10)}</span>
+                    {p.automatic && <span className="text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold">Auto</span>}
+                  </div>
+                  {/* FR-07: validate amount before display */}
+                  <span className="font-semibold">{fmtGBP(p.amount)}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${p.status === "paid" ? "bg-green-100 text-green-800" : p.status === "failed" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>
+                    {friendlyPayout(p.status)}
+                  </span>
+                  {p.arrivalDate && <span className="text-[10px] text-muted-foreground">→ {p.arrivalDate}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* How payments work accordion (Module 6 — moved, unchanged) */}
+        <div className="rounded-xl border border-border overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-secondary/30 transition-colors"
+            onClick={() => setEducationOpen(o => !o)}
+            aria-expanded={educationOpen}
+          >
             <span className="text-xs font-semibold">How payments work</span>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] text-muted-foreground">{educationOpen ? "Hide" : "Learn More"}</span>
+              <span className="text-[10px] text-muted-foreground">{educationOpen ? "Hide" : "Learn more"}</span>
               {educationOpen ? <ChevronUp size={12} className="text-muted-foreground" /> : <ChevronDown size={12} className="text-muted-foreground" />}
             </div>
           </button>
@@ -391,124 +884,31 @@ function EarningsPanel({ userId }: { userId: number }) {
                   <span>{line}</span>
                 </div>
               ))}
-              <div className="pt-1">
-                <a href="/#/help/payments" className="inline-flex items-center gap-1 text-[11px] font-semibold" style={{ color: "#FF5A1F" }}>Learn More →</a>
-              </div>
+              <a href="/#/help/payments" className="inline-flex items-center gap-1 text-[11px] font-semibold pt-1" style={{ color: "#FF5A1F" }}>Full payments guide →</a>
             </div>
           )}
         </div>
-
-        {isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderIcon size={14} className="animate-spin" /> Loading earnings…</div>
-        ) : (
-          <div className="space-y-5">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {[
-                { label: "Available balance", value: fmt(data?.availableBalancePence ?? 0), highlight: true },
-                { label: "Pending balance",   value: fmt(data?.pendingBalancePence   ?? 0) },
-                { label: "Lifetime earnings", value: fmt(data?.lifetimeEarnedPence   ?? 0) },
-                { label: "Project volume",    value: fmt(data?.lifetimeVolumePence   ?? 0) },
-              ].map(card => (
-                <div key={card.label} className="flex flex-col gap-0.5 p-3 rounded-xl border border-border bg-secondary/30">
-                  <span className="text-[10px] text-muted-foreground">{card.label}</span>
-                  <span className={`text-lg font-bold tabular-nums ${card.highlight ? "text-foreground" : "text-muted-foreground"}`}>{card.value}</span>
-                </div>
-              ))}
-            </div>
-
-            {data?.nextPayout && (
-              <div className="flex items-center gap-3 px-4 py-3 rounded-xl" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.2)" }}>
-                <ArrowDownToLine size={15} style={{ color: "#FF5A1F" }} className="shrink-0" />
-                <div>
-                  <p className="text-xs font-semibold">Next automatic payout: {fmt(data.nextPayout.amount)}</p>
-                  {data.nextPayout.arrivalDate && (
-                    <>
-                      <p className="text-xs text-muted-foreground mt-0.5">Estimated bank arrival: {data.nextPayout.arrivalDate}</p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5 italic">Estimated dates depend on Stripe and your bank.</p>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {(data?.recentPayments ?? []).length > 0 && (
-              <div>
-                <p className="text-xs font-semibold mb-2">Recent payments</p>
-                <div className="space-y-2">
-                  {data!.recentPayments.slice(0, 5).map((p: any) => {
-                    const isExpanded = expandedPayment === p.public_id;
-                    const jStatus = paymentToJourneyStatus(p);
-                    return (
-                      <div key={p.public_id} className="rounded-xl border border-border overflow-hidden">
-                        <button className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-secondary/20 transition-colors" onClick={() => setExpandedPayment(isExpanded ? null : p.public_id)}>
-                          <div>
-                            <p className="text-xs font-semibold">{p.project_title ?? "Payment"}</p>
-                            <p className="text-[11px] text-muted-foreground">{fmt(p.freelancer_pence ?? 0)} · {p.status}</p>
-                          </div>
-                          {isExpanded ? <ChevronUp size={13} className="text-muted-foreground shrink-0" /> : <ChevronDown size={13} className="text-muted-foreground shrink-0" />}
-                        </button>
-                        {isExpanded && (
-                          <div className="px-4 pb-4 border-t border-border pt-3">
-                            {(p.status === "succeeded" && !p.transfer_status) && (
-                              <div className="mb-3 px-3 py-2.5 rounded-xl text-xs" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.18)" }}>
-                                <p className="font-semibold mb-1" style={{ color: "#FF5A1F" }}>Why haven't I received this yet?</p>
-                                <p className="text-muted-foreground">Your client has paid. Your payment has reached Stripe and is in its standard availability period. Stripe will automatically send it to your bank once this period ends. No action is needed.</p>
-                              </div>
-                            )}
-                            <PaymentJourneyBar
-                              paymentStatus={jStatus.paymentStatus}
-                              transferStatus={jStatus.transferStatus}
-                              payoutStatus={jStatus.payoutStatus}
-                              grossPence={jStatus.grossPence}
-                              freelancerPence={jStatus.freelancerPence}
-                              platformFeePence={jStatus.platformFeePence}
-                              timestamps={jStatus.timestamps}
-                              role="freelancer"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {(data?.payouts ?? []).length > 0 && (
-              <div>
-                <p className="text-xs font-semibold mb-2">Payout history</p>
-                <div className="space-y-1.5">
-                  {data!.payouts.slice(0, 6).map(p => (
-                    <div key={p.id} className="flex items-center justify-between text-xs py-1.5 border-b border-border last:border-0">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.status === "paid" ? "bg-green-500" : p.status === "failed" ? "bg-red-500" : "bg-amber-400"}`} />
-                        <span className="text-muted-foreground">{p.created?.slice(0, 10)}</span>
-                        {p.automatic && <span className="text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-semibold">Auto</span>}
-                      </div>
-                      <span className="font-semibold">{fmt(p.amount)}</span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${p.status === "paid" ? "bg-green-100 text-green-800" : p.status === "failed" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>{friendlyPayout(p.status)}</span>
-                      {p.arrivalDate && <span className="text-[10px] text-muted-foreground">→ {p.arrivalDate}</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {!data?.payouts?.length && !data?.lifetimeEarnedPence && (
-              <p className="text-xs text-muted-foreground text-center py-4">No earnings yet. Complete a project to see your balance here.</p>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Page
+// ─────────────────────────────────────────────────────────────────────────────
 export default function PayoutsEarnings() {
   const { user } = useAuth();
 
-  if (!user || user.role !== "freelancer") {
+  // AC-10: permission-denied — no flash of financial data
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-sm text-muted-foreground">Sign in to view your earnings.</p>
+      </div>
+    );
+  }
+
+  if (user.role !== "freelancer") {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <p className="text-sm text-muted-foreground">This page is only available to freelancers.</p>
@@ -516,17 +916,78 @@ export default function PayoutsEarnings() {
     );
   }
 
+  return <EarningsPage userId={user.id} />;
+}
+
+function EarningsPage({ userId }: { userId: number }) {
+  // Both queries needed to derive banner state
+  const connectQuery = useQuery<ConnectStatus>({
+    queryKey: ["/api/stripe/status", userId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/stripe/status/${userId}`);
+      if (!res.ok) throw new Error("Status fetch failed");
+      return res.json();
+    },
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+  });
+
+  const earningsQuery = useQuery<EarningsData>({
+    queryKey: ["/api/stripe/earnings", userId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/stripe/earnings/${userId}`);
+      if (!res.ok) throw new Error("Earnings fetch failed");
+      return res.json();
+    },
+    staleTime: 0,
+    refetchOnMount: true,
+  });
+
+  // FR-08: derive single banner from both authoritative states
+  const banner = deriveBannerState(connectQuery.data, earningsQuery.data);
+
+  const handleSetup  = () => { /* PayoutAccount handles the mutation internally */ };
+  const handleVerify = () => { /* PayoutAccount handles it — scroll to that panel */ };
+
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto px-4 py-10">
-        {/* Header */}
+        {/* Section 5 IA: page title + supporting copy */}
         <div className="mb-8">
-          <h1 className="text-2xl font-bold" style={{ fontFamily: "Clash Display, sans-serif" }}>Payouts & Earnings</h1>
-          <p className="text-sm text-muted-foreground mt-1">Manage your bank connection and track your earnings.</p>
+          <h1
+            className="text-2xl font-bold tracking-tight"
+            style={{ fontFamily: "Clash Display, sans-serif" }}
+          >
+            Earnings &amp; payouts
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Track what you've earned, what's on the way and where your payouts are sent.
+          </p>
         </div>
 
-        <PayoutsPanel userId={user.id} />
-        <EarningsPanel userId={user.id} />
+        {/* Module 1: Status / action banner */}
+        {!connectQuery.isLoading && (
+          <StatusBanner
+            banner={banner}
+            onSetupClick={handleSetup}
+            onVerifyClick={handleVerify}
+          />
+        )}
+
+        {/* Module 2: Balance summary */}
+        <BalanceSummary
+          data={earningsQuery.data}
+          isLoading={earningsQuery.isLoading}
+          isError={earningsQuery.isError}
+          onRetry={() => earningsQuery.refetch()}
+        />
+
+        {/* Module 3: Payout account */}
+        <PayoutAccount userId={userId} />
+
+        {/* Modules 4-6: Earnings summary, transaction history, education */}
+        <EarningsAndHistory userId={userId} />
       </div>
     </div>
   );

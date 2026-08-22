@@ -118,7 +118,7 @@ export default function Navbar() {
                     {user.role === "freelancer" && (
                       <DropdownMenuItem asChild>
                         <Link href="/payouts" className="flex items-center gap-2 cursor-pointer">
-                          <Banknote size={14} /> Payouts & Earnings
+                          <Banknote size={14} /> Earnings & payouts
                         </Link>
                       </DropdownMenuItem>
                     )}
