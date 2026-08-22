@@ -14,6 +14,7 @@ import Dashboard from "@/pages/Dashboard";
 import Feed from "@/pages/Feed";
 import ProViewr from "@/pages/ProViewr";
 import YourWork from "@/pages/YourWork";
+import PayoutsEarnings from "@/pages/PayoutsEarnings";
 import NotFound from "@/pages/not-found";
 import Terms from "@/pages/Terms";
 import Privacy from "@/pages/Privacy";
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="/feed" component={Feed} />
               <Route path="/pro" component={ProViewr} />
               <Route path="/your-work" component={YourWork} />
+              <Route path="/payouts" component={PayoutsEarnings} />
               <Route path="/terms" component={Terms} />
               <Route path="/privacy" component={Privacy} />
               <Route path="/briefs" component={Briefs} />

@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown, Briefcase, ClipboardList, Users, Building2, ShieldCheck } from "lucide-react";
+import { Sun, Moon, Menu, X, Sparkles, User, LayoutDashboard, LogOut, Rss, Crown, Briefcase, ClipboardList, Users, Building2, ShieldCheck, Banknote } from "lucide-react";
 import { useState } from "react";
 import { useTheme } from "./ThemeProvider";
 import { useAuth } from "./AuthProvider";
@@ -115,6 +115,13 @@ export default function Navbar() {
                         <LayoutDashboard size={14} /> Dashboard
                       </Link>
                     </DropdownMenuItem>
+                    {user.role === "freelancer" && (
+                      <DropdownMenuItem asChild>
+                        <Link href="/payouts" className="flex items-center gap-2 cursor-pointer">
+                          <Banknote size={14} /> Payouts & Earnings
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
                     {(user as any)?.accountSubtype === "agency_owner" && (
                       <DropdownMenuItem asChild>
                         <Link href="/agency-hq" className="flex items-center gap-2 cursor-pointer text-primary">

@@ -2475,7 +2475,6 @@ export default function YourWork() {
   const [invTab, setInvTab] = useState<"received" | "sent">("received");
   const [reviewTarget, setReviewTarget] = useState<ProjectWithDetails | null>(null);
   const [invitationsOpen, setInvitationsOpen] = useState(true);
-  const [payoutsTrigger, setPayoutsTrigger] = useState(0);
 
   const { data: projects = [], isLoading, isError, refetch } = useQuery<ProjectWithDetails[]>({
     queryKey: ["/api/projects", user?.id],
@@ -2631,20 +2630,7 @@ export default function YourWork() {
           </Button>
         </div>
 
-        {/* ── Earnings banner — shown only when funds held and not verified ── */}
-        {user.role === "freelancer" && (
-          <EarningsBanner userId={user.id} onSetupClick={() => setPayoutsTrigger(t => t + 1)} />
-        )}
 
-        {/* ── Payouts panel (freelancers only) ── */}
-        {user.role === "freelancer" && (
-          <PayoutsPanel userId={user.id} triggerSetup={payoutsTrigger} />
-        )}
-
-        {/* ── FR-07 (PRD-010): Earnings dashboard (freelancers only) ── */}
-        {user.role === "freelancer" && (
-          <FreelancerEarningsPanel userId={user.id} />
-        )}
 
         {/* ── Pending Invitations panel ── */}
         {invitations.length > 0 && (
