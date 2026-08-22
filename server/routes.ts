@@ -1,7 +1,9 @@
 import type { Express } from "express";
 import { registerRetainerBuilderRoutes } from "./retainer-builder-routes";
 import { Server } from "http";
-import { storage } from "./storage";
+import { storage, db } from "./storage";
+import * as schema from "../shared/schema";
+import { eq, isNull } from "drizzle-orm";
 import {
   createPayment,
   initiateRefund,
@@ -1013,22 +1015,59 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ── Temporary onboarding helpers (freelancer only, ownership-checked) ──────
-  // Force-complete: marks active project as completed (stage 5)
-  app.post("/api/projects/:id/force-complete", async (req, res) => {
+  // ── Temporary onboarding helpers ───────────────────────────────────────────────────
+  // POST /api/projects/:id/actions/complete
+  // Idempotent atomic force-complete (freelancer only).
+  // FR-01: uses injected db from storage module.
+  // FR-04: core transition + audit in one update; notification fires after commit (FR-05/17).
+  // FR-08: writes completedAt + completedBy; idempotent — already-completed returns 200.
+  app.post("/api/projects/:id/actions/complete", async (req, res) => {
     try {
       const { freelancerId } = req.body;
       const callerId = Number(freelancerId);
       if (!callerId) return res.status(400).json({ error: "freelancerId required" });
       const projectId = Number(req.params.id);
+
+      // FR-03: load with ownership check
       const pw = await storage.getProject(projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
-      if (pw.project.freelancerId !== callerId) return res.status(403).json({ error: "Only the assigned freelancer can do this" });
-      if (pw.project.status === "completed") return res.status(400).json({ error: "Project is already completed" });
-      await storage.updateProjectStatus(projectId, "completed");
-      // Advance stage to final
-      await db.update(schema.projects).set({ currentStage: 5 }).where(eq(schema.projects.id, projectId));
-      await notify({
+      if (pw.project.freelancerId !== callerId) {
+        return res.status(403).json({ error: "Only the assigned freelancer can complete this project" });
+      }
+
+      // FR-08: idempotent — already completed returns success, not 400
+      if (pw.project.status === "completed") {
+        return res.json({
+          projectId,
+          status: "completed",
+          completedAt: (pw.project as any).completedAt ?? null,
+          alreadyCompleted: true,
+        });
+      }
+
+      // FR-11: block if soft-deleted
+      if ((pw.project as any).deletedAt) {
+        return res.status(409).json({ code: "PROJECT_DELETED", error: "This project has been removed and cannot be completed" });
+      }
+
+      const now = new Date().toISOString();
+
+      // FR-04: atomic state transition + audit fields in one update
+      await db
+        .update(schema.projects)
+        .set({
+          status: "completed",
+          currentStage: 5,
+          completedAt: now,
+          completedBy: callerId,
+        } as any)
+        .where(eq(schema.projects.id, projectId));
+
+      // FR-05/17: respond with success BEFORE notification — notification failure must not cause 5xx
+      res.json({ projectId, status: "completed", completedAt: now });
+
+      // Fire-and-forget notification (async, does not affect response)
+      notify({
         recipientId: pw.project.clientId,
         actorId: callerId,
         actorName: pw.freelancer?.name ?? "Freelancer",
@@ -1037,26 +1076,69 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         message: `"${pw.project.title}" has been marked as complete`,
         link: "/your-work",
         read: 0,
-      });
-      res.json({ success: true });
+      }).catch(() => { /* notification failure is non-fatal */ });
+
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      // FR-15: never expose raw db/stack details
+      console.error("[force-complete]", e.message);
+      res.status(500).json({ error: "Unable to complete project. Please try again." });
     }
   });
 
-  // Delete project: removes it entirely (freelancer only, active projects only)
-  app.delete("/api/projects/:id", async (req, res) => {
+  // POST /api/projects/:id/actions/delete
+  // Soft-delete with financial lock check (freelancer only).
+  // FR-09: writes deletedAt + deletedBy; default queries exclude deleted rows.
+  // FR-10: does NOT cascade — payments/audit/messages untouched.
+  // FR-11: blocks if financial activity exists.
+  app.post("/api/projects/:id/actions/delete", async (req, res) => {
     try {
-      const freelancerId = Number(req.query.freelancerId);
-      if (!freelancerId) return res.status(400).json({ error: "freelancerId required" });
+      const { freelancerId } = req.body;
+      const callerId = Number(freelancerId);
+      if (!callerId) return res.status(400).json({ error: "freelancerId required" });
       const projectId = Number(req.params.id);
+
+      // FR-03: ownership check
       const pw = await storage.getProject(projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
-      if (pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Only the assigned freelancer can delete this project" });
-      await db.delete(schema.projects).where(eq(schema.projects.id, projectId));
-      res.json({ success: true });
+      if (pw.project.freelancerId !== callerId) {
+        return res.status(403).json({ error: "Only the assigned freelancer can remove this project" });
+      }
+
+      // FR-09: idempotent — already deleted returns success
+      if ((pw.project as any).deletedAt) {
+        return res.json({ projectId, status: "deleted", deletedAt: (pw.project as any).deletedAt, alreadyDeleted: true });
+      }
+
+      // FR-11: financial lock — block if any payment exists for this project
+      const neonClient = neon(process.env.DATABASE_URL!);
+      const paymentRows = await neonClient`
+        SELECT id FROM payments WHERE project_id = ${projectId} LIMIT 1
+      `;
+      if (paymentRows.length > 0) {
+        return res.status(409).json({
+          code: "PROJECT_DELETE_LOCKED",
+          reason: "open_payment_or_dispute",
+          error: "This project has payment activity and cannot be removed. Contact support if you need help.",
+        });
+      }
+
+      const now = new Date().toISOString();
+
+      // FR-04/FR-09: atomic soft-delete — sets deletedAt/deletedBy, does NOT hard-delete
+      await db
+        .update(schema.projects)
+        .set({
+          deletedAt: now,
+          deletedBy: callerId,
+          deletionReason: "onboarding_cleanup",
+        } as any)
+        .where(eq(schema.projects.id, projectId));
+
+      res.json({ projectId, status: "deleted", deletedAt: now });
+
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.error("[soft-delete]", e.message);
+      res.status(500).json({ error: "Unable to remove project. Please try again." });
     }
   });
   // ────────────────────────────────────────────────────────────────────────────

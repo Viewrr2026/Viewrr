@@ -1461,30 +1461,56 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
 
   const forceCompleteMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/projects/${pw.project.id}/force-complete`, { freelancerId: currentUserId });
-      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error((b as any).error || "Failed"); }
+      // FR-14: button disables while submitting (isPending)
+      const res = await apiRequest("POST", `/api/projects/${pw.project.id}/actions/complete`, { freelancerId: currentUserId });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((body as any).error || "Unable to complete project. Please try again.");
+      return body;
     },
-    onSuccess: () => {
-      toast({ title: "Project marked as complete" });
+    onSuccess: (data: any) => {
+      // FR-12: invalidate + re-fetch so list reconciles to server state
       qc.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
       onRefresh?.();
       setConfirmAction(null);
+      const msg = data?.alreadyCompleted
+        ? "This project is already completed."
+        : "Project moved to Completed.";
+      toast({ title: msg });
     },
-    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+    onError: async (e: any) => {
+      // FR-13: on unexpected failure, re-fetch to discover actual server state
+      qc.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
+      onRefresh?.();
+      // FR-15: show user-safe message, never raw JSON
+      toast({ title: e.message || "We couldn't confirm the change. The project status has been checked.", variant: "destructive" });
+    },
   });
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("DELETE", `/api/projects/${pw.project.id}?freelancerId=${currentUserId}`);
-      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error((b as any).error || "Failed"); }
+      const res = await apiRequest("POST", `/api/projects/${pw.project.id}/actions/delete`, { freelancerId: currentUserId });
+      const body = await res.json().catch(() => ({}));
+      // FR-11: handle financial lock gracefully
+      if (res.status === 409) throw new Error((body as any).error || "This project cannot be removed right now.");
+      if (!res.ok) throw new Error((body as any).error || "Unable to remove project. Please try again.");
+      return body;
     },
-    onSuccess: () => {
-      toast({ title: "Project deleted" });
+    onSuccess: (data: any) => {
+      // FR-12: invalidate + re-fetch
       qc.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
       onRefresh?.();
       setConfirmAction(null);
+      const msg = data?.alreadyDeleted
+        ? "This project has already been removed."
+        : "Project removed.";
+      toast({ title: msg });
     },
-    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+    onError: async (e: any) => {
+      // FR-13: re-fetch on unexpected error
+      qc.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
+      onRefresh?.();
+      toast({ title: e.message || "We couldn't confirm the change. Please check your project list.", variant: "destructive" });
+    },
   });
 
   // Retainer data
@@ -1602,8 +1628,8 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
                 <CheckCircle2 size={18} className="text-green-600" />
               </div>
               <div>
-                <p className="text-sm font-semibold">Mark as complete?</p>
-                <p className="text-xs text-muted-foreground mt-0.5">This will move the project to your completed list and notify the client.</p>
+                <p className="text-sm font-semibold">Move this project to Completed?</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Your client will be notified. This skips the normal delivery flow (onboarding override).</p>
               </div>
             </div>
             <p className="text-xs text-muted-foreground bg-secondary/40 rounded-xl px-3 py-2">
@@ -1611,7 +1637,7 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
             </p>
             <div className="flex gap-2">
               <Button size="sm" className="flex-1 rounded-full text-xs text-white" style={{ background: "linear-gradient(135deg,#16a34a,#22c55e)" }} onClick={() => forceCompleteMutation.mutate()} disabled={forceCompleteMutation.isPending}>
-                {forceCompleteMutation.isPending ? <LoaderIcon size={12} className="animate-spin mr-1" /> : null} Yes, mark complete
+                {forceCompleteMutation.isPending ? <><LoaderIcon size={12} className="animate-spin mr-1" /> Completing…</> : "Move to Completed"}
               </Button>
               <Button size="sm" variant="outline" className="rounded-full text-xs" onClick={() => setConfirmAction(null)}>Cancel</Button>
             </div>
@@ -1627,8 +1653,8 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
                 <Trash2 size={18} className="text-destructive" />
               </div>
               <div>
-                <p className="text-sm font-semibold">Delete this project?</p>
-                <p className="text-xs text-muted-foreground mt-0.5">This permanently removes <span className="font-medium text-foreground">{pw.project.title}</span> and cannot be undone.</p>
+                <p className="text-sm font-semibold">Remove this project?</p>
+                <p className="text-xs text-muted-foreground mt-0.5">The project will no longer appear in your list. Projects with payment activity cannot be removed.</p>
               </div>
             </div>
             <p className="text-xs text-muted-foreground bg-secondary/40 rounded-xl px-3 py-2">
@@ -1636,7 +1662,7 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
             </p>
             <div className="flex gap-2">
               <Button size="sm" variant="destructive" className="flex-1 rounded-full text-xs" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
-                {deleteMutation.isPending ? <LoaderIcon size={12} className="animate-spin mr-1" /> : null} Yes, delete
+                {deleteMutation.isPending ? <><LoaderIcon size={12} className="animate-spin mr-1" /> Removing…</> : "Remove project"}
               </Button>
               <Button size="sm" variant="outline" className="rounded-full text-xs" onClick={() => setConfirmAction(null)}>Cancel</Button>
             </div>

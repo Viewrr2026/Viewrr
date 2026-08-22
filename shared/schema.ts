@@ -167,6 +167,12 @@ export const projects = pgTable("projects", {
   agencyId: integer("agency_id"),           // set if project sourced via agency member
   agencyBriefId: integer("agency_brief_id"), // set if project created from accepted agency proposal
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  // ─ Completion & soft-delete (PRD: Reliable Project Completion & Deletion) ─
+  completedAt: text("completed_at"),   // ISO timestamp when marked complete
+  completedBy: integer("completed_by"), // userId who triggered completion
+  deletedAt: text("deleted_at"),        // ISO timestamp of soft-delete
+  deletedBy: integer("deleted_by"),     // userId who triggered deletion
+  deletionReason: text("deletion_reason"), // "onboarding_cleanup" | "user_request" etc
 });
 
 // ─── Retainer Cycles ─────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
-import { eq, or, and, desc, sql as drizzleSql, inArray } from "drizzle-orm";
+import { eq, or, and, desc, sql as drizzleSql, inArray, isNull } from "drizzle-orm";
 import * as schema from "@shared/schema";
 
 if (!process.env.DATABASE_URL) {
@@ -360,6 +360,12 @@ await sql`
 // ─── Agency member project columns ───────────────────────────────────────────
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agency_id INTEGER`; } catch {}
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agency_brief_id INTEGER`; } catch {}
+// ─── Reliable Project Completion & Deletion (PRD) ──────────────────────────
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_at TEXT`; } catch {}
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_by INTEGER`; } catch {}
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TEXT`; } catch {}
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_by INTEGER`; } catch {}
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deletion_reason TEXT`; } catch {}
 // ─── Invoice tables ─────────────────────────────────────────────────────────
 await sql`
   CREATE TABLE IF NOT EXISTS invoice_templates (
@@ -1167,8 +1173,12 @@ class Storage implements IStorage {
   }
 
   async getProjectsForUser(userId: number): Promise<ProjectWithDetails[]> {
+    // FR-09 (PRD: Reliable Project Completion & Deletion): exclude soft-deleted projects
     const all = await db.select().from(schema.projects)
-      .where(or(eq(schema.projects.clientId, userId), eq(schema.projects.freelancerId, userId)));
+      .where(and(
+        or(eq(schema.projects.clientId, userId), eq(schema.projects.freelancerId, userId)),
+        isNull((schema.projects as any).deletedAt),
+      ));
     const sorted = all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const results: ProjectWithDetails[] = [];
     for (const p of sorted) {
