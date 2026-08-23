@@ -51,6 +51,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   function logout() {
     setUser(null);
     safeRemove(AUTH_KEY);
+    // P0-04: Tell the server to clear the HttpOnly session cookie
+    fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
   }
 
   function updateUser(partial: Partial<User>) {

@@ -35,6 +35,29 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+// ─── P0-03: Sensitive field redaction for API logs ──────────────────────────
+// NEVER log credential or financial identity fields from response bodies.
+// These keys are stripped before any log line is written.
+// Phase 1 will introduce structured request-ID logging as the auth model matures.
+const LOG_REDACTED_KEYS = new Set([
+  "passwordHash", "password_hash", "password", "newPassword",
+  "token", "resetToken", "refreshToken",
+  "cookie", "authorization", "SESSION_SECRET",
+  "stripeSecretKey", "webhookSecret", "STRIPE_SECRET_KEY",
+  "clientSecret",  // Stripe PaymentIntent secret — must never be logged
+]);
+
+function redactForLog(obj: unknown, depth = 0): unknown {
+  if (!obj || typeof obj !== "object" || depth > 4) return obj;
+  if (Array.isArray(obj)) return obj.map(item => redactForLog(item, depth + 1));
+  return Object.fromEntries(
+    Object.entries(obj as Record<string, unknown>).map(([k, v]) => [
+      k,
+      LOG_REDACTED_KEYS.has(k) ? "[REDACTED]" : redactForLog(v, depth + 1),
+    ])
+  );
+}
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -51,7 +74,11 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        // P0-03: Redact sensitive fields before logging. Never log credentials.
+        const redacted = redactForLog(capturedJsonResponse);
+        const serialised = JSON.stringify(redacted);
+        // Truncate very long responses to avoid log flooding
+        logLine += ` :: ${serialised.length > 500 ? serialised.slice(0, 500) + "…[truncated]" : serialised}`;
       }
 
       log(logLine);

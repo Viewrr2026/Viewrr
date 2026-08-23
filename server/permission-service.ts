@@ -5,6 +5,7 @@
  */
 
 import { neon } from "@neondatabase/serverless";
+import { SESSION_COOKIE_NAME, verifySessionToken, clearSessionCookie } from "./session";
 
 function getDb() {
   return neon(process.env.DATABASE_URL!);
@@ -116,17 +117,27 @@ export async function hasPermission(
 
 /**
  * Express middleware: assert the requesting user has a finance permission.
- * User must be identified by `userId` query param or request body.
- * Returns 401/403 with plain error on failure.
+ * P0-04: Identity is derived from the HMAC-verified session cookie (vr_sess).
+ * req.body.userId and req.query.userId are IGNORED — cannot be spoofed.
+ * An attacker who knows a finance userId but has no valid cookie gets 401.
+ * Phase 1: add DB token revocation for forced-logout.
  */
 export function requireFinancePermission(permission: FinancePermission) {
   return async (req: any, res: any, next: any) => {
     try {
-      const rawUserId = req.body?.userId ?? req.query?.userId;
-      if (!rawUserId) return res.status(401).json({ error: "userId required" });
+      // Step 1: Verify session cookie — reject if missing, expired, or forged.
+      const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
+      if (!rawCookie) return res.status(401).json({ error: "Authentication required." });
 
+      const session = verifySessionToken(rawCookie);
+      if (!session) {
+        clearSessionCookie(res);
+        return res.status(401).json({ error: "Session expired or invalid. Please sign in again." });
+      }
+
+      // Step 2: DB lookup — role/isAdmin determined from DB, not from request.
       const db = getDb();
-      const rows = await db`SELECT id, role, is_admin FROM users WHERE id = ${Number(rawUserId)} LIMIT 1`;
+      const rows = await db`SELECT id, role, is_admin FROM users WHERE id = ${session.userId} LIMIT 1`;
       if (!rows.length) return res.status(401).json({ error: "User not found" });
 
       const u = rows[0];

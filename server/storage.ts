@@ -11,6 +11,15 @@ const sql = neon(process.env.DATABASE_URL);
 export const db = drizzle(sql, { schema });
 export { drizzleSql };
 
+// ─── P0-02: Strip passwordHash from every User object leaving this module ────
+// All composite types that embed schema.User go through safeUser() so
+// passwordHash can NEVER reach the wire regardless of how routes use the data.
+// getUserByEmail() intentionally keeps the hash for authentication use only.
+function safeUser<T extends Record<string, any>>(user: T): Omit<T, "passwordHash" | "password_hash"> {
+  const { passwordHash, password_hash, ...safe } = user as any;
+  return safe as Omit<T, "passwordHash" | "password_hash">;
+}
+
 // Run migrations — create all tables if they don't exist
 async function runMigrations() {
 // ─── Retainer: add columns to projects + create retainer_cycles table ──────
@@ -402,6 +411,21 @@ try { await sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS commission_rate_bp
 try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_stripe_sync TEXT`; } catch {}
 try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_onboarding_link_at TEXT`; } catch {}
 try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_onboarding_link_error TEXT`; } catch {}
+
+// ─── PRD-016A Phase 0: Password reset tokens ────────────────────────────────
+// Secure, single-use, time-limited tokens for password reset.
+// Only the SHA-256 hash of the raw token is stored — the raw token goes only in email.
+await sql`
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+
 // ─── PRD-013: Pro Viewrr subscription tables ────────────────────────────────
 await sql`
   CREATE TABLE IF NOT EXISTS pro_subscriptions (
@@ -497,6 +521,13 @@ export interface IStorage {
   updateStripeAccount(userId: number, data: { stripeAccountId?: string; stripeOnboarded?: number; stripePendingPence?: number }): Promise<void>;
   updateUserAgencyFields(userId: number, data: { accountSubtype?: string; agencyId?: number | null }): Promise<void>;
   createUser(data: schema.InsertUser): Promise<schema.User>;
+  // PRD-016A P0-05: Password reset tokens
+  createPasswordResetToken(userId: number, tokenHash: string, expiresAt: string): Promise<void>;
+  getPasswordResetToken(tokenHash: string): Promise<{ id: number; userId: number; expiresAt: string; usedAt: string | null } | null>;
+  markPasswordResetTokenUsed(id: number): Promise<void>;
+  atomicConsumeTokenAndResetPassword(tokenHash: string, newPasswordHash: string): Promise<
+    { ok: true } | { ok: false; reason: "not_found" | "used" | "expired" }
+  >;
 
   // Profiles
   getProfiles(filters?: { specialism?: string; availability?: string; search?: string }): Promise<ProfileWithUser[]>;
@@ -726,16 +757,88 @@ export interface ConversationSummary {
 class Storage implements IStorage {
   async getUser(id: number): Promise<schema.User | undefined> {
     const r = await db.select().from(schema.users).where(eq(schema.users.id, id));
-    return r[0];
+    return r[0] ? safeUser(r[0]) as schema.User : undefined;
   }
 
   async updateUser(id: number, data: Partial<Pick<schema.User, 'name' | 'email' | 'bio' | 'avatar' | 'banner' | 'headline' | 'location'>>): Promise<schema.User> {
     const [updated] = await db.update(schema.users).set(data).where(eq(schema.users.id, id)).returning();
-    return updated;
+    return safeUser(updated) as schema.User;
   }
 
   async updateUserPassword(id: number, passwordHash: string): Promise<void> {
     await db.update(schema.users).set({ passwordHash }).where(eq(schema.users.id, id));
+  }
+
+  // ─── PRD-016A Phase 0: Password reset token methods ─────────────────────
+  // Raw token never stored — only its SHA-256 hash. Tokens expire in 15 minutes.
+
+  async createPasswordResetToken(
+    userId: number,
+    tokenHash: string,
+    expiresAt: string,
+  ): Promise<void> {
+    // Invalidate any existing unused tokens for this user before creating a new one.
+    await sql`
+      UPDATE password_reset_tokens
+      SET used_at = NOW()::text
+      WHERE user_id = ${userId} AND used_at IS NULL
+    `;
+    await sql`
+      INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+      VALUES (${userId}, ${tokenHash}, ${expiresAt})
+    `;
+  }
+
+  async getPasswordResetToken(
+    tokenHash: string,
+  ): Promise<{ id: number; userId: number; expiresAt: string; usedAt: string | null } | null> {
+    const rows = await sql`
+      SELECT id, user_id, expires_at, used_at
+      FROM password_reset_tokens
+      WHERE token_hash = ${tokenHash}
+      LIMIT 1
+    `;
+    if (!rows.length) return null;
+    const r = rows[0] as any;
+    return { id: r.id, userId: r.user_id, expiresAt: r.expires_at, usedAt: r.used_at ?? null };
+  }
+
+  async markPasswordResetTokenUsed(id: number): Promise<void> {
+    await sql`
+      UPDATE password_reset_tokens
+      SET used_at = NOW()::text
+      WHERE id = ${id}
+    `;
+  }
+
+  // P0-05: Atomic password reset ─────────────────────────────────────────────
+  // Marks the token used AND updates the password in a single DB transaction.
+  // FOR UPDATE row-level lock prevents two concurrent requests consuming the
+  // same token. If the password update fails, the token remains unused.
+  async atomicConsumeTokenAndResetPassword(
+    tokenHash: string,
+    newPasswordHash: string
+  ): Promise<{ ok: true } | { ok: false; reason: "not_found" | "used" | "expired" }> {
+    try {
+      await sql`BEGIN`;
+      const rows = await sql`
+        SELECT id, user_id AS "userId", expires_at AS "expiresAt", used_at AS "usedAt"
+        FROM password_reset_tokens
+        WHERE token_hash = ${tokenHash}
+        FOR UPDATE
+      `;
+      const record = rows[0] as any;
+      if (!record)                                { await sql`ROLLBACK`; return { ok: false, reason: "not_found" }; }
+      if (record.usedAt)                          { await sql`ROLLBACK`; return { ok: false, reason: "used" };      }
+      if (new Date(record.expiresAt) < new Date()){ await sql`ROLLBACK`; return { ok: false, reason: "expired" };   }
+      await sql`UPDATE password_reset_tokens SET used_at = NOW()::text WHERE id = ${record.id}`;
+      await sql`UPDATE users SET password_hash = ${newPasswordHash} WHERE id = ${record.userId}`;
+      await sql`COMMIT`;
+      return { ok: true };
+    } catch (e) {
+      try { await sql`ROLLBACK`; } catch {}
+      throw e;
+    }
   }
 
   async updateUserAgencyFields(userId: number, data: { accountSubtype?: string; agencyId?: number | null }): Promise<void> {
@@ -757,7 +860,7 @@ class Storage implements IStorage {
 
   async createUser(data: schema.InsertUser): Promise<schema.User> {
     const r = await db.insert(schema.users).values(data).returning();
-    return r[0];
+    return safeUser(r[0]) as schema.User;
   }
 
   async getProfiles(filters?: { specialism?: string; availability?: string; search?: string }): Promise<ProfileWithUser[]> {
@@ -766,7 +869,7 @@ class Storage implements IStorage {
     const userMap = new Map(allUsers.map(u => [u.id, u]));
 
     let results: ProfileWithUser[] = allProfiles
-      .map(p => ({ profile: p, user: userMap.get(p.userId)! }))
+      .map(p => ({ profile: p, user: safeUser(userMap.get(p.userId)!) as schema.User }))
       .filter(pw => pw.user);
 
     if (filters?.specialism && filters.specialism !== "all") {
@@ -860,7 +963,7 @@ class Storage implements IStorage {
     const userMap = new Map(allUsers.map(u => [u.id, u]));
     return allProfiles
       .filter(p => p.featured === 1)
-      .map(p => ({ profile: p, user: userMap.get(p.userId)! }))
+      .map(p => ({ profile: p, user: safeUser(userMap.get(p.userId)!) as schema.User }))
       .filter(pw => pw.user)
       .slice(0, 8);
   }
@@ -1018,7 +1121,7 @@ class Storage implements IStorage {
 
     return rows.map(r => ({
       post: r.posts,
-      user: r.users,
+      user: safeUser(r.users) as schema.User,
       liked: likedPostIds.has(r.posts.id),
     }));
   }
@@ -1213,7 +1316,7 @@ class Storage implements IStorage {
     for (const comment of sorted) {
       const user = await this.getUser(comment.userId);
       if (!user) continue;
-      results.push({ comment, user });
+      results.push({ comment, user: safeUser(user) as schema.User });
     }
     return results;
   }
@@ -2070,7 +2173,8 @@ class Storage implements IStorage {
   }
 
   async getAllUsers(): Promise<schema.User[]> {
-    return db.select().from(schema.users).orderBy(desc(schema.users.id));
+    const rows = await db.select().from(schema.users).orderBy(desc(schema.users.id));
+    return rows.map(u => safeUser(u) as schema.User);
   }
 
   async getAllProjects(): Promise<schema.Project[]> {

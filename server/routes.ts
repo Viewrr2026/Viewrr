@@ -37,6 +37,14 @@ import {
 } from "./stage-service";
 import { enqueueJob, startWorker, registerJobHandler } from "./job-queue";
 import crypto from "crypto";
+import rateLimit from "express-rate-limit";
+import cookieParser from "cookie-parser";
+import {
+  SESSION_COOKIE_NAME, SESSION_TTL_MS,
+  getSessionSecret, issueSessionToken, verifySessionToken,
+  setSessionCookie, clearSessionCookie,
+} from "./session";
+
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -52,8 +60,52 @@ const VIEWRR_FEE_PERCENT = 11; // 11% platform fee
 const APP_BASE_URL = process.env.APP_BASE_URL ?? "https://www.viewrr.co.uk";
 
 // Simple password hashing using SHA-256 + salt (no bcrypt needed for this use case)
+// NOTE(PRD-016A Phase 1): Replace with Argon2id before mobile launch.
 function hashPassword(password: string): string {
   return crypto.createHash("sha256").update(password + "viewrr_salt_2026").digest("hex");
+}
+
+// ─── P0-02: Safe user DTO ────────────────────────────────────────────────────
+// NEVER return the raw DB user row to any client. passwordHash must never appear
+// in an API response, log, localStorage value, or analytics event.
+function safeUserDto(user: any): Record<string, any> {
+  if (!user) return user;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { passwordHash, password_hash, ...safe } = user as any;
+  return safe;
+}
+
+// ─── P0-04: Admin Guard — session-cookie authenticated (Phase 0) ─────────────
+// Caller identity is derived ENTIRELY from the HMAC-verified session cookie.
+// req.body.userId and req.query.userId are IGNORED for admin authorisation.
+// Attack surface: attacker knowing userId=22 gets 401 (no valid cookie).
+// Ordinary logged-in user gets 403 (cookie valid, but isAdmin=false in DB).
+// SESSION_SECRET-signed tokens provide caller authentication — no separate guard secret needed.
+// Phase 1 adds DB token revocation for forced logout.
+async function requireAdminGuard(req: any, res: any, next: any): Promise<void> {
+  // Step 1: Must present a valid, unexpired HMAC session cookie.
+  const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
+  if (!rawCookie) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+  let secret: string;
+  try { secret = getSessionSecret(); } catch {
+    res.status(503).json({ error: "Admin routes unavailable — server misconfigured." });
+    return;
+  }
+  const session = verifySessionToken(rawCookie);
+  if (!session) {
+    clearSessionCookie(res); // clear stale/forged cookie
+    res.status(401).json({ error: "Session expired or invalid. Please sign in again." });
+    return;
+  }
+  // Step 2: DB lookup by userId from VERIFIED token — client cannot forge this.
+  const user = await storage.getUser(session.userId).catch(() => undefined);
+  if (!user) { res.status(401).json({ error: "Authentication required." }); return; }
+  if (!user.isAdmin) { res.status(403).json({ error: "Forbidden." }); return; }
+  req.adminUser = user;
+  next();
 }
 import { Resend } from "resend";
 
@@ -151,24 +203,48 @@ async function notify(data: Parameters<typeof storage.createNotification>[0]) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
+  // P0-04: Parse cookies so HMAC session tokens are accessible via req.cookies
+  app.use(cookieParser());
   // ─── Version / health ─────────────────────────────────────────────────────
+  // ─── P0-07: Rate limiting (Phase 0 emergency) ─────────────────────────────
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many login attempts. Please wait 15 minutes before trying again." },
+    skipSuccessfulRequests: true,
+  });
+  const resetLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many password reset requests. Please wait an hour before trying again." },
+  });
+
   app.get("/api/version", (_req, res) => res.json({ version: "2026-05-11-agency", features: ["agency", "accountSubtype"] }));
 
   // ─── Auth (simple demo auth by email) ─────────────────────────────────────
-  app.post("/api/auth/login", async (req, res) => {
+  // P0-01: Null-password path closed | P0-02: safeUserDto | P0-07: loginLimiter
+  app.post("/api/auth/login", loginLimiter, async (req, res) => {
     const { email, password } = req.body;
     if (!email) return res.status(400).json({ error: "Email required" });
     const user = await storage.getUserByEmail(email);
-    if (!user) return res.status(404).json({ error: "No account found with that email" });
-    // Check password if the account has one set
-    if (user.passwordHash && password) {
-      const hash = hashPassword(password);
-      if (hash !== user.passwordHash) return res.status(401).json({ error: "Incorrect password" });
-    } else if (user.passwordHash && !password) {
-      return res.status(401).json({ error: "Password required" });
+    if (!user) return res.status(401).json({ error: "Invalid email or password." });
+
+    // P0-01: Accounts with no password hash must never authenticate silently.
+    if (!user.passwordHash) {
+      return res.status(401).json({
+        error: "This account does not have a password set. Please use 'Forgot password' to create one.",
+        code: "NO_PASSWORD_SET",
+      });
     }
+    if (!password) return res.status(401).json({ error: "Password required." });
+    const hash = hashPassword(password);
+    if (hash !== user.passwordHash) return res.status(401).json({ error: "Invalid email or password." });
+
     let profile = user.role === "freelancer" ? await storage.getProfileByUserId(user.id) : null;
-    // Safety net: auto-create profile if a freelancer somehow has none
     if (user.role === "freelancer" && !profile) {
       try {
         await storage.createProfile({
@@ -182,15 +258,22 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         console.warn("[login] Could not auto-create missing profile:", e.message);
       }
     }
-    res.json({ user, profile });
+    // P0-02: Strip passwordHash before response. Never return raw DB row.
+    // P0-04: Issue HttpOnly HMAC session cookie — caller identity is now server-authoritative.
+    setSessionCookie(res, user.id);
+    res.json({ user: safeUserDto(user), profile });
   });
 
   app.post("/api/auth/register", async (req, res) => {
     try {
       const { name, email, role, phone, password } = req.body;
       if (!name || !email || !role) return res.status(400).json({ error: "Name, email and role are required" });
+      // P0-PRIV: Only permitted public roles. Prevents role=admin/payments_manager injection.
+      const ALLOWED_ROLES = ["freelancer", "client"];
+      if (!ALLOWED_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role" });
       const existing = await storage.getUserByEmail(email);
       if (existing) return res.status(409).json({ error: "Email already registered" });
+      // P0-PRIV: Never set isAdmin from request — always defaults to false in DB.
       const userData: any = { name, email, role };
       if (phone) userData.phone = phone;
       if (password) userData.passwordHash = hashPassword(password);
@@ -221,10 +304,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         }
       }
 
-      res.json({ user, profile });
+      // P0-04: Issue session cookie on registration
+      setSessionCookie(res, user.id);
+      res.json({ user: safeUserDto(user), profile }); // P0-02
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
+  });
+
+  // ─── P0-04: Logout ────────────────────────────────────────────────────────
+  app.post("/api/auth/logout", (req, res) => {
+    clearSessionCookie(res);
+    res.json({ ok: true });
   });
 
   // ─── Email Verification ───────────────────────────────────────────────────
@@ -334,20 +425,76 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json({ ok: true });
   });
 
-  // ─── Password reset ────────────────────────────────────────────────────────
-  // Step 1: user requests reset — we re-use the existing send-verification endpoint
-  // Step 2: verify-code endpoint is also reused (no new code needed)
-  // Step 3: set new password once code is verified
-  app.post("/api/auth/reset-password", async (req, res) => {
-    const { email, newPassword } = req.body;
-    if (!email || !newPassword) return res.status(400).json({ error: "Email and new password required" });
-    if (newPassword.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters" });
+  // ─── P0-05: Token-based password reset ─────────────────────────────────────
+  // POST /api/auth/forgot-password — issues a secure token, sends email
+  // POST /api/auth/reset-password  — validates token + sets new password
+  // Security: token = 32 random bytes; only SHA-256 hash stored in DB;
+  //           expires 15 min; single-use; generic response hides account existence.
+  app.post("/api/auth/forgot-password", resetLimiter, async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email) return res.status(400).json({ error: "Email required." });
+      const GENERIC_OK = { ok: true, message: "If an account exists for that email, a reset link has been sent." };
+      const user = await storage.getUserByEmail(email.toLowerCase().trim());
+      if (!user) return res.json(GENERIC_OK); // generic — do not reveal account existence
 
-    const user = await storage.getUserByEmail(email.toLowerCase());
-    if (!user) return res.status(404).json({ error: "No account found with that email" });
+      const rawToken = crypto.randomBytes(32).toString("hex");
+      const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      await storage.createPasswordResetToken(user.id, tokenHash, expiresAt);
 
-    await storage.updateUserPassword(user.id, hashPassword(newPassword));
-    res.json({ ok: true });
+      const resetUrl = `${APP_BASE_URL}/#/reset-password?token=${rawToken}`;
+      if (resend) {
+        await resend.emails.send({
+          from: "Viewrr <noreply@viewrr.co.uk>",
+          to: user.email,
+          subject: "Reset your Viewrr password",
+          html: `
+            <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;">
+              <div style="margin-bottom:24px;">
+                <svg width="40" height="40" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect width="32" height="32" rx="8" fill="#FF5A1F"/>
+                  <path d="M7 8l7 16h4l7-16h-4l-5 11.5L11 8H7z" fill="white"/>
+                </svg>
+              </div>
+              <h1 style="font-size:24px;font-weight:700;color:#111;margin:0 0 8px;">Reset your password</h1>
+              <p style="color:#555;margin:0 0 32px;">Someone requested a password reset for your Viewrr account. This link expires in 15 minutes.</p>
+              <a href="${resetUrl}" style="display:inline-block;background:#FF5A1F;color:white;font-weight:700;padding:14px 28px;border-radius:8px;text-decoration:none;font-size:15px;">Reset my password</a>
+              <p style="color:#999;font-size:13px;margin-top:32px;">If you didn't request this, you can safely ignore this email. Your password will not change.</p>
+            </div>
+          `,
+        });
+      } else {
+        console.log("[forgot-password] RESEND not configured. Reset URL for " + user.email + ": " + resetUrl);
+      }
+      res.json(GENERIC_OK);
+    } catch (e: any) {
+      console.error("[forgot-password] Error:", e.message);
+      res.status(500).json({ error: "Failed to send reset email. Please try again." });
+    }
+  });
+
+  app.post("/api/auth/reset-password", resetLimiter, async (req, res) => {
+    try {
+      const { token, newPassword } = req.body;
+      if (!token || !newPassword) return res.status(400).json({ error: "Token and new password are required." });
+      if (newPassword.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
+
+      const tokenHash = crypto.createHash("sha256").update(String(token)).digest("hex");
+      // P0-05: Atomic transaction — token consumption and password update committed together.
+      // SELECT...FOR UPDATE row lock: concurrent attempts race; only the first wins.
+      const result = await storage.atomicConsumeTokenAndResetPassword(tokenHash, hashPassword(newPassword));
+      if (!result.ok) {
+        const msg = result.reason === "used"
+          ? "This reset link has already been used. Please request a new one."
+          : "Invalid or expired reset link. Please request a new one.";
+        return res.status(400).json({ error: msg });
+      }
+      res.json({ ok: true, message: "Password updated successfully. You can now sign in." });
+    } catch (e: any) {
+      console.error("[reset-password] Error:", e.message);
+      res.status(500).json({ error: "Failed to reset password. Please try again." });
+    }
   });
 
   // ─── File uploads ──────────────────────────────────────────────────────
@@ -545,7 +692,26 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   app.patch("/api/profiles/:id", async (req, res) => {
-    const updated = await storage.updateProfile(Number(req.params.id), req.body);
+    // P0-PRIV: Explicitly whitelist user-editable fields.
+    // Privileged fields (accreditationLevel, accreditationApprovedBy, isPro, proSince,
+    // featured, rating, reviewCount, projectCount, badges) are NEVER accepted from
+    // the request body — they are managed server-side by admin routes only.
+    const {
+      specialisms, skills, hourlyRate, dayRate, availability,
+      yearsExperience, reelUrl, portfolioItems, socialLinks, cardThumbnail,
+    } = req.body;
+    const patch: Record<string, any> = {};
+    if (specialisms  !== undefined) patch.specialisms  = specialisms;
+    if (skills       !== undefined) patch.skills       = skills;
+    if (hourlyRate   !== undefined) patch.hourlyRate   = hourlyRate;
+    if (dayRate      !== undefined) patch.dayRate      = dayRate;
+    if (availability !== undefined) patch.availability = availability;
+    if (yearsExperience !== undefined) patch.yearsExperience = yearsExperience;
+    if (reelUrl      !== undefined) patch.reelUrl      = reelUrl;
+    if (portfolioItems !== undefined) patch.portfolioItems = portfolioItems;
+    if (socialLinks  !== undefined) patch.socialLinks  = socialLinks;
+    if (cardThumbnail !== undefined) patch.cardThumbnail = cardThumbnail;
+    const updated = await storage.updateProfile(Number(req.params.id), patch);
     if (!updated) return res.status(404).json({ error: "Profile not found" });
     res.json(updated);
   });
@@ -741,7 +907,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.get("/api/users/:id", async (req, res) => {
     const user = await storage.getUser(Number(req.params.id));
     if (!user) return res.status(404).json({ error: "Not found" });
-    res.json(user);
+    res.json(safeUserDto(user)); // P0-02
   });
 
   app.patch("/api/users/:id", async (req, res) => {
@@ -756,7 +922,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         ...(headline !== undefined && { headline }),
         ...(location !== undefined && { location }),
       });
-      res.json(updated);
+      res.json(safeUserDto(updated)); // P0-02
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
@@ -825,11 +991,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Admin-only: remove any post + notify the owner
-  app.delete("/api/admin/feed/:id", async (req, res) => {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: "userId required" });
-    const admin = await storage.getUser(Number(userId));
-    if (!admin || !admin.isAdmin) return res.status(403).json({ error: "Admin only" });
+  // P0-04: requireAdminGuard
+  app.delete("/api/admin/feed/:id", requireAdminGuard, async (req, res) => {
+    const admin = req.adminUser;
     const ownerId = await storage.adminDeletePost(Number(req.params.id), admin.id);
     if (ownerId === null) return res.status(404).json({ error: "Post not found" });
     bustFeedCache();
@@ -848,11 +1012,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Admin: fetch deletion history log
-  app.get("/api/admin/deleted-posts", async (req, res) => {
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(400).json({ error: "userId required" });
-    const admin = await storage.getUser(userId);
-    if (!admin || !admin.isAdmin) return res.status(403).json({ error: "Admin only" });
+  // P0-04: requireAdminGuard
+  app.get("/api/admin/deleted-posts", requireAdminGuard, async (req, res) => {
+    const admin = req.adminUser;
     const log = await storage.getDeletedPosts();
     res.json(log);
   });
@@ -1031,9 +1193,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // GET /api/founder/pro-dashboard — Pro analytics for Founder
-  // FR-18/19
-  app.get("/api/founder/pro-dashboard", async (req, res) => {
+  // GET /api/founder/pro-dashboard — P0-04+P0-06: requireAdminGuard (previously zero auth)
+  app.get("/api/founder/pro-dashboard", requireAdminGuard, async (req, res) => {
     try {
       const stats = await getProDashboardStats();
       res.json(stats);
@@ -3310,12 +3471,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── PRD-007: Admin Refund & Reconciliation Routes ────────────────────────────
 
   // FR-05: Admin-only refund endpoint
-  app.post("/api/admin/payments/:paymentPublicId/refunds", async (req, res) => {
+  // P0-04: requireAdminGuard — refunds are a high-value irreversible action
+  app.post("/api/admin/payments/:paymentPublicId/refunds", requireAdminGuard, async (req, res) => {
     try {
-      const { userId, amountPence, reasonCode, internalNote, notifyParties } = req.body;
-      if (!userId) return res.status(401).json({ error: "userId required" });
-      const admin = await storage.getUser(Number(userId));
-      if (!admin?.isAdmin) return res.status(403).json({ error: "Admin access required" });
+      const { amountPence, reasonCode, internalNote, notifyParties } = req.body;
+      const admin = req.adminUser;
 
       const refund = await initiateRefund({
         paymentPublicId: req.params.paymentPublicId,
@@ -3334,11 +3494,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // FR-07, FR-18: Admin reconciliation
-  app.post("/api/admin/payments/:paymentId/reconcile", async (req, res) => {
+  // P0-04: requireAdminGuard
+  app.post("/api/admin/payments/:paymentId/reconcile", requireAdminGuard, async (req, res) => {
     try {
-      const { userId } = req.body;
-      const admin = await storage.getUser(Number(userId));
-      if (!admin?.isAdmin) return res.status(403).json({ error: "Admin access required" });
+      const admin = req.adminUser;
 
       const result = await reconcilePayment(Number(req.params.paymentId));
       res.json(result);
@@ -3348,11 +3507,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Admin ledger view
-  app.get("/api/admin/payments", async (req, res) => {
+  // P0-04: requireAdminGuard
+  app.get("/api/admin/payments", requireAdminGuard, async (req, res) => {
     try {
-      const { userId } = req.query;
-      const admin = await storage.getUser(Number(userId));
-      if (!admin?.isAdmin) return res.status(403).json({ error: "Admin access required" });
+      const admin = req.adminUser;
 
       const sqlClient = neon(process.env.DATABASE_URL!);
       const rows = await sqlClient(
@@ -3364,11 +3522,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.get("/api/admin/payments/:paymentPublicId", async (req, res) => {
+  // P0-04: requireAdminGuard
+  app.get("/api/admin/payments/:paymentPublicId", requireAdminGuard, async (req, res) => {
     try {
-      const { userId } = req.query;
-      const admin = await storage.getUser(Number(userId));
-      if (!admin?.isAdmin) return res.status(403).json({ error: "Admin access required" });
+      const admin = req.adminUser;
 
       const sqlClient = neon(process.env.DATABASE_URL!);
       const [payment] = await sqlClient(
@@ -3976,12 +4133,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ── Founder Dashboard API ────────────────────────────────────────────────────
-  app.get('/api/admin/dashboard', async (req, res) => {
-    // Guard: only admin users
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const user = await storage.getUserById(userId);
-    if (!user || !user.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+  // P0-04: requireAdminGuard
+  app.get('/api/admin/dashboard', requireAdminGuard, async (req, res) => {
     try {
       const data = await getDashboardData();
       res.json(data);
@@ -3990,24 +4143,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.get('/api/admin/users', async (req, res) => {
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const requester = await storage.getUserById(userId);
-    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+  // P0-04: requireAdminGuard; P0-02: map safeUserDto
+  app.get('/api/admin/users', requireAdminGuard, async (req, res) => {
     try {
       const users = await storage.getAllUsers();
-      res.json(users);
+      res.json(users.map(safeUserDto));
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
-  app.get('/api/admin/projects', async (req, res) => {
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const requester = await storage.getUserById(userId);
-    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+  // P0-04: requireAdminGuard
+  app.get('/api/admin/projects', requireAdminGuard, async (req, res) => {
+    const requester = req.adminUser;
     try {
       const projects = await storage.getAllProjects();
       res.json(projects);
@@ -4019,11 +4167,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ── Accreditation API ────────────────────────────────────────────────────────
 
   /** GET /api/admin/accreditation — all freelancer profiles with accreditation data */
-  app.get('/api/admin/accreditation', async (req, res) => {
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const requester = await storage.getUserById(userId);
-    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+  // P0-04: requireAdminGuard
+  app.get('/api/admin/accreditation', requireAdminGuard, async (req, res) => {
+    const requester = req.adminUser;
     try {
       const profiles = await storage.getFreelancerProfilesWithAccreditation();
       res.json(profiles);
@@ -4033,11 +4179,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   /** GET /api/admin/accreditation/history — recent audit log */
-  app.get('/api/admin/accreditation/history', async (req, res) => {
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const requester = await storage.getUserById(userId);
-    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+  // P0-04: requireAdminGuard
+  app.get('/api/admin/accreditation/history', requireAdminGuard, async (req, res) => {
+    const requester = req.adminUser;
     try {
       const history = await storage.getAllAccreditationHistory(100);
       res.json(history);
@@ -4047,11 +4191,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   /** GET /api/admin/accreditation/history/:freelancerUserId — history for one freelancer */
-  app.get('/api/admin/accreditation/history/:freelancerUserId', async (req, res) => {
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const requester = await storage.getUserById(userId);
-    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+  // P0-04: requireAdminGuard
+  app.get('/api/admin/accreditation/history/:freelancerUserId', requireAdminGuard, async (req, res) => {
+    const requester = req.adminUser;
     try {
       const history = await storage.getAccreditationHistory(Number(req.params.freelancerUserId));
       res.json(history);
@@ -4066,11 +4208,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
    * action: "granted" | "promoted" | "demoted" | "removed" | "rejected" | "changes_requested"
    * Only Founder (isAdmin) may call this — never purchasable.
    */
-  app.post('/api/admin/accreditation/update', async (req, res) => {
-    const { userId, freelancerUserId, profileId, newLevel, action, reason, internalNotes } = req.body;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const requester = await storage.getUserById(Number(userId));
-    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden — only Founders may modify accreditations.' });
+  // P0-04: requireAdminGuard — accreditation changes require authenticated Founder/admin
+  app.post('/api/admin/accreditation/update', requireAdminGuard, async (req, res) => {
+    const { freelancerUserId, profileId, newLevel, action, reason, internalNotes } = req.body;
+    const requester = req.adminUser;
 
     // Validate level if provided
     const VALID_LEVELS = ['verified', 'approved', 'elite', null];
@@ -4154,11 +4295,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
    * Body: { userId (requester), profileId, internalNotes }
    * Updates internal notes only — not visible to freelancer.
    */
-  app.patch('/api/admin/accreditation/notes', async (req, res) => {
-    const { userId, profileId, internalNotes } = req.body;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const requester = await storage.getUserById(Number(userId));
-    if (!requester || !requester.isAdmin) return res.status(403).json({ error: 'Forbidden' });
+  // P0-04: requireAdminGuard
+  app.patch('/api/admin/accreditation/notes', requireAdminGuard, async (req, res) => {
+    const { profileId, internalNotes } = req.body;
+    const requester = req.adminUser;
     try {
       await storage.updateAccreditationNotes(Number(profileId), internalNotes ?? '');
       res.json({ success: true });
