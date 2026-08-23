@@ -250,10 +250,11 @@ export async function createPayment(
   // Rate is locked per-transaction — upgrading/cancelling Pro never alters historical records.
   const grossPence = invoice.totalPence;
   let effectiveFeePct = VIEWRR_FEE_PERCENT; // default 11%
+  let commissionRateBps = VIEWRR_FEE_PERCENT * 100; // 1100 default
   try {
     const { getCommissionRateBpsForUser } = await import("./pro-service");
-    const rateBps = await getCommissionRateBpsForUser(project.freelancerId);
-    effectiveFeePct = rateBps / 100; // 800 bps → 8, 1100 bps → 11
+    commissionRateBps = await getCommissionRateBpsForUser(project.freelancerId);
+    effectiveFeePct = commissionRateBps / 100; // 800 bps → 8, 1100 bps → 11
   } catch { /* fallback to standard */ }
   const platformFeePence = Math.round(grossPence * (effectiveFeePct / 100));
   const freelancerPence = grossPence - platformFeePence;
@@ -323,6 +324,12 @@ export async function createPayment(
     createdAt: new Date().toISOString(),
     version: 1,
   }).returning();
+
+  // FR-12: persist commission rate for breakdown display (column added PRD-015)
+  try {
+    const dbRaw = neon(process.env.DATABASE_URL!);
+    await dbRaw`UPDATE payments SET commission_rate_bps = ${commissionRateBps} WHERE id = (SELECT id FROM payments WHERE public_id = ${publicId} LIMIT 1)`;
+  } catch { /* non-fatal — column may not exist on older deploys */ }
 
   const paymentRecord = paymentInsert[0];
 

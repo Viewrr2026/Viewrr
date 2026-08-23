@@ -397,6 +397,11 @@ try {
     created_at TEXT NOT NULL DEFAULT (NOW()::TEXT)
   )`;
 } catch {}
+// ─── PRD-015: Stripe Verification & Earnings Fix ────────────────────────────
+try { await sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS commission_rate_bps INTEGER`; } catch {}
+try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_stripe_sync TEXT`; } catch {}
+try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_onboarding_link_at TEXT`; } catch {}
+try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_onboarding_link_error TEXT`; } catch {}
 // ─── PRD-013: Pro Viewrr subscription tables ────────────────────────────────
 await sql`
   CREATE TABLE IF NOT EXISTS pro_subscriptions (

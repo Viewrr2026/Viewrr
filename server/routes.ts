@@ -2583,7 +2583,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           });
         }
 
-        // All good — existing account, terms accepted
+        // Existing account with terms accepted — return state so frontend can decide next step
         return res.json({
           accountId: user.stripeAccountId,
           readinessState: connectState?.readinessState ?? "verification_pending",
@@ -2591,6 +2591,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           payoutsEnabled: connectState?.payoutsEnabled === 1,
           alreadyExists: true,
           viewrrTermsAccepted: true,
+          // FR-02: If not fully verified, frontend should request an onboarding link
+          needsOnboarding: !(connectState?.chargesEnabled === 1 && connectState?.payoutsEnabled === 1),
         });
       }
 
@@ -2686,17 +2688,120 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const link = await stripe.accountLinks.create({
         account: user.stripeAccountId,
-        refresh_url: `${APP_BASE_URL}/#/your-work?stripe=refresh`,
-        return_url: `${APP_BASE_URL}/#/your-work?stripe=complete`,
+        refresh_url: `${APP_BASE_URL}/#/payouts?stripe=refresh`,
+        return_url: `${APP_BASE_URL}/#/payouts?stripe=complete`,
         type: "account_onboarding",
       });
+
+      // FR-21: record onboarding link request
+      await neon(process.env.DATABASE_URL!)`
+        UPDATE stripe_connect_accounts
+        SET last_onboarding_link_at = ${new Date().toISOString()}, last_onboarding_link_error = NULL
+        WHERE user_id = ${Number(userId)}
+      `.catch(() => {});
 
       res.json({ url: link.url });
     } catch (e: any) {
       console.error("[stripe/onboarding-link]", e.message);
+      // FR-21: record failure
+      const { userId } = (e as any).requestBody ?? {};
+      if (userId) {
+        await neon(process.env.DATABASE_URL!)`
+          UPDATE stripe_connect_accounts SET last_onboarding_link_error = ${e.message} WHERE user_id = ${Number(userId)}
+        `.catch(() => {});
+      }
       res.status(500).json({ error: e.message });
     }
   });
+
+  // PRD-015 FR-09: Express Dashboard link — opens Stripe Express dashboard for freelancer
+  app.post("/api/stripe/dashboard-link", async (req, res) => {
+    try {
+      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+
+      const user = await storage.getUser(Number(userId));
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.role !== "freelancer") return res.status(403).json({ error: "Only freelancers can access dashboard links" });
+      if (!user.stripeAccountId) return res.status(400).json({ error: "No Stripe account connected" });
+
+      // FR-22: Security — derive account from DB, never trust body account ID
+      const link = await stripe.accounts.createLoginLink(user.stripeAccountId);
+
+      // FR-21: record dashboard link access
+      await neon(process.env.DATABASE_URL!)`UPDATE stripe_connect_accounts SET last_stripe_sync = ${new Date().toISOString()} WHERE user_id = ${user.id}`.catch(() => {});
+
+      res.json({ url: link.url });
+    } catch (e: any) {
+      console.error("[stripe/dashboard-link]", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PRD-015 FR-11/12: Payment breakdown for earnings view
+  // Returns commission rate actually used (from commission_rate_bps column, or inferred)
+  app.get("/api/stripe/payment-breakdown/:publicId", async (req, res) => {
+    try {
+      const { userId } = req.query;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const uid = Number(userId);
+
+      const db = neon(process.env.DATABASE_URL!);
+      const rows = await db`
+        SELECT p.*, pr.title AS project_title, pr.id AS project_id_val
+        FROM payments p
+        LEFT JOIN projects pr ON pr.id = p.project_id
+        WHERE p.public_id = ${req.params.publicId}
+        LIMIT 1
+      `;
+      if (!rows.length) return res.status(404).json({ error: "Payment not found" });
+      const p = rows[0];
+
+      // FR-22: security — only client or freelancer
+      if (uid !== p.client_id && uid !== p.freelancer_id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      const gross = Number(p.gross_pence ?? 0);
+      const fee = Number(p.platform_fee_pence ?? 0);
+      const freelancerEarnings = Number(p.freelancer_pence ?? gross - fee);
+
+      // FR-12: use stored commission_rate_bps if available; otherwise infer
+      let commissionRateBps: number | null = p.commission_rate_bps ? Number(p.commission_rate_bps) : null;
+      if (!commissionRateBps && gross > 0) {
+        commissionRateBps = Math.round((fee / gross) * 10000);
+      }
+      const isPro = commissionRateBps !== null && commissionRateBps <= 900; // 8% or lower = Pro
+
+      const savedPence = isPro && gross > 0 ? Math.round(gross * (1100 - (commissionRateBps ?? 1100)) / 10000) : 0;
+
+      res.json({
+        publicId: p.public_id,
+        projectTitle: p.project_title ?? "Project",
+        grossPence: gross,
+        platformFeePence: fee,
+        freelancerPence: freelancerEarnings,
+        commissionRateBps,
+        isPro,
+        savedPence,
+        status: p.status,
+        currency: p.currency ?? "gbp",
+        succeededAt: p.succeeded_at,
+        createdAt: p.created_at,
+        stripeFeePence: p.stripe_fee_pence ? Number(p.stripe_fee_pence) : null,
+        paymentKind: p.payment_kind ?? "project",
+      });
+    } catch (e: any) {
+      console.error("[stripe/payment-breakdown]", e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PRD-015 FR-17: Expired Stripe Account Link — refresh URL handler
+  // When Stripe sends user to refresh_url, they GET /#/payouts?stripe=refresh
+  // The frontend handles this URL param and auto-calls onboarding-link again.
+  // (No server endpoint needed — the frontend re-calls /api/stripe/onboarding-link)
 
   // FR-13: Full Connect readiness status (richer than before)
   // PRD-009 FR-09: auto-sync on page open — always syncs Stripe on every GET
@@ -2738,10 +2843,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // FR-09: Always sync from Stripe when page opens
       const connectState = await syncConnectAccount(userId, user.stripeAccountId);
 
+      // FR-21: update last sync timestamp
+      await db`UPDATE stripe_connect_accounts SET last_stripe_sync = ${new Date().toISOString()} WHERE user_id = ${userId}`.catch(() => {});
+
+      const currentlyDue = JSON.parse(connectState.currentlyDue ?? "[]");
+      const pastDue = JSON.parse(connectState.pastDue ?? "[]");
+      const pendingVerification = JSON.parse((connectState as any).pendingVerification ?? "[]");
+
+      // FR-06/07: derive actionable readiness state
+      let actionableState: string = connectState.readinessState;
+      if (pendingVerification.length > 0 && currentlyDue.length === 0 && !connectState.chargesEnabled) {
+        actionableState = "stripe_reviewing";
+      }
+
       res.json({
         connected: true,
         stripeAccountId: user.stripeAccountId,
-        readinessState: connectState.readinessState,
+        readinessState: actionableState,
         detailsSubmitted: connectState.detailsSubmitted === 1,
         chargesEnabled: connectState.chargesEnabled === 1,
         payoutsEnabled: connectState.payoutsEnabled === 1,
@@ -2750,8 +2868,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         automaticPayoutsEnabled: connectState.readinessState === "payouts_ready",
         viewrrTermsAccepted,
         viewrrTermsAcceptedAt,
-        currentlyDue: JSON.parse(connectState.currentlyDue ?? "[]"),
-        pastDue: JSON.parse(connectState.pastDue ?? "[]"),
+        currentlyDue,
+        pastDue,
+        pendingVerification,
         disabledReason: connectState.disabledReason,
         payoutSchedule: connectState.payoutSchedule ? JSON.parse(connectState.payoutSchedule) : null,
       });
@@ -4625,17 +4744,87 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // GET /api/founder/finance/connected-accounts
+  // GET /api/founder/finance/connected-accounts — PRD-015 FR-21 Founder Diagnostics
   app.get("/api/founder/finance/connected-accounts", requireFinancePermission("finance.connected_account.view"), async (req, res) => {
     try {
       const db = neon(process.env.DATABASE_URL!);
       const accounts = await db`
-        SELECT sca.*, u.email, u.name
+        SELECT sca.user_id, sca.stripe_account_id, sca.readiness_state,
+               sca.charges_enabled, sca.payouts_enabled, sca.transfers_enabled,
+               sca.currently_due, sca.past_due, sca.pending_verification, sca.disabled_reason,
+               sca.payout_schedule, sca.last_stripe_sync, sca.last_onboarding_link_at,
+               sca.last_onboarding_link_error, sca.created_at,
+               u.email, u.name,
+               (SELECT COUNT(*) FROM payments p WHERE p.freelancer_id = sca.user_id) AS payment_count,
+               (SELECT COUNT(*) FROM payments p WHERE p.freelancer_id = sca.user_id AND p.status = 'succeeded') AS succeeded_count
         FROM stripe_connect_accounts sca
         JOIN users u ON u.id = sca.user_id
         ORDER BY sca.created_at DESC
       `;
-      res.json({ accounts });
+      const enriched = accounts.map((a: any) => ({
+        freelancer: { id: a.user_id, email: a.email, name: a.name },
+        stripe: {
+          accountId: a.stripe_account_id,
+          readinessState: a.readiness_state,
+          chargesEnabled: !!a.charges_enabled,
+          transfersEnabled: !!a.transfers_enabled,
+          payoutsEnabled: !!a.payouts_enabled,
+          disabledReason: a.disabled_reason,
+        },
+        requirements: {
+          currentlyDue: (() => { try { return JSON.parse(a.currently_due ?? "[]"); } catch { return []; } })(),
+          pastDue: (() => { try { return JSON.parse(a.past_due ?? "[]"); } catch { return []; } })(),
+          pendingVerification: (() => { try { return JSON.parse(a.pending_verification ?? "[]"); } catch { return []; } })(),
+        },
+        payoutSchedule: (() => { try { return JSON.parse(a.payout_schedule ?? "{}"); } catch { return null; } })(),
+        diagnostics: {
+          lastStripeSync: a.last_stripe_sync,
+          lastOnboardingLinkAt: a.last_onboarding_link_at,
+          lastOnboardingLinkError: a.last_onboarding_link_error,
+          paymentCount: Number(a.payment_count ?? 0),
+          succeededCount: Number(a.succeeded_count ?? 0),
+          connectedAt: a.created_at,
+        },
+      }));
+      res.json({ total: enriched.length, accounts: enriched });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/founder/finance/verification-diagnostics — quick per-freelancer verification status
+  app.get("/api/founder/finance/verification-diagnostics", requireFinancePermission("finance.connected_account.view"), async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const rows = await db`
+        SELECT sca.user_id, sca.stripe_account_id, sca.readiness_state,
+               sca.charges_enabled, sca.payouts_enabled, sca.currently_due, sca.pending_verification,
+               sca.past_due, sca.disabled_reason, sca.last_stripe_sync,
+               sca.last_onboarding_link_at, sca.last_onboarding_link_error,
+               u.email
+        FROM stripe_connect_accounts sca
+        JOIN users u ON u.id = sca.user_id
+        WHERE sca.charges_enabled = 0 OR sca.payouts_enabled = 0
+        ORDER BY sca.created_at DESC
+      `;
+      res.json({
+        count: rows.length,
+        freelancers: rows.map((r: any) => ({
+          userId: r.user_id,
+          email: r.email,
+          stripeAccountId: r.stripe_account_id,
+          readinessState: r.readiness_state,
+          chargesEnabled: !!r.charges_enabled,
+          payoutsEnabled: !!r.payouts_enabled,
+          requirementsCount: (() => { try { return JSON.parse(r.currently_due ?? "[]").length; } catch { return 0; } })(),
+          pastDueCount: (() => { try { return JSON.parse(r.past_due ?? "[]").length; } catch { return 0; } })(),
+          pendingVerification: (() => { try { return JSON.parse(r.pending_verification ?? "[]"); } catch { return []; } })(),
+          disabledReason: r.disabled_reason,
+          lastStripeSync: r.last_stripe_sync,
+          lastOnboardingLinkAt: r.last_onboarding_link_at,
+          lastOnboardingLinkError: r.last_onboarding_link_error,
+        })),
+      });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
