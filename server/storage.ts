@@ -366,6 +366,37 @@ try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_by INTEG
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TEXT`; } catch {}
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_by INTEGER`; } catch {}
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deletion_reason TEXT`; } catch {}
+// ─── PRD-014: Dynamic Project Stages ────────────────────────────────────────
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS planning_status TEXT NOT NULL DEFAULT 'legacy'`; } catch {}
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS plan_confirmed_at TEXT`; } catch {}
+try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS plan_sent_to_client_at TEXT`; } catch {}
+try {
+  await sql`CREATE TABLE IF NOT EXISTS project_stages (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL,
+    description TEXT,
+    expected_deliverable TEXT,
+    target_date TEXT,
+    approval_required INTEGER NOT NULL DEFAULT 0,
+    revision_allowance TEXT NOT NULL DEFAULT 'none',
+    status TEXT NOT NULL DEFAULT 'upcoming',
+    started_at TEXT, submitted_at TEXT, approved_at TEXT, completed_at TEXT,
+    created_by INTEGER NOT NULL, updated_at TEXT, notes TEXT, client_change_request TEXT
+  )`;
+} catch {}
+try {
+  await sql`CREATE TABLE IF NOT EXISTS project_stage_events (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    stage_id INTEGER,
+    event_type TEXT NOT NULL,
+    actor_id INTEGER NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (NOW()::TEXT)
+  )`;
+} catch {}
 // ─── PRD-013: Pro Viewrr subscription tables ────────────────────────────────
 await sql`
   CREATE TABLE IF NOT EXISTS pro_subscriptions (

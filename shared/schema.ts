@@ -173,6 +173,11 @@ export const projects = pgTable("projects", {
   deletedAt: text("deleted_at"),        // ISO timestamp of soft-delete
   deletedBy: integer("deleted_by"),     // userId who triggered deletion
   deletionReason: text("deletion_reason"), // "onboarding_cleanup" | "user_request" etc
+  // ─ PRD-014: Dynamic Project Stages ─────────────────────────────────────────
+  // 'legacy' | 'planning_required' | 'plan_draft' | 'awaiting_client' | 'client_changes' | 'confirmed'
+  planningStatus: text("planning_status").notNull().default("legacy"),
+  planConfirmedAt: text("plan_confirmed_at"),
+  planSentToClientAt: text("plan_sent_to_client_at"),
 });
 
 // ─── Retainer Cycles ─────────────────────────────────────────────────────────
@@ -828,3 +833,39 @@ export const proSubscriptionEvents = pgTable("pro_subscription_events", {
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 export type ProSubscriptionEvent = typeof proSubscriptionEvents.$inferSelect;
+
+// ── PRD-014: Dynamic Project Stages ──────────────────────────────────────────
+export const projectStages = pgTable("project_stages", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  position: integer("position").notNull().default(0),
+  title: text("title").notNull(),
+  description: text("description"),
+  expectedDeliverable: text("expected_deliverable"),
+  targetDate: text("target_date"),
+  approvalRequired: integer("approval_required").notNull().default(0),
+  revisionAllowance: text("revision_allowance").notNull().default("none"),
+  // upcoming | in_progress | awaiting_client | changes_requested | approved | completed
+  status: text("status").notNull().default("upcoming"),
+  startedAt: text("started_at"),
+  submittedAt: text("submitted_at"),
+  approvedAt: text("approved_at"),
+  completedAt: text("completed_at"),
+  createdBy: integer("created_by").notNull(),
+  updatedAt: text("updated_at"),
+  notes: text("notes"),
+  clientChangeRequest: text("client_change_request"),
+});
+export type ProjectStage = typeof projectStages.$inferSelect;
+export type InsertProjectStage = typeof projectStages.$inferInsert;
+
+export const projectStageEvents = pgTable("project_stage_events", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  stageId: integer("stage_id"),
+  eventType: text("event_type").notNull(),
+  actorId: integer("actor_id").notNull(),
+  note: text("note"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export type ProjectStageEvent = typeof projectStageEvents.$inferSelect;

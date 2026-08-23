@@ -29,6 +29,12 @@ import { requireFinancePermission, deriveFinanceRole, canApproveRefund, REFUND_T
 import { createRetainerPayment, fulfilRetainerCyclePayment } from "./retainer-service";
 import { getFreelancerPayoutTimeline, configureAutoDailyPayout, migrateAllAccountsToAutoDailyPayout, configureNewAccountDailyPayout } from "./payout-service";
 import { runExceptionScan, generateDailySummary, reconcilePaymentFull } from "./reconciliation-service";
+import {
+  getProjectStages, getProjectStage, addProjectStage, updateProjectStage, deleteProjectStage,
+  reorderProjectStages, bulkCreateStages, setPlanningStatus,
+  startStage, submitStageForReview, approveStage, completeStage, requestStageChanges,
+  calcProgress, getActiveStage, logStageEvent, STAGE_TEMPLATES,
+} from "./stage-service";
 import { enqueueJob, startWorker, registerJobHandler } from "./job-queue";
 import crypto from "crypto";
 import multer from "multer";
@@ -1553,6 +1559,309 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  // ─── PRD-014: Dynamic Project Stages ─────────────────────────────────────
+
+  // GET /api/projects/:id/stages — list all custom stages
+  app.get("/api/projects/:id/stages", async (req, res) => {
+    try {
+      const stages = await getProjectStages(Number(req.params.id));
+      res.json(stages);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /api/stage-templates — return available templates for the builder
+  app.get("/api/stage-templates", (_req, res) => {
+    res.json(STAGE_TEMPLATES);
+  });
+
+  // POST /api/projects/:id/stages — add a single stage
+  app.post("/api/projects/:id/stages", async (req, res) => {
+    try {
+      const { freelancerId, title, description, expectedDeliverable, targetDate, approvalRequired, revisionAllowance, notes } = req.body;
+      if (!freelancerId || !title) return res.status(400).json({ error: "freelancerId and title required" });
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Only the freelancer can manage stages" });
+      const stage = await addProjectStage(projectId, Number(freelancerId), { title, description, expectedDeliverable, targetDate, approvalRequired: !!approvalRequired, revisionAllowance, notes });
+      // Auto-set planning status to draft if still at planning_required
+      if ((pw.project as any).planningStatus === "planning_required") {
+        await setPlanningStatus(projectId, "plan_draft");
+      }
+      await logStageEvent(projectId, Number(freelancerId), "stage_added", `Added stage: ${title}`, stage.id);
+      res.json(stage);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/projects/:id/stages/bulk — replace all stages (template apply)
+  app.post("/api/projects/:id/stages/bulk", async (req, res) => {
+    try {
+      const { freelancerId, stages } = req.body;
+      if (!freelancerId || !Array.isArray(stages)) return res.status(400).json({ error: "freelancerId and stages[] required" });
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Only the freelancer can manage stages" });
+      // Delete existing draft stages (only if all are still upcoming — protect started work)
+      const existing = await getProjectStages(projectId);
+      const hasStarted = existing.some(s => s.status !== "upcoming");
+      if (hasStarted) return res.status(409).json({ error: "Cannot bulk replace stages after work has started" });
+      for (const s of existing) await deleteProjectStage(s.id);
+      const created = await bulkCreateStages(projectId, Number(freelancerId), stages);
+      await setPlanningStatus(projectId, "plan_draft");
+      await logStageEvent(projectId, Number(freelancerId), "stages_bulk_set", `Applied ${stages.length} stages`);
+      res.json(created);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // PATCH /api/stages/:id — edit a stage
+  app.patch("/api/stages/:id", async (req, res) => {
+    try {
+      const { freelancerId, clientId, ...data } = req.body;
+      const stageId = Number(req.params.id);
+      const stage = await getProjectStage(stageId);
+      if (!stage) return res.status(404).json({ error: "Stage not found" });
+      const pw = await storage.getProject(stage.projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      const callerId = Number(freelancerId || clientId);
+      if (pw.project.freelancerId !== callerId && pw.project.clientId !== callerId) {
+        return res.status(403).json({ error: "Not authorised" });
+      }
+      const updated = await updateProjectStage(stageId, data);
+      // Log if project already confirmed (post-start edit)
+      if ((pw.project as any).planningStatus === "confirmed") {
+        await logStageEvent(stage.projectId, callerId, "stage_edited_post_start", `Stage updated: ${updated.title}`, stageId);
+        // Notify other party
+        const isFreelancer = pw.project.freelancerId === callerId;
+        const recipientId = isFreelancer ? pw.project.clientId : pw.project.freelancerId;
+        await notify({ recipientId, actorId: callerId, actorName: isFreelancer ? (pw.freelancer?.name ?? "") : (pw.client?.name ?? ""), actorAvatar: null,
+          type: "stage_advanced", message: `The project plan for "${pw.project.title}" has been updated`, link: "/your-work", read: 0 });
+      }
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // DELETE /api/stages/:id — delete a stage
+  app.delete("/api/stages/:id", async (req, res) => {
+    try {
+      const { freelancerId } = req.body;
+      const stageId = Number(req.params.id);
+      const stage = await getProjectStage(stageId);
+      if (!stage) return res.status(404).json({ error: "Stage not found" });
+      if (stage.status !== "upcoming") return res.status(409).json({ error: "Cannot delete a stage that has already started" });
+      const pw = await storage.getProject(stage.projectId);
+      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      await logStageEvent(stage.projectId, Number(freelancerId), "stage_deleted", `Deleted: ${stage.title}`, stageId);
+      await deleteProjectStage(stageId);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/projects/:id/stages/reorder — reorder stages
+  app.post("/api/projects/:id/stages/reorder", async (req, res) => {
+    try {
+      const { freelancerId, orderedIds } = req.body;
+      if (!freelancerId || !Array.isArray(orderedIds)) return res.status(400).json({ error: "freelancerId and orderedIds[] required" });
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      // Protect completed stages from reordering
+      const stages = await getProjectStages(projectId);
+      const completedIds = stages.filter(s => s.status === "completed" || s.status === "approved").map(s => s.id);
+      const reorderedCompleted = orderedIds.some((id: number, idx: number) => {
+        const orig = stages.find(s => s.id === id);
+        return orig && completedIds.includes(id) && orig.position !== idx;
+      });
+      if (reorderedCompleted) return res.status(409).json({ error: "Completed stages cannot be reordered" });
+      await reorderProjectStages(projectId, orderedIds);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/projects/:id/plan/confirm — freelancer confirms plan, optionally sends to client
+  app.post("/api/projects/:id/plan/confirm", async (req, res) => {
+    try {
+      const { freelancerId, requireClientApproval } = req.body;
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      const stages = await getProjectStages(projectId);
+      if (stages.length === 0) return res.status(400).json({ error: "Add at least one stage before confirming" });
+      const now = new Date().toISOString();
+      if (requireClientApproval) {
+        await setPlanningStatus(projectId, "awaiting_client", { planSentToClientAt: now });
+        await notify({ recipientId: pw.project.clientId, actorId: Number(freelancerId),
+          actorName: pw.freelancer?.name ?? "Freelancer", actorAvatar: pw.freelancer?.avatar ?? null,
+          type: "stage_advanced",
+          message: `${pw.freelancer?.name ?? "Your freelancer"} has shared the project plan for "${pw.project.title}" — review and approve to get started.`,
+          link: "/your-work", read: 0 });
+        await logStageEvent(projectId, Number(freelancerId), "plan_sent_to_client");
+        res.json({ status: "awaiting_client" });
+      } else {
+        // Freelancer starts immediately — activate first stage
+        await setPlanningStatus(projectId, "confirmed", { planConfirmedAt: now });
+        if (stages.length > 0) await startStage(stages[0].id);
+        await logStageEvent(projectId, Number(freelancerId), "plan_confirmed");
+        res.json({ status: "confirmed" });
+      }
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/projects/:id/plan/approve — client approves plan
+  app.post("/api/projects/:id/plan/approve", async (req, res) => {
+    try {
+      const { clientId } = req.body;
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw || pw.project.clientId !== Number(clientId)) return res.status(403).json({ error: "Not authorised" });
+      const now = new Date().toISOString();
+      await setPlanningStatus(projectId, "confirmed", { planConfirmedAt: now });
+      const stages = await getProjectStages(projectId);
+      if (stages.length > 0) await startStage(stages[0].id);
+      await logStageEvent(projectId, Number(clientId), "plan_approved_by_client");
+      await notify({ recipientId: pw.project.freelancerId, actorId: Number(clientId),
+        actorName: pw.client?.name ?? "Client", actorAvatar: null,
+        type: "stage_advanced",
+        message: `${pw.client?.name ?? "Your client"} approved the project plan for "${pw.project.title}" — you're ready to begin!`,
+        link: "/your-work", read: 0 });
+      res.json({ status: "confirmed" });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/projects/:id/plan/request-change — client requests changes
+  app.post("/api/projects/:id/plan/request-change", async (req, res) => {
+    try {
+      const { clientId, message } = req.body;
+      if (!clientId || !message) return res.status(400).json({ error: "clientId and message required" });
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw || pw.project.clientId !== Number(clientId)) return res.status(403).json({ error: "Not authorised" });
+      await setPlanningStatus(projectId, "client_changes");
+      await logStageEvent(projectId, Number(clientId), "plan_change_requested", message);
+      await notify({ recipientId: pw.project.freelancerId, actorId: Number(clientId),
+        actorName: pw.client?.name ?? "Client", actorAvatar: null,
+        type: "stage_advanced",
+        message: `${pw.client?.name ?? "Your client"} requested a change to the project plan for "${pw.project.title}".`,
+        link: "/your-work", read: 0 });
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/stages/:id/start — mark stage in_progress
+  app.post("/api/stages/:id/start", async (req, res) => {
+    try {
+      const { freelancerId } = req.body;
+      const stage = await getProjectStage(Number(req.params.id));
+      if (!stage) return res.status(404).json({ error: "Stage not found" });
+      const pw = await storage.getProject(stage.projectId);
+      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      const updated = await startStage(stage.id);
+      await logStageEvent(stage.projectId, Number(freelancerId), "stage_started", undefined, stage.id);
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/stages/:id/submit — freelancer submits for client review
+  app.post("/api/stages/:id/submit", async (req, res) => {
+    try {
+      const { freelancerId } = req.body;
+      const stage = await getProjectStage(Number(req.params.id));
+      if (!stage) return res.status(404).json({ error: "Stage not found" });
+      const pw = await storage.getProject(stage.projectId);
+      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      const updated = await submitStageForReview(stage.id);
+      await logStageEvent(stage.projectId, Number(freelancerId), "stage_submitted", undefined, stage.id);
+      await notify({ recipientId: pw.project.clientId, actorId: Number(freelancerId),
+        actorName: pw.freelancer?.name ?? "Freelancer", actorAvatar: pw.freelancer?.avatar ?? null,
+        type: "stage_advanced",
+        message: `"${stage.title}" is ready for your review on "${pw.project.title}".`,
+        link: "/your-work", read: 0 });
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/stages/:id/approve — client approves a stage
+  app.post("/api/stages/:id/approve", async (req, res) => {
+    try {
+      const { clientId } = req.body;
+      const stage = await getProjectStage(Number(req.params.id));
+      if (!stage) return res.status(404).json({ error: "Stage not found" });
+      const pw = await storage.getProject(stage.projectId);
+      if (!pw || pw.project.clientId !== Number(clientId)) return res.status(403).json({ error: "Not authorised" });
+      const updated = await approveStage(stage.id);
+      await logStageEvent(stage.projectId, Number(clientId), "stage_approved", undefined, stage.id);
+      // Auto-start next upcoming stage
+      const stages = await getProjectStages(stage.projectId);
+      const next = stages.find(s => s.status === "upcoming" && s.position > stage.position);
+      if (next) await startStage(next.id);
+      await notify({ recipientId: pw.project.freelancerId, actorId: Number(clientId),
+        actorName: pw.client?.name ?? "Client", actorAvatar: null,
+        type: "stage_advanced",
+        message: `${pw.client?.name ?? "Your client"} approved "${stage.title}" on "${pw.project.title}".`,
+        link: "/your-work", read: 0 });
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/stages/:id/complete — freelancer completes stage (no approval needed)
+  app.post("/api/stages/:id/complete", async (req, res) => {
+    try {
+      const { freelancerId } = req.body;
+      const stage = await getProjectStage(Number(req.params.id));
+      if (!stage) return res.status(404).json({ error: "Stage not found" });
+      const pw = await storage.getProject(stage.projectId);
+      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      const updated = await completeStage(stage.id);
+      await logStageEvent(stage.projectId, Number(freelancerId), "stage_completed", undefined, stage.id);
+      // Auto-start next upcoming stage
+      const stages = await getProjectStages(stage.projectId);
+      const next = stages.find(s => s.status === "upcoming" && s.position > stage.position);
+      if (next) await startStage(next.id);
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/stages/:id/request-changes — client requests changes on a stage
+  app.post("/api/stages/:id/request-changes", async (req, res) => {
+    try {
+      const { clientId, message } = req.body;
+      if (!clientId || !message) return res.status(400).json({ error: "clientId and message required" });
+      const stage = await getProjectStage(Number(req.params.id));
+      if (!stage) return res.status(404).json({ error: "Stage not found" });
+      const pw = await storage.getProject(stage.projectId);
+      if (!pw || pw.project.clientId !== Number(clientId)) return res.status(403).json({ error: "Not authorised" });
+      const updated = await requestStageChanges(stage.id, message);
+      await logStageEvent(stage.projectId, Number(clientId), "stage_changes_requested", message, stage.id);
+      await notify({ recipientId: pw.project.freelancerId, actorId: Number(clientId),
+        actorName: pw.client?.name ?? "Client", actorAvatar: null,
+        type: "stage_advanced",
+        message: `${pw.client?.name ?? "Your client"} requested changes on "${stage.title}".`,
+        link: "/your-work", read: 0 });
+      res.json(updated);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /api/projects/:id/plan-summary — for plan review screen
+  app.get("/api/projects/:id/plan-summary", async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      const stages = await getProjectStages(projectId);
+      const active = getActiveStage(stages);
+      const progress = calcProgress(stages);
+      res.json({
+        planningStatus: (pw.project as any).planningStatus ?? "legacy",
+        planConfirmedAt: (pw.project as any).planConfirmedAt,
+        planSentToClientAt: (pw.project as any).planSentToClientAt,
+        stages,
+        activeStage: active ?? null,
+        progress,
+        stageCount: stages.length,
+      });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
   // ─── Deliverables ──────────────────────────────────────────────────────────
   app.get("/api/projects/:id/deliverables", async (req, res) => {
     const list = await storage.getDeliverables(Number(req.params.id));
@@ -1767,6 +2076,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           briefId: interest.briefId ?? undefined, interestId: interest.id,
           freelancerName: interest.freelancerName, clientName: interest.briefClientName, briefCategory,
           agreedAmountPence: (interest as any).counterOfferPence,
+          planningStatus: "planning_required",
         } as any);
         if (interest.briefId) try { await storage.deactivateBrief(interest.briefId); } catch {}
         await notify({
@@ -1819,6 +2129,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             clientName:     interest.briefClientName,
             briefCategory,
             agreedAmountPence: (interest as any).proposedPricePence ?? undefined,
+            planningStatus: "planning_required",
           } as any);
           // ── Agency member sourcing: tag project with agencyId ──────────────────────
           try {
@@ -3396,6 +3707,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             agencyId: proposal.agencyId,
             agencyBriefId: proposal.agencyBriefId,
             agreedAmountPence: proposal.quotedAmountPence,
+            planningStatus: "planning_required",
           } as any);
         }
       } catch (e) { console.error('proposal project creation error', e); }

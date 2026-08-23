@@ -13,6 +13,7 @@ import MeetingSection from "@/components/MeetingSection";
 import DeliverablesSection, { StripePaymentDialog } from "@/components/DeliverablesSection";
 
 import CreateProjectModal from "@/components/CreateProjectModal";
+import ProjectPlanBuilder, { ProjectTimeline } from "@/components/ProjectPlanBuilder";
 import {
   CheckCircle2, Circle, Clock, Briefcase, MessageSquare,
   ArrowRight, ChevronDown, ChevronUp, X, Expand, Video,
@@ -20,6 +21,7 @@ import {
   Plus, Send, Inbox, Check, XCircle, Upload, Trash2, ExternalLink, Star,
   Pause, Play, FileText, DollarSign, Banknote, BadgeCheck, Loader2 as LoaderIcon, AlertCircle,
   Sparkles, FolderOpen, ThumbsUp, Zap, Info, TrendingUp, ArrowDownToLine, MoreVertical,
+  ClipboardList, Rocket, Bell,
 } from "lucide-react";
 import { safeGet, safeSet } from "@/lib/storage";
 import { PaymentJourneyBar } from "@/components/PaymentJourney";
@@ -195,12 +197,26 @@ function statusLabel(status: string): string {
 function getProjectStatusBanner(
   status: string,
   currentStage: number,
-  isFreelancer: boolean
+  isFreelancer: boolean,
+  planningStatus?: string,
 ): { emoji: string; label: string; color: string; bg: string } {
   if (status === "completed") return { emoji: "✅", label: "Project Complete", color: "text-green-700 dark:text-green-400", bg: "bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800" };
   if (status === "awaiting_payment") return { emoji: "🟠", label: "Awaiting Payment", color: "text-orange-700 dark:text-orange-400", bg: "bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800" };
   if (status === "awaiting_signoff") return { emoji: "🟣", label: "Final Review", color: "text-violet-700 dark:text-violet-400", bg: "bg-violet-50 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800" };
   if (status === "paused") return { emoji: "🟡", label: "Project Paused", color: "text-amber-700 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800" };
+  // PRD-014 planning states
+  if (planningStatus === "planning_required" || planningStatus === "plan_draft") {
+    if (isFreelancer) return { emoji: "📋", label: "Setup required", color: "text-violet-700 dark:text-violet-400", bg: "bg-violet-50 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800" };
+    return { emoji: "⏳", label: "Plan being prepared", color: "text-blue-700 dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" };
+  }
+  if (planningStatus === "awaiting_client") {
+    if (!isFreelancer) return { emoji: "📋", label: "Plan ready to review", color: "text-violet-700 dark:text-violet-400", bg: "bg-violet-50 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800" };
+    return { emoji: "⏳", label: "Waiting for client approval", color: "text-amber-700 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800" };
+  }
+  if (planningStatus === "client_changes") {
+    if (isFreelancer) return { emoji: "✏️", label: "Plan update requested", color: "text-orange-700 dark:text-orange-400", bg: "bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800" };
+    return { emoji: "⏳", label: "Waiting for updated plan", color: "text-amber-700 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800" };
+  }
   const stageLabel = STAGES[currentStage]?.label ?? "In Progress";
   if (isFreelancer) {
     if (currentStage === 0) return { emoji: "🟢", label: "Waiting to Begin", color: "text-blue-700 dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800" };
@@ -580,7 +596,7 @@ function ProjectModal({ pw, currentUserId, onClose }: {
 
           {/* ── Status Banner + Next Action ── */}
           {(() => {
-            const banner = getProjectStatusBanner(pw.project.status, pw.project.currentStage, isFreelancer);
+            const banner = getProjectStatusBanner(pw.project.status, pw.project.currentStage, isFreelancer, (pw.project as any).planningStatus);
             const action = getNextAction(pw.project.status, pw.project.currentStage, isFreelancer, false);
             return (
               <div className="px-7 pt-5 pb-0 space-y-3">
@@ -830,27 +846,111 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                   {/* Progress tab */}
                   {leftTab === "progress" && (
                     <>
-                      {/* Progress bar */}
-                      <div className="mb-6">
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-xs text-muted-foreground">
-                            Stage {pw.project.currentStage + 1} of {STAGES.length}
-                          </span>
-                          <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>
-                            {Math.round(((pw.project.currentStage + 1) / 6) * 100)}%
-                          </span>
-                        </div>
-                        <div className="h-2 rounded-full bg-muted overflow-hidden">
-                          <div
-                            className="h-full rounded-full transition-all duration-700"
-                            style={{
-                              width: `${Math.round(((pw.project.currentStage + 1) / 6) * 100)}%`,
-                              background: "linear-gradient(90deg, #FF5A1F, #FFA500)",
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <StageTracker currentStage={pw.project.currentStage} size="lg" />
+                      {/* PRD-014: Dynamic stage rendering */}
+                      {(() => {
+                        const planStatus = (pw.project as any).planningStatus ?? "legacy";
+                        // New projects needing a plan
+                        if (planStatus === "planning_required" || planStatus === "plan_draft" || planStatus === "client_changes") {
+                          if (isFreelancer) return (
+                            <div className="space-y-3">
+                              <div className="flex items-center gap-2 p-3 rounded-xl" style={{ background: "rgba(255,90,31,0.08)", border: "1px solid rgba(255,90,31,0.25)" }}>
+                                <ClipboardList size={16} style={{ color: "#FF5A1F" }} />
+                                <div>
+                                  <p className="text-sm font-semibold">Build your project plan</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {planStatus === "client_changes"
+                                      ? `${pw.client.name} requested a change to your plan.`
+                                      : `Define the stages for this project so ${pw.client.name} knows what to expect.`}
+                                  </p>
+                                </div>
+                              </div>
+                              <ProjectPlanBuilder
+                                projectId={pw.project.id}
+                                freelancerId={pw.freelancer.id}
+                                clientId={pw.project.clientId}
+                                projectTitle={pw.project.title}
+                                clientName={pw.client.name}
+                                freelancerName={pw.freelancer.name}
+                                planningStatus={planStatus}
+                                onPlanConfirmed={() => queryClient.invalidateQueries({ queryKey: ["/api/projects", currentUserId] })}
+                              />
+                            </div>
+                          );
+                          // Client waiting for plan
+                          return (
+                            <div className="text-center py-8 space-y-2">
+                              <ClipboardList size={28} className="mx-auto text-muted-foreground" />
+                              <p className="text-sm font-medium">Plan being prepared</p>
+                              <p className="text-xs text-muted-foreground">{pw.freelancer.name} is building the project plan. You'll be notified when it's ready to review.</p>
+                            </div>
+                          );
+                        }
+                        // Plan awaiting client approval
+                        if (planStatus === "awaiting_client") {
+                          if (!isFreelancer) return (
+                            <div className="space-y-3">
+                              <div className="flex items-center gap-2 p-3 rounded-xl" style={{ background: "rgba(255,90,31,0.08)", border: "1px solid rgba(255,90,31,0.25)" }}>
+                                <ClipboardList size={16} style={{ color: "#FF5A1F" }} />
+                                <div>
+                                  <p className="text-sm font-semibold">Project plan ready to review</p>
+                                  <p className="text-xs text-muted-foreground">Approve to get started, or request a change.</p>
+                                </div>
+                              </div>
+                              <ProjectPlanBuilder
+                                projectId={pw.project.id}
+                                freelancerId={pw.freelancer.id}
+                                clientId={pw.project.clientId}
+                                projectTitle={pw.project.title}
+                                clientName={pw.client.name}
+                                freelancerName={pw.freelancer.name}
+                                planningStatus={planStatus}
+                                isClient={true}
+                                onPlanConfirmed={() => queryClient.invalidateQueries({ queryKey: ["/api/projects", currentUserId] })}
+                              />
+                            </div>
+                          );
+                          // Freelancer waiting
+                          return (
+                            <div className="text-center py-8 space-y-2">
+                              <ClipboardList size={28} className="mx-auto text-muted-foreground" />
+                              <p className="text-sm font-medium">Waiting for {pw.client.name}</p>
+                              <p className="text-xs text-muted-foreground">Your plan has been sent. {pw.client.name} will review and approve before work begins.</p>
+                            </div>
+                          );
+                        }
+                        // Confirmed plan — show dynamic timeline
+                        if (planStatus === "confirmed") {
+                          return (
+                            <ProjectTimeline
+                              projectId={pw.project.id}
+                              freelancerId={pw.freelancer.id}
+                              clientId={pw.project.clientId}
+                              isFreelancer={isFreelancer}
+                              projectStatus={pw.project.status}
+                            />
+                          );
+                        }
+                        // Legacy projects — original stage tracker
+                        return (
+                          <>
+                            <div className="mb-6">
+                              <div className="flex items-center justify-between mb-1.5">
+                                <span className="text-xs text-muted-foreground">
+                                  Stage {pw.project.currentStage + 1} of {STAGES.length}
+                                </span>
+                                <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>
+                                  {Math.round(((pw.project.currentStage + 1) / 6) * 100)}%
+                                </span>
+                              </div>
+                              <div className="h-2 rounded-full bg-muted overflow-hidden">
+                                <div className="h-full rounded-full transition-all duration-700"
+                                  style={{ width: `${Math.round(((pw.project.currentStage + 1) / 6) * 100)}%`, background: "linear-gradient(90deg, #FF5A1F, #FFA500)" }} />
+                              </div>
+                            </div>
+                            <StageTracker currentStage={pw.project.currentStage} size="lg" />
+                          </>
+                        );
+                      })()}
                     </>
                   )}
 
@@ -1450,7 +1550,10 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
   const isFreelancer = currentUserId === pw.freelancer.id;
   const isClient = currentUserId === pw.client.id;
   const otherPerson  = isFreelancer ? pw.client : pw.freelancer;
-  const pct = Math.round(((pw.project.currentStage + 1) / 6) * 100);
+  const planningStatus = (pw.project as any).planningStatus ?? "legacy";
+  const isPlanning = ["planning_required", "plan_draft", "awaiting_client", "client_changes"].includes(planningStatus);
+  // PRD-014: Don't show artificial progress % before a plan exists
+  const pct = isPlanning ? 0 : Math.round(((pw.project.currentStage + 1) / 6) * 100);
   const isCompleted = pw.project.status === "completed";
   const visKey = `project_visibility_${pw.project.id}`;
   const [isPublic, setIsPublic] = useState(() => safeGet(visKey) !== "private");
@@ -1709,24 +1812,39 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
         </div>
       ) : (
         <>
-          {/* Progress bar */}
-          <div className="mb-2">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-muted-foreground">
-                {STAGES[pw.project.currentStage]?.label}
-              </span>
-              <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>{pct}%</span>
+          {/* PRD-014: Planning state OR legacy progress bar */}
+          {isPlanning ? (
+            <div className="mb-2 flex items-center gap-2 p-2 rounded-lg" style={{ background: "rgba(255,90,31,0.08)", border: "1px solid rgba(255,90,31,0.2)" }}>
+              <ClipboardList size={12} style={{ color: "#FF5A1F" }} />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>
+                  {planningStatus === "planning_required" || planningStatus === "plan_draft"
+                    ? (isFreelancer ? "Build your project plan" : "Plan being prepared")
+                    : planningStatus === "awaiting_client"
+                    ? (isFreelancer ? "Waiting for client approval" : "Plan ready — review now")
+                    : (isFreelancer ? "Plan update requested" : "Waiting for updated plan")}
+                </p>
+              </div>
             </div>
-            <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all"
-                style={{
-                  width: `${pct}%`,
-                  background: "linear-gradient(90deg, #FF5A1F, #FFA500)",
-                }}
-              />
+          ) : (
+            <div className="mb-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-muted-foreground">
+                  {STAGES[pw.project.currentStage]?.label}
+                </span>
+                <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>{pct}%</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${pct}%`,
+                    background: "linear-gradient(90deg, #FF5A1F, #FFA500)",
+                  }}
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Stage pills */}
           <div className="flex gap-1 mt-3 flex-wrap">
@@ -3005,6 +3123,38 @@ export default function YourWork() {
 
             {(filter === "all" || filter === "active" || filter === "none") && active.length > 0 && (
               <section>
+                {/* PRD-014 FR-23: Needs your attention bar */}
+                {(() => {
+                  const needsPlanning = active.filter(pw => {
+                    const ps = (pw.project as any).planningStatus ?? "legacy";
+                    const isF = user.id === pw.freelancer.id;
+                    return (isF && (ps === "planning_required" || ps === "plan_draft" || ps === "client_changes"))
+                      || (!isF && ps === "awaiting_client");
+                  });
+                  if (needsPlanning.length === 0) return null;
+                  return (
+                    <div className="flex items-center gap-3 p-3 rounded-xl mb-4 flex-wrap" style={{ background: "rgba(255,90,31,0.08)", border: "1px solid rgba(255,90,31,0.25)" }}>
+                      <Bell size={15} style={{ color: "#FF5A1F" }} />
+                      <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>Needs your attention</span>
+                      {needsPlanning.map(pw => {
+                        const ps = (pw.project as any).planningStatus ?? "legacy";
+                        const isF = user.id === pw.freelancer.id;
+                        const label = isF
+                          ? ps === "client_changes" ? "Plan update requested" : "Build project plan"
+                          : "Plan ready to review";
+                        return (
+                          <button key={pw.project.id} onClick={() => setOpenProject(pw)}
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium text-white transition-opacity hover:opacity-90"
+                            style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}>
+                            <ClipboardList size={11} />
+                            {pw.project.title} — {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
                 <h2 className="text-xs font-bold uppercase text-muted-foreground tracking-widest mb-4">
                   Active ({active.length})
                 </h2>
