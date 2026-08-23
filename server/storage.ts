@@ -366,6 +366,51 @@ try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_by INTEG
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TEXT`; } catch {}
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_by INTEGER`; } catch {}
 try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deletion_reason TEXT`; } catch {}
+// ─── PRD-013: Pro Viewrr subscription tables ────────────────────────────────
+await sql`
+  CREATE TABLE IF NOT EXISTS pro_subscriptions (
+    id SERIAL PRIMARY KEY,
+    public_id TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL UNIQUE,
+    membership_type TEXT NOT NULL DEFAULT 'paid',
+    stripe_customer_id TEXT,
+    stripe_subscription_id TEXT,
+    stripe_price_id TEXT,
+    status TEXT NOT NULL DEFAULT 'checkout_pending',
+    amount_pence INTEGER DEFAULT 4999,
+    currency TEXT DEFAULT 'gbp',
+    current_period_start TEXT,
+    current_period_end TEXT,
+    cancel_at_period_end INTEGER DEFAULT 0,
+    terms_version TEXT,
+    created_at TEXT NOT NULL DEFAULT NOW()::text,
+    updated_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
+await sql`
+  CREATE TABLE IF NOT EXISTS founding_pro_allocations (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL UNIQUE,
+    allocation_number INTEGER NOT NULL,
+    allocated_at TEXT NOT NULL DEFAULT NOW()::text,
+    active INTEGER NOT NULL DEFAULT 1
+  )
+`;
+await sql`
+  CREATE TABLE IF NOT EXISTS pro_subscription_events (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    subscription_id INTEGER,
+    event_type TEXT NOT NULL,
+    old_status TEXT,
+    new_status TEXT,
+    commission_rate_bps INTEGER,
+    stripe_event_id TEXT,
+    metadata TEXT,
+    correlation_id TEXT,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )
+`;
 // ─── Invoice tables ─────────────────────────────────────────────────────────
 await sql`
   CREATE TABLE IF NOT EXISTS invoice_templates (

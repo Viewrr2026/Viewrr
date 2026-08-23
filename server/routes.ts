@@ -2,6 +2,13 @@ import type { Express } from "express";
 import { registerRetainerBuilderRoutes } from "./retainer-builder-routes";
 import { Server } from "http";
 import { storage, db } from "./storage";
+import {
+  getProEntitlement, getFoundingProSpacesRemaining, claimFoundingPro,
+  createProCheckout, scheduleProCancellation, getProDashboardStats,
+  getCommissionRateBpsForUser, activateProFromWebhook, renewProFromWebhook,
+  markProPaymentFailed, expireProEntitlement,
+  PRO_FEE_BPS, STANDARD_FEE_BPS, PRO_FEE_PCT, STANDARD_FEE_PCT, FOUNDING_PRO_MAX,
+} from "./pro-service";
 import * as schema from "../shared/schema";
 import { eq, isNull } from "drizzle-orm";
 import {
@@ -899,21 +906,139 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ─── Pro Viewrr Subscription ─────────────────────────────────────────────
-  // In a real app this would hit Stripe. For demo: toggle isPro on the profile.
-  app.post("/api/pro/subscribe", async (req, res) => {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: "userId required" });
-    const profile = await storage.getProfileByUserId(Number(userId));
-    if (!profile) return res.status(404).json({ error: "Profile not found. Only freelancers can subscribe." });
-    const updated = await storage.subscribePro(profile.id);
-    res.json({ success: true, profile: updated });
+  // ─── PRD-013: Pro Viewrr Subscription (server-authoritative) ────────────────
+
+  // GET /api/pro/status/:userId — entitlement (replaces old isPro boolean)
+  app.get("/api/pro/status/:userId", async (req, res) => {
+    try {
+      const userId = Number(req.params.userId);
+      const entitlement = await getProEntitlement(userId);
+      const spacesRemaining = await getFoundingProSpacesRemaining();
+      res.json({ ...entitlement, foundingProSpacesRemaining: spacesRemaining });
+    } catch (e: any) {
+      res.status(500).json({ error: "Unable to load Pro status." });
+    }
   });
 
-  app.get("/api/pro/status/:userId", async (req, res) => {
-    const profile = await storage.getProfileByUserId(Number(req.params.userId));
-    if (!profile) return res.json({ isPro: false });
-    res.json({ isPro: profile.isPro === 1, proSince: profile.proSince });
+  // GET /api/pro/founding-spaces — how many Founding Pro places remain
+  app.get("/api/pro/founding-spaces", async (_req, res) => {
+    try {
+      const remaining = await getFoundingProSpacesRemaining();
+      res.json({ remaining, max: FOUNDING_PRO_MAX });
+    } catch { res.json({ remaining: 0, max: FOUNDING_PRO_MAX }); }
+  });
+
+  // POST /api/pro/checkout — create Stripe Checkout session (paid subscription)
+  // FR-01/02: price controlled server-side; never from client input
+  app.post("/api/pro/checkout", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const user = await storage.getUser(Number(userId));
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.role !== "freelancer") return res.status(403).json({ error: "Pro Viewrr is for freelancer accounts only" });
+
+      // Already has active entitlement?
+      const entitlement = await getProEntitlement(Number(userId));
+      if (entitlement.entitlementActive) {
+        return res.json({ alreadyPro: true, status: entitlement.status });
+      }
+
+      const { checkoutUrl, sessionId } = await createProCheckout(
+        Number(userId),
+        user.email,
+        APP_BASE_URL,
+      );
+      res.json({ checkoutUrl, sessionId });
+    } catch (e: any) {
+      console.error("[pro/checkout]", e.message);
+      res.status(500).json({ error: "Unable to start checkout. Please try again." });
+    }
+  });
+
+  // POST /api/pro/claim-founding — claim a Founding Pro place
+  // FR-06: atomic server-side, max 10
+  app.post("/api/pro/claim-founding", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const user = await storage.getUser(Number(userId));
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.role !== "freelancer") return res.status(403).json({ error: "Founding Pro is for freelancer accounts only" });
+
+      const result = await claimFoundingPro(Number(userId));
+      if (!result.success) {
+        if (result.reason === "already_claimed") {
+          return res.json({ alreadyFounder: true, message: "You already have a Founding Pro membership." });
+        }
+        if (result.reason === "full") {
+          return res.status(409).json({ code: "FOUNDING_FULL", error: "All 10 Founding Pro places have been claimed. You can subscribe at £49.99/month." });
+        }
+      }
+      res.json({ success: true, allocationNumber: (result as any).allocationNumber });
+    } catch (e: any) {
+      console.error("[pro/claim-founding]", e.message);
+      res.status(500).json({ error: "Unable to claim Founding Pro. Please try again." });
+    }
+  });
+
+  // POST /api/pro/cancel — cancel at period end
+  // FR-15: entitlement remains active until end of paid period
+  app.post("/api/pro/cancel", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ error: "userId required" });
+      const entitlement = await getProEntitlement(Number(userId));
+      if (!entitlement.entitlementActive || entitlement.membershipType !== "paid") {
+        return res.status(400).json({ error: "No active paid subscription to cancel." });
+      }
+      if (!entitlement.subscriptionId) {
+        return res.status(400).json({ error: "No Stripe subscription ID found." });
+      }
+      const { currentPeriodEnd } = await scheduleProCancellation(Number(userId), entitlement.subscriptionId);
+      res.json({ success: true, currentPeriodEnd, message: `Your Pro membership will remain active until ${new Date(currentPeriodEnd).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}.` });
+    } catch (e: any) {
+      console.error("[pro/cancel]", e.message);
+      res.status(500).json({ error: "Unable to cancel. Please try again or contact support." });
+    }
+  });
+
+  // GET /api/pro/manage-billing — Stripe billing portal
+  app.get("/api/pro/manage-billing/:userId", async (req, res) => {
+    try {
+      const userId = Number(req.params.userId);
+      const { proSubscriptions: proSubsTable } = await import("../shared/schema");
+      const subs = await db.select().from(proSubsTable).where(eq(proSubsTable.userId, userId));
+      const sub = subs[0];
+      if (!sub?.stripeCustomerId) return res.status(404).json({ error: "No subscription found." });
+
+      const stripeClient = new (await import("stripe")).default(process.env.STRIPE_SECRET_KEY!, {
+        apiVersion: "2025-02-24.acacia" as any,
+      });
+      const portal = await stripeClient.billingPortal.sessions.create({
+        customer: sub.stripeCustomerId,
+        return_url: `${APP_BASE_URL}/#/pro`,
+      });
+      res.json({ url: portal.url });
+    } catch (e: any) {
+      res.status(500).json({ error: "Unable to open billing portal." });
+    }
+  });
+
+  // GET /api/founder/pro-dashboard — Pro analytics for Founder
+  // FR-18/19
+  app.get("/api/founder/pro-dashboard", async (req, res) => {
+    try {
+      const stats = await getProDashboardStats();
+      res.json(stats);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Legacy subscribe (no-op — returns instruction to use /checkout)
+  app.post("/api/pro/subscribe", async (req, res) => {
+    res.status(410).json({ error: "This endpoint is deprecated. Use POST /api/pro/checkout." });
   });
 
   // ─── Projects / Your Work ────────────────────────────────────────────
@@ -2676,6 +2801,59 @@ export async function registerRoutes(httpServer: Server, app: Express) {
                 afterState: { disputeId: dispute.id, chargeId: dispute.charge, amount: dispute.amount },
                 correlationId,
               });
+              break;
+            }
+
+            // ── PRD-013: Pro Viewrr subscription lifecycle events ──────────────
+            case "customer.subscription.updated":
+            case "customer.subscription.created": {
+              const sub = event.data.object as any;
+              const viewrrUserId = sub.metadata?.viewrr_user_id
+                ? Number(sub.metadata.viewrr_user_id) : undefined;
+              if (sub.status === "active") {
+                await activateProFromWebhook(
+                  sub.id,
+                  sub.customer as string,
+                  event.id,
+                  sub.current_period_start,
+                  sub.current_period_end,
+                  viewrrUserId,
+                );
+              } else if (sub.status === "past_due" || sub.status === "unpaid") {
+                await markProPaymentFailed(sub.id, event.id);
+              } else if (sub.status === "canceled") {
+                await expireProEntitlement(sub.id, event.id);
+              }
+              break;
+            }
+            case "customer.subscription.deleted": {
+              const sub = event.data.object as any;
+              await expireProEntitlement(sub.id, event.id);
+              break;
+            }
+            case "invoice.payment_succeeded": {
+              const inv = event.data.object as any;
+              if (inv.subscription) {
+                // Renewal — update period
+                try {
+                  const stripeClient = stripe;
+                  const stripeSub = await stripeClient.subscriptions.retrieve(inv.subscription as string);
+                  await renewProFromWebhook(
+                    stripeSub.id,
+                    stripeSub.customer as string,
+                    event.id,
+                    stripeSub.current_period_start,
+                    stripeSub.current_period_end,
+                  );
+                } catch (e) { console.error("[pro-renew]", e); }
+              }
+              break;
+            }
+            case "invoice.payment_failed": {
+              const inv = event.data.object as any;
+              if (inv.subscription) {
+                await markProPaymentFailed(inv.subscription as string, event.id);
+              }
               break;
             }
 

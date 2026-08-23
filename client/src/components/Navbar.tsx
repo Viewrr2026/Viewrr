@@ -116,11 +116,19 @@ export default function Navbar() {
                       </Link>
                     </DropdownMenuItem>
                     {user.role === "freelancer" && (
-                      <DropdownMenuItem asChild>
-                        <Link href="/payouts" className="flex items-center gap-2 cursor-pointer">
-                          <Banknote size={14} /> Earnings & payouts
-                        </Link>
-                      </DropdownMenuItem>
+                      <>
+                        <DropdownMenuItem asChild>
+                          <Link href="/payouts" className="flex items-center gap-2 cursor-pointer">
+                            <Banknote size={14} /> Earnings & payouts
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/pro" className="flex items-center gap-2 cursor-pointer">
+                            <Crown size={14} style={{ color: "#FF5A1F" }} />
+                            <span style={{ color: "#FF5A1F" }} className="font-medium">Pro Viewrr</span>
+                          </Link>
+                        </DropdownMenuItem>
+                      </>
                     )}
                     {(user as any)?.accountSubtype === "agency_owner" && (
                       <DropdownMenuItem asChild>

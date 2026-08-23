@@ -31,6 +31,7 @@ import FounderSupport from "@/pages/admin/FounderSupport";
 import FounderSettings from "@/pages/admin/FounderSettings";
 import FounderAccreditation from "@/pages/admin/FounderAccreditation";
 import FounderFinance from "@/pages/admin/FounderFinance";
+import FounderProSubscriptions from "@/pages/admin/FounderProSubscriptions";
 import AgencyJoin from "@/pages/AgencyJoin";
 import AgencyProfile from "@/pages/AgencyProfile";
 import AgencyHQ from "@/pages/AgencyHQ";
@@ -76,6 +77,7 @@ export default function App() {
               <Route path="/founder/settings" component={FounderSettings} />
               <Route path="/founder/accreditation" component={FounderAccreditation} />
               <Route path="/founder/finance" component={FounderFinance} />
+              <Route path="/founder/pro" component={FounderProSubscriptions} />
               <Route path="/join/:code" component={AgencyJoin} />
               <Route path="/agency/:slug" component={AgencyProfile} />
               <Route path="/agency-hq" component={AgencyHQ} />

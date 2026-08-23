@@ -774,3 +774,57 @@ export const stripeConnectAccounts = pgTable("stripe_connect_accounts", {
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 export type StripeConnectAccount = typeof stripeConnectAccounts.$inferSelect;
+
+// ─── PRD-013: Pro Viewrr Subscription Infrastructure ─────────────────────────
+
+// pro_subscriptions — one row per user's subscription record
+export const proSubscriptions = pgTable("pro_subscriptions", {
+  id: serial("id").primaryKey(),
+  publicId: text("public_id").notNull().unique(),          // e.g. prosub_abc123
+  userId: integer("user_id").notNull().unique(),           // one active record per user
+  membershipType: text("membership_type").notNull().default("paid"), // "paid" | "founding_pro"
+  stripeCustomerId: text("stripe_customer_id"),            // cus_... (null for founding_pro)
+  stripeSubscriptionId: text("stripe_subscription_id"),    // sub_... (null for founding_pro)
+  stripePriceId: text("stripe_price_id"),                  // price_... locked at checkout
+  status: text("status").notNull().default("checkout_pending"),
+  // checkout_pending | active | past_due | payment_failed | cancellation_scheduled | cancelled | expired | founding_pro
+  amountPence: integer("amount_pence").default(4999),      // 4999 = £49.99
+  currency: text("currency").default("gbp"),
+  currentPeriodStart: text("current_period_start"),
+  currentPeriodEnd: text("current_period_end"),
+  cancelAtPeriodEnd: integer("cancel_at_period_end").default(0),
+  termsVersion: text("terms_version"),                     // terms accepted at signup
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  updatedAt: text("updated_at").notNull().default(new Date().toISOString()),
+});
+export type ProSubscription = typeof proSubscriptions.$inferSelect;
+
+// founding_pro_allocations — max 10, enforced server-side atomically
+export const foundingProAllocations = pgTable("founding_pro_allocations", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().unique(),           // one per user
+  allocationNumber: integer("allocation_number").notNull(), // 1–10
+  allocatedAt: text("allocated_at").notNull().default(new Date().toISOString()),
+  active: integer("active").notNull().default(1),
+});
+export type FoundingProAllocation = typeof foundingProAllocations.$inferSelect;
+
+// pro_subscription_events — audit trail for every state change
+export const proSubscriptionEvents = pgTable("pro_subscription_events", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  subscriptionId: integer("subscription_id"),              // FK to pro_subscriptions
+  eventType: text("event_type").notNull(),
+  // subscription_created | checkout_initiated | subscription_activated | founding_pro_claimed
+  // payment_succeeded | payment_failed | subscription_renewed | cancellation_requested
+  // cancellation_completed | entitlement_granted | entitlement_removed | commission_rate_applied
+  // founder_intervention
+  oldStatus: text("old_status"),
+  newStatus: text("new_status"),
+  commissionRateBps: integer("commission_rate_bps"),       // 800 = 8%, 1100 = 11%
+  stripeEventId: text("stripe_event_id"),                  // idempotency
+  metadata: text("metadata"),                              // JSON
+  correlationId: text("correlation_id"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export type ProSubscriptionEvent = typeof proSubscriptionEvents.$inferSelect;

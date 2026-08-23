@@ -16,6 +16,7 @@ import {
   X,
   BadgeCheck,
   Landmark,
+  Crown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/components/AuthProvider";
@@ -28,6 +29,7 @@ const NAV_ITEMS = [
   { label: "Projects", href: "/founder/projects", icon: FolderKanban },
   { label: "Community", href: "/founder/community", icon: Users },
   { label: "Finance & Ops", href: "/founder/finance", icon: Landmark },
+  { label: "Pro Subscriptions", href: "/founder/pro", icon: Crown },
   { label: "Insights", href: "/founder/insights", icon: BarChart3 },
   { label: "Support", href: "/founder/support", icon: HeadphonesIcon },
   { label: "Settings", href: "/founder/settings", icon: Settings },

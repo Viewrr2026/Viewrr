@@ -245,9 +245,17 @@ export async function createPayment(
     }
   }
 
-  // 4. Server-derived amounts (FR-01)
+  // 4. Server-derived amounts (FR-01 / PRD-013 FR-07/08)
+  // Commission rate is determined by freelancer's Pro entitlement at invoice creation time.
+  // Rate is locked per-transaction — upgrading/cancelling Pro never alters historical records.
   const grossPence = invoice.totalPence;
-  const platformFeePence = Math.round(grossPence * (VIEWRR_FEE_PERCENT / 100));
+  let effectiveFeePct = VIEWRR_FEE_PERCENT; // default 11%
+  try {
+    const { getCommissionRateBpsForUser } = await import("./pro-service");
+    const rateBps = await getCommissionRateBpsForUser(project.freelancerId);
+    effectiveFeePct = rateBps / 100; // 800 bps → 8, 1100 bps → 11
+  } catch { /* fallback to standard */ }
+  const platformFeePence = Math.round(grossPence * (effectiveFeePct / 100));
   const freelancerPence = grossPence - platformFeePence;
 
   // 5. Load freelancer and check Connect readiness (FR-14: no silent account creation)
