@@ -85,13 +85,18 @@ interface Deliverable {
 }
 
 // ── Watermark overlay ─────────────────────────────────────────────────────────
-function WatermarkLayer() {
+function WatermarkLayer({ username = "" }: { username?: string }) {
+  // Build the repeating horizontal marquee text
+  const displayName = username ? `@${username} on Viewrr` : "Viewrr";
+  // Repeat enough times to guarantee full-width coverage regardless of screen size
+  const marqueeText = Array(12).fill(displayName).join("   ·   ");
+
   return (
     <div
       className="absolute inset-0 pointer-events-none select-none z-10 flex items-center justify-center overflow-hidden"
       aria-hidden
     >
-      {/* Diagonal repeating watermark text */}
+      {/* Diagonal tinted stripe overlay */}
       <div className="absolute inset-0 opacity-[0.18]" style={{
         backgroundImage: `repeating-linear-gradient(
           -45deg,
@@ -101,28 +106,64 @@ function WatermarkLayer() {
           rgba(255,90,31,0.15) 61px
         )`,
       }} />
-      {/* Centre stamp */}
+
+      {/* Horizontal username band — centred across the middle */}
       <div
-        className="flex flex-col items-center gap-1.5 px-5 py-3 rounded-2xl border-2"
+        className="absolute left-0 right-0 flex items-center overflow-hidden"
         style={{
-          background: "rgba(0,0,0,0.55)",
+          top: "50%",
+          transform: "translateY(-50%)",
+          background: "rgba(0,0,0,0.52)",
+          backdropFilter: "blur(3px)",
+          borderTop: "1px solid rgba(255,255,255,0.08)",
+          borderBottom: "1px solid rgba(255,255,255,0.08)",
+          padding: "10px 0",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {/* Static wide text — no animation needed, just overflow:hidden clips it */}
+        <span
+          className="text-sm font-bold tracking-widest uppercase"
+          style={{
+            color: "rgba(255,255,255,0.75)",
+            letterSpacing: "0.18em",
+            paddingLeft: "16px",
+            display: "block",
+            width: "max-content",
+          }}
+        >
+          {marqueeText}
+        </span>
+      </div>
+
+      {/* Centre stamp (Viewrr orange — unchanged) */}
+      <div
+        className="relative z-10 flex flex-col items-center gap-1.5 px-5 py-3 rounded-2xl border-2"
+        style={{
+          background: "rgba(0,0,0,0.72)",
           borderColor: "rgba(255,90,31,0.6)",
-          backdropFilter: "blur(2px)",
+          backdropFilter: "blur(4px)",
         }}
       >
         <Lock size={18} style={{ color: "#FF5A1F" }} />
         <p className="text-white text-xs font-bold tracking-wide uppercase">Watermarked preview</p>
-        <p className="text-white/60 text-[10px] text-center leading-relaxed">
+        {username && (
+          <p className="text-white/70 text-[10px] font-semibold" style={{ color: "rgba(255,90,31,0.9)" }}>
+            @{username} on Viewrr
+          </p>
+        )}
+        <p className="text-white/50 text-[10px] text-center leading-relaxed">
           Final files released after payment
         </p>
       </div>
-      {/* Tiled text watermarks */}
+
+      {/* Tiled diagonal Viewrr text (orange — unchanged) */}
       {Array.from({ length: 12 }).map((_, i) => (
         <span
           key={i}
           className="absolute text-[10px] font-bold uppercase tracking-widest"
           style={{
-            color: "rgba(255,90,31,0.25)",
+            color: "rgba(255,90,31,0.22)",
             top: `${(i % 4) * 26 + 5}%`,
             left: `${Math.floor(i / 4) * 36 + 5}%`,
             transform: "rotate(-35deg)",
@@ -142,10 +183,12 @@ function WatermarkLayer() {
 function EmbedModal({
   deliverable,
   watermarked,
+  username,
   onClose,
 }: {
   deliverable: Deliverable;
   watermarked: boolean;
+  username?: string;
   onClose: () => void;
 }) {
   const info = detectPlatform(deliverable.url);
@@ -197,7 +240,7 @@ function EmbedModal({
             <a href={deliverable.url} target="_blank" rel="noopener noreferrer" className="text-[#FF5A1F] underline text-sm">Open in new tab</a>
           </div>
         )}
-        {watermarked && <WatermarkLayer />}
+        {watermarked && <WatermarkLayer username={username} />}
       </div>
     </div>
   );
@@ -1056,6 +1099,7 @@ export default function DeliverablesSection({
         <EmbedModal
           deliverable={embedTarget}
           watermarked={isWatermarked}
+          username={freelancerName}
           onClose={() => setEmbedTarget(null)}
         />
       )}
