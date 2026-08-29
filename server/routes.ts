@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { registerRetainerBuilderRoutes } from "./retainer-builder-routes";
 import { Server } from "http";
 import { storage, db } from "./storage";
@@ -82,7 +82,7 @@ function safeUserDto(user: any): Record<string, any> {
 // Ordinary logged-in user gets 403 (cookie valid, but isAdmin=false in DB).
 // SESSION_SECRET-signed tokens provide caller authentication — no separate guard secret needed.
 // Phase 1 adds DB token revocation for forced logout.
-async function requireAdminGuard(req: any, res: any, next: any): Promise<void> {
+async function requireAdminGuard(req: Request, res: Response, next: NextFunction): Promise<void> {
   // Step 1: Must present a valid, unexpired HMAC session cookie.
   const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
   if (!rawCookie) {
@@ -104,9 +104,31 @@ async function requireAdminGuard(req: any, res: any, next: any): Promise<void> {
   const user = await storage.getUser(session.userId).catch(() => undefined);
   if (!user) { res.status(401).json({ error: "Authentication required." }); return; }
   if (!user.isAdmin) { res.status(403).json({ error: "Forbidden." }); return; }
-  req.adminUser = user;
+  req.auth = { userId: session.userId, adminUser: user };
   next();
 }
+
+// ─── A0: Caller-Identity Guard ────────────────────────────────────────────────
+// Reuses Phase 0 HMAC session cookie (vr_sess) exclusively.
+// Sets req.auth!.userId from the VERIFIED token — body/query identity values
+// for the CALLER are IGNORED for authentication on all A0-guarded routes.
+// Phase 1 (Batch A) replaces this with a DB-backed verifySessionV2 + revocation.
+async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
+  if (!rawCookie) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+  const session = verifySessionToken(rawCookie);
+  if (!session) {
+    clearSessionCookie(res);
+    res.status(401).json({ error: "Session expired or invalid. Please sign in again." });
+    return;
+  }
+  req.auth = { userId: session.userId };
+  next();
+}
+
 import { Resend } from "resend";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -701,7 +723,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json({ ...pw, reviews });
   });
 
-  app.patch("/api/profiles/:id", async (req, res) => {
+  // A0-U2
+  app.patch("/api/profiles/:id", requireAuth, async (req, res) => {
+    // A0: verify caller owns this profile before mutating
+    const profileForAuth = await storage.getProfile(Number(req.params.id));
+    if (!profileForAuth) return res.status(404).json({ error: "Profile not found" });
+    if (req.auth!.userId !== profileForAuth.profile.userId) return res.status(403).json({ error: "Forbidden." });
     // P0-PRIV: Explicitly whitelist user-editable fields.
     // Privileged fields (accreditationLevel, accreditationApprovedBy, isPro, proSince,
     // featured, rating, reviewCount, projectCount, badges) are NEVER accepted from
@@ -771,12 +798,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(msgs);
   });
 
-  app.post("/api/interest-messages", async (req, res) => {
+  // A0-M4
+  app.post("/api/interest-messages", requireAuth, async (req, res) => {
     try {
       const { fromId, toId, content, interestId, briefTitle } = req.body;
       if (!fromId || !toId || !content || !interestId) {
         return res.status(400).json({ error: "Missing fields" });
       }
+      // A0: caller must be the sender
+      if (req.auth!.userId !== Number(fromId)) return res.status(403).json({ error: "Forbidden." });
       const msg = await storage.createMessage({ fromId, toId, content, interestId });
       // Notify recipient
       const actor = await storage.getUser(fromId);
@@ -799,20 +829,30 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── Direct messages (general) ────────────────────────────────────────────
-  app.get("/api/messages/:userId/conversations", async (req, res) => {
-    const convs = await storage.getConversations(Number(req.params.userId));
+  // A0-M1
+  app.get("/api/messages/:userId/conversations", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
+    const convs = await storage.getConversations(req.auth!.userId);
     res.json(convs);
   });
 
-  app.get("/api/messages/:fromId/:toId", async (req, res) => {
-    const msgs = await storage.getMessagesBetween(Number(req.params.fromId), Number(req.params.toId));
-    await storage.markMessagesRead(Number(req.params.fromId), Number(req.params.toId));
+  // A0-M2
+  app.get("/api/messages/:fromId/:toId", requireAuth, async (req, res) => {
+    const fromId = Number(req.params.fromId);
+    const toId = Number(req.params.toId);
+    // Caller must be one of the two parties
+    if (req.auth!.userId !== fromId && req.auth!.userId !== toId) return res.status(403).json({ error: "Forbidden." });
+    const msgs = await storage.getMessagesBetween(fromId, toId);
+    await storage.markMessagesRead(fromId, toId);
     res.json(msgs);
   });
 
-  app.post("/api/messages", async (req, res) => {
+  // A0-M3
+  app.post("/api/messages", requireAuth, async (req, res) => {
     try {
       const data = insertMessageSchema.parse(req.body);
+      // A0: caller must be the sender
+      if (req.auth!.userId !== Number(data.fromId)) return res.status(403).json({ error: "Forbidden." });
       const msg = await storage.createMessage(data);
       // Notify recipient of new message
       const actor = await storage.getUser(data.fromId);
@@ -920,7 +960,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(safeUserDto(user)); // P0-02
   });
 
-  app.patch("/api/users/:id", async (req, res) => {
+  // A0-U1
+  app.patch("/api/users/:id", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.id)) return res.status(403).json({ error: "Forbidden." });
     try {
       const { name, email, bio, avatar, banner, headline, location } = req.body;
       const updated = await storage.updateUser(Number(req.params.id), {
@@ -1003,7 +1045,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Admin-only: remove any post + notify the owner
   // P0-04: requireAdminGuard
   app.delete("/api/admin/feed/:id", requireAdminGuard, async (req, res) => {
-    const admin = req.adminUser;
+    const admin = req.auth!.adminUser!;
     const ownerId = await storage.adminDeletePost(Number(req.params.id), admin.id);
     if (ownerId === null) return res.status(404).json({ error: "Post not found" });
     bustFeedCache();
@@ -1024,7 +1066,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Admin: fetch deletion history log
   // P0-04: requireAdminGuard
   app.get("/api/admin/deleted-posts", requireAdminGuard, async (req, res) => {
-    const admin = req.adminUser;
+    const admin = req.auth!.adminUser!;
     const log = await storage.getDeletedPosts();
     res.json(log);
   });
@@ -1108,22 +1150,22 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // POST /api/pro/checkout — create Stripe Checkout session (paid subscription)
   // FR-01/02: price controlled server-side; never from client input
-  app.post("/api/pro/checkout", async (req, res) => {
+  // A0-P3
+  app.post("/api/pro/checkout", requireAuth, async (req, res) => {
     try {
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-      const user = await storage.getUser(Number(userId));
+      // A0: identity from session
+      const user = await storage.getUser(req.auth!.userId);
       if (!user) return res.status(404).json({ error: "User not found" });
       if (user.role !== "freelancer") return res.status(403).json({ error: "Pro Viewrr is for freelancer accounts only" });
 
       // Already has active entitlement?
-      const entitlement = await getProEntitlement(Number(userId));
+      const entitlement = await getProEntitlement(req.auth!.userId);
       if (entitlement.entitlementActive) {
         return res.json({ alreadyPro: true, status: entitlement.status });
       }
 
       const { checkoutUrl, sessionId } = await createProCheckout(
-        Number(userId),
+        req.auth!.userId,
         user.email,
         APP_BASE_URL,
       );
@@ -1136,15 +1178,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // POST /api/pro/claim-founding — claim a Founding Pro place
   // FR-06: atomic server-side, max 10
-  app.post("/api/pro/claim-founding", async (req, res) => {
+  // A0-P4
+  app.post("/api/pro/claim-founding", requireAuth, async (req, res) => {
     try {
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-      const user = await storage.getUser(Number(userId));
+      // A0: identity from session
+      const user = await storage.getUser(req.auth!.userId);
       if (!user) return res.status(404).json({ error: "User not found" });
       if (user.role !== "freelancer") return res.status(403).json({ error: "Founding Pro is for freelancer accounts only" });
 
-      const result = await claimFoundingPro(Number(userId));
+      const result = await claimFoundingPro(req.auth!.userId);
       if (!result.success) {
         if (result.reason === "already_claimed") {
           return res.json({ alreadyFounder: true, message: "You already have a Founding Pro membership." });
@@ -1162,18 +1204,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // POST /api/pro/cancel — cancel at period end
   // FR-15: entitlement remains active until end of paid period
-  app.post("/api/pro/cancel", async (req, res) => {
+  // A0-P1
+  app.post("/api/pro/cancel", requireAuth, async (req, res) => {
     try {
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-      const entitlement = await getProEntitlement(Number(userId));
+      // A0: identity from session
+      const entitlement = await getProEntitlement(req.auth!.userId);
       if (!entitlement.entitlementActive || entitlement.membershipType !== "paid") {
         return res.status(400).json({ error: "No active paid subscription to cancel." });
       }
       if (!entitlement.subscriptionId) {
         return res.status(400).json({ error: "No Stripe subscription ID found." });
       }
-      const { currentPeriodEnd } = await scheduleProCancellation(Number(userId), entitlement.subscriptionId);
+      const { currentPeriodEnd } = await scheduleProCancellation(req.auth!.userId, entitlement.subscriptionId);
       res.json({ success: true, currentPeriodEnd, message: `Your Pro membership will remain active until ${new Date(currentPeriodEnd).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}.` });
     } catch (e: any) {
       console.error("[pro/cancel]", e.message);
@@ -1182,7 +1224,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // GET /api/pro/manage-billing — Stripe billing portal
-  app.get("/api/pro/manage-billing/:userId", async (req, res) => {
+  // A0-P2
+  app.get("/api/pro/manage-billing/:userId", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
       const userId = Number(req.params.userId);
       const { proSubscriptions: proSubsTable } = await import("../shared/schema");
@@ -1249,13 +1293,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── Confirm final payment → marks project completed ──────────────────────
-  app.post("/api/projects/:id/confirm-payment", async (req, res) => {
+  // A0-F5
+  app.post("/api/projects/:id/confirm-payment", requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
-      const { clientId } = req.body;
       const pw = await storage.getProject(projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
-      if (pw.project.clientId !== Number(clientId)) {
+      // A0: identity from session, not body — attacker cannot spoof clientId
+      if (pw.project.clientId !== req.auth!.userId) {
         return res.status(403).json({ error: "Only the client can confirm payment" });
       }
       // Mark project completed + paid
@@ -1510,13 +1555,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Project Invitations ────────────────────────────────────────────────────
 
   // Create invitation
-  app.post("/api/invitations", async (req, res) => {
+  // A0-I3
+  app.post("/api/invitations", requireAuth, async (req, res) => {
     try {
-      const { senderId, recipientId, title, description, category, budget, timeline, startStage,
+      const { recipientId, title, description, category, budget, timeline, startStage,
               isRetainer, billingCycle, deliverablesPerCycle, totalCycles } = req.body;
-      if (!senderId || !recipientId || !title) return res.status(400).json({ error: "Missing fields" });
+      if (!recipientId || !title) return res.status(400).json({ error: "Missing fields" });
+      // A0: senderId is always the authenticated caller
       const inv = await storage.createInvitation({
-        senderId: Number(senderId), recipientId: Number(recipientId),
+        senderId: req.auth!.userId, recipientId: Number(recipientId),
         title,
         description: description || undefined,
         category: category || undefined,
@@ -1529,10 +1576,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         totalCycles: totalCycles ? Number(totalCycles) : undefined,
       });
       // Notify recipient
-      const sender = await storage.getUser(Number(senderId));
+      const sender = await storage.getUser(req.auth!.userId);
       await notify({
         recipientId: Number(recipientId),
-        actorId: Number(senderId),
+        actorId: req.auth!.userId,
         actorName: sender?.name ?? "Someone",
         actorAvatar: sender?.avatar ?? null,
         type: "project_invitation",
@@ -1562,7 +1609,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Accept invitation — creates a real project
-  app.patch("/api/invitations/:id/accept", async (req, res) => {
+  // A0-I1
+  app.patch("/api/invitations/:id/accept", requireAuth, async (req, res) => {
+    // A0: load before mutating to verify caller is the recipient
+    const existing = await db.select().from(schema.projectInvitations).where(eq(schema.projectInvitations.id, Number(req.params.id))).limit(1);
+    if (!existing.length) return res.status(404).json({ error: "Not found" });
+    if (req.auth!.userId !== existing[0].recipientId) return res.status(403).json({ error: "Forbidden." });
     const inv = await storage.updateInvitationStatus(Number(req.params.id), "accepted");
     if (!inv) return res.status(404).json({ error: "Not found" });
     const sender = await storage.getUser(inv.senderId);
@@ -1616,7 +1668,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Decline invitation
-  app.patch("/api/invitations/:id/decline", async (req, res) => {
+  // A0-I2
+  app.patch("/api/invitations/:id/decline", requireAuth, async (req, res) => {
+    // A0: load before mutating to verify caller is the recipient
+    const existingDecline = await db.select().from(schema.projectInvitations).where(eq(schema.projectInvitations.id, Number(req.params.id))).limit(1);
+    if (!existingDecline.length) return res.status(404).json({ error: "Not found" });
+    if (req.auth!.userId !== existingDecline[0].recipientId) return res.status(403).json({ error: "Forbidden." });
     const inv = await storage.updateInvitationStatus(Number(req.params.id), "declined");
     if (!inv) return res.status(404).json({ error: "Not found" });
     const recipient = await storage.getUser(inv.recipientId);
@@ -1683,20 +1740,26 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // POST /api/projects/:id/retainer/pay-cycle — DEPRECATED (PRD-008)
   // Replaced by server-authoritative POST /api/retainer-cycles/:cyclePublicId/payments
   // Kept for backward-compat; redirects to new endpoint using cycle's public_id
-  app.post("/api/projects/:id/retainer/pay-cycle", async (req, res) => {
+  // A0-F4
+  app.post("/api/projects/:id/retainer/pay-cycle", requireAuth, async (req, res) => {
     try {
-      const { cycleId, clientUserId } = req.body;
-      if (!cycleId || !clientUserId) {
-        return res.status(400).json({ error: "cycleId and clientUserId required" });
+      const { cycleId } = req.body;
+      if (!cycleId) {
+        return res.status(400).json({ error: "cycleId required" });
       }
       // Look up cycle public_id
       const db = neon(process.env.DATABASE_URL!);
-      const cycles = await db`SELECT public_id FROM retainer_cycles WHERE id = ${Number(cycleId)} LIMIT 1`;
+      const cycles = await db`SELECT public_id, project_id FROM retainer_cycles WHERE id = ${Number(cycleId)} LIMIT 1`;
       if (!cycles.length || !cycles[0].public_id) {
         return res.status(404).json({ error: "Retainer cycle not found or missing public_id" });
       }
+      // A0: verify caller is the client on the project
+      const cycleProject = await storage.getProject(Number(cycles[0].project_id));
+      if (!cycleProject || cycleProject.project.clientId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Only the client can pay a retainer cycle" });
+      }
       const cyclePublicId = cycles[0].public_id;
-      const result = await createRetainerPayment(cyclePublicId, Number(clientUserId));
+      const result = await createRetainerPayment(cyclePublicId, req.auth!.userId);
       return res.json(result);
     } catch (e: any) {
       const status = (e as any).status ?? 500;
@@ -2231,10 +2294,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Freelancer accepts a counter-offer
-  app.patch("/api/interests/:id/accept-counter", async (req, res) => {
+  // A0-N1
+  app.patch("/api/interests/:id/accept-counter", requireAuth, async (req, res) => {
     try {
       const interest = await storage.getBriefInterest(Number(req.params.id));
       if (!interest) return res.status(404).json({ error: "Not found" });
+      // A0: only the freelancer on this interest can accept a counter-offer
+      if (req.auth!.userId !== interest.freelancerId) return res.status(403).json({ error: "Forbidden." });
       if (!(interest as any).counterOfferPence) return res.status(400).json({ error: "No counter-offer" });
       await storage.updateBriefInterestStatus(Number(req.params.id), "accepted");
       const existing = await storage.getProjectByInterestId(interest.id);
@@ -2263,16 +2329,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Client updates status of an interest (viewed / accepted / declined)
-  app.patch("/api/interests/:id/status", async (req, res) => {
+  // A0-N2
+  app.patch("/api/interests/:id/status", requireAuth, async (req, res) => {
     try {
-      const { status, clientName, clientAvatar, clientUserId } = req.body;
+      const { status, clientName, clientAvatar } = req.body;
       if (!["pending", "viewed", "accepted", "declined"].includes(status)) {
         return res.status(400).json({ error: "Invalid status" });
       }
       const interest = await storage.getBriefInterest(Number(req.params.id));
       if (!interest) return res.status(404).json({ error: "Interest not found" });
-      // Only the brief owner (client) can change status to accepted/declined
-      if (["accepted", "declined"].includes(status) && clientUserId && interest.briefClientId !== Number(clientUserId)) {
+      // A0: only the brief owner (client) can change status to accepted/declined
+      if (["accepted", "declined"].includes(status) && interest.briefClientId !== req.auth!.userId) {
         return res.status(403).json({ error: "Only the client can accept or decline this interest" });
       }
       await storage.updateBriefInterestStatus(Number(req.params.id), status);
@@ -2361,9 +2428,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ─── Notifications ───────────────────────────────────────────────────
   // Get all notifications for a user
-  app.get("/api/notifications/:userId", async (req, res) => {
+  // A0-NT1
+  app.get("/api/notifications/:userId", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
-      const notifs = await storage.getNotifications(Number(req.params.userId));
+      const notifs = await storage.getNotifications(req.auth!.userId);
       res.json(notifs);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2371,9 +2440,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Get unread count only (for polling)
-  app.get("/api/notifications/:userId/unread-count", async (req, res) => {
+  // A0-NT2
+  app.get("/api/notifications/:userId/unread-count", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
-      const count = await storage.getUnreadNotificationCount(Number(req.params.userId));
+      const count = await storage.getUnreadNotificationCount(req.auth!.userId);
       res.json({ count });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2391,9 +2462,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Mark ALL notifications as read for a user
-  app.patch("/api/notifications/user/:userId/read-all", async (req, res) => {
+  // A0-NT3
+  app.patch("/api/notifications/user/:userId/read-all", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
-      await storage.markAllNotificationsRead(Number(req.params.userId));
+      await storage.markAllNotificationsRead(req.auth!.userId);
       res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2623,13 +2696,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── PRD-009: Dedicated Viewrr payment terms acceptance (FR-03, FR-04) ──────────
   // POST /api/stripe/accept-terms
   // Records Viewrr payment terms acceptance server-side. Never trust a frontend boolean.
-  app.post("/api/stripe/accept-terms", async (req, res) => {
+  // A0-L1
+  app.post("/api/stripe/accept-terms", requireAuth, async (req, res) => {
     try {
       const db = neon(process.env.DATABASE_URL!);
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-
-      const user = await storage.getUser(Number(userId));
+      // A0: body userId is IGNORED; terms are always recorded for the authenticated caller
+      const user = await storage.getUser(req.auth!.userId);
       if (!user) return res.status(404).json({ error: "User not found" });
       if (user.role !== "freelancer") return res.status(403).json({ error: "Only freelancers need payment terms" });
 
@@ -2660,7 +2732,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       await db`
         INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
         VALUES (
-          ${Number(userId)}, ${tv[0].id},
+          ${req.auth!.userId}, ${tv[0].id},
           ${PAYMENT_TERMS_DOCUMENT}, ${PAYMENT_TERMS_VERSION},
           'stripe_connect_onboarding', ${ip}, ${ua}
         )
@@ -2670,7 +2742,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       await auditLog({
         actorType: "user",
-        actorId: Number(userId),
+        actorId: req.auth!.userId,
         action: "payment_terms_accepted",
         afterState: JSON.stringify({ document: PAYMENT_TERMS_DOCUMENT, version: PAYMENT_TERMS_VERSION }),
       });
@@ -2683,7 +2755,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── PRD-009: GET terms acceptance status ──────────────────────────────────────
-  app.get("/api/stripe/terms-status/:userId", async (req, res) => {
+  // A0-S6
+  app.get("/api/stripe/terms-status/:userId", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
       const db = neon(process.env.DATABASE_URL!);
       const userId = Number(req.params.userId);
@@ -2712,13 +2786,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Flow: Authenticate → Detect existing → Sync Stripe → Check Viewrr terms →
   //        If needed return VIEWRR_PAYMENT_TERMS_REQUIRED → Create only if none exists
   // NEVER creates a second account for the same user (FR-08).
-  app.post("/api/stripe/connect-account", async (req, res) => {
+  // A0-S1
+  app.post("/api/stripe/connect-account", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-
-      const user = await storage.getUser(Number(userId));
+      // A0: identity from session; body userId ignored for caller auth
+      const user = await storage.getUser(req.auth!.userId);
       if (!user) return res.status(404).json({ error: "User not found" });
       if (user.role !== "freelancer") return res.status(403).json({ error: "Only freelancers can connect Stripe" });
 
@@ -2808,7 +2881,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
 
       // ─ STEP 3: Create new Stripe account ───────────────────────────────
-      const idempotencyKey = `connect_account:${userId}:v1`;
+      const idempotencyKey = `connect_account:${req.auth!.userId}:v1`;
       const account = await stripe.accounts.create({
         type: "express",
         country: "GB",
@@ -2816,7 +2889,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         business_type: "individual",
         capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
         business_profile: { product_description: "Freelance creative services via Viewrr" },
-        metadata: { viewrr_user_id: String(userId) },
+        metadata: { viewrr_user_id: String(req.auth!.userId) },
       }, { idempotencyKey });
 
       await storage.updateStripeAccount(user.id, { stripeAccountId: account.id, stripeOnboarded: 0 });
@@ -2845,13 +2918,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // FR-14: Onboarding link — FR-02: no userId in path/body (use body for now, validated against DB)
-  app.post("/api/stripe/onboarding-link", async (req, res) => {
+  // A0-S2
+  app.post("/api/stripe/onboarding-link", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-
-      const user = await storage.getUser(Number(userId));
+      // A0: identity from session
+      const user = await storage.getUser(req.auth!.userId);
       if (!user || !user.stripeAccountId)
         return res.status(404).json({ error: "No Stripe account found. Connect Stripe first." });
       if (user.role !== "freelancer")
@@ -2868,31 +2940,27 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       await neon(process.env.DATABASE_URL!)`
         UPDATE stripe_connect_accounts
         SET last_onboarding_link_at = ${new Date().toISOString()}, last_onboarding_link_error = NULL
-        WHERE user_id = ${Number(userId)}
+        WHERE user_id = ${user.id}
       `.catch(() => {});
 
       res.json({ url: link.url });
     } catch (e: any) {
       console.error("[stripe/onboarding-link]", e.message);
-      // FR-21: record failure
-      const { userId } = (e as any).requestBody ?? {};
-      if (userId) {
-        await neon(process.env.DATABASE_URL!)`
-          UPDATE stripe_connect_accounts SET last_onboarding_link_error = ${e.message} WHERE user_id = ${Number(userId)}
-        `.catch(() => {});
-      }
+      // FR-21: record failure — use req.auth!.userId since body userId is no longer available
+      await neon(process.env.DATABASE_URL!)`
+        UPDATE stripe_connect_accounts SET last_onboarding_link_error = ${e.message} WHERE user_id = ${req.auth!.userId}
+      `.catch(() => {});
       res.status(500).json({ error: e.message });
     }
   });
 
   // PRD-015 FR-09: Express Dashboard link — opens Stripe Express dashboard for freelancer
-  app.post("/api/stripe/dashboard-link", async (req, res) => {
+  // A0-S3
+  app.post("/api/stripe/dashboard-link", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-
-      const user = await storage.getUser(Number(userId));
+      // A0: identity from session
+      const user = await storage.getUser(req.auth!.userId);
       if (!user) return res.status(404).json({ error: "User not found" });
       if (user.role !== "freelancer") return res.status(403).json({ error: "Only freelancers can access dashboard links" });
       if (!user.stripeAccountId) return res.status(400).json({ error: "No Stripe account connected" });
@@ -3053,15 +3121,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // FR-01, FR-02, FR-04, FR-07: Server-authoritative payment creation
   // Browser submits ONLY projectId + invoiceId — no amount, no userId authority
-  app.post("/api/projects/:projectId/payments", async (req, res) => {
+  // A0-F2
+  app.post("/api/projects/:projectId/payments", requireAuth, async (req, res) => {
     try {
-      const { invoiceId, clientUserId } = req.body;
+      const { invoiceId } = req.body;
       const projectId = Number(req.params.projectId);
       if (!invoiceId) return res.status(400).json({ error: "invoiceId required" });
-      // clientUserId supplied by frontend (no sessions) — validated against project ownership
-      if (!clientUserId) return res.status(400).json({ error: "clientUserId required" });
-
-      const result = await createPayment(projectId, Number(invoiceId), Number(clientUserId));
+      // A0: verify caller is the client on this project
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.clientId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Only the project client can initiate payment" });
+      }
+      const result = await createPayment(projectId, Number(invoiceId), req.auth!.userId);
       res.json(result);
     } catch (e: any) {
       const status = (e as any).status ?? 500;
@@ -3101,17 +3173,25 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Legacy endpoint kept for backward compat with old frontend — delegates to new service
-  app.post("/api/stripe/create-payment-intent", async (req, res) => {
+  // A0-F1
+  app.post("/api/stripe/create-payment-intent", requireAuth, async (req, res) => {
     try {
-      const { projectId, amountPence: _ignore, clientUserId } = req.body;
-      if (!projectId || !clientUserId)
-        return res.status(400).json({ error: "projectId and clientUserId required" });
+      const { projectId, amountPence: _ignore } = req.body;
+      if (!projectId)
+        return res.status(400).json({ error: "projectId required" });
+
+      // A0: verify caller is the client on this project
+      const pw = await storage.getProject(Number(projectId));
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.clientId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Only the project client can initiate payment" });
+      }
 
       // Find or create the invoice for this project
       const inv = await storage.getInvoiceByProject(Number(projectId));
       if (!inv) return res.status(400).json({ error: "No invoice found for this project. Please create an invoice first." });
 
-      const result = await createPayment(Number(projectId), inv.id, Number(clientUserId));
+      const result = await createPayment(Number(projectId), inv.id, req.auth!.userId);
       res.json({
         clientSecret: result.clientSecret,
         paymentIntentId: result.publicId,
@@ -3485,10 +3565,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.post("/api/admin/payments/:paymentPublicId/refunds", requireAdminGuard, async (req, res) => {
     try {
       const { amountPence, reasonCode, internalNote, notifyParties } = req.body;
-      const admin = req.adminUser;
+      const admin = req.auth!.adminUser!;
 
       const refund = await initiateRefund({
-        paymentPublicId: req.params.paymentPublicId,
+        paymentPublicId: String(req.params.paymentPublicId),
         amountPence: Number(amountPence),
         reasonCode,
         internalNote,
@@ -3507,7 +3587,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // P0-04: requireAdminGuard
   app.post("/api/admin/payments/:paymentId/reconcile", requireAdminGuard, async (req, res) => {
     try {
-      const admin = req.adminUser;
+      const admin = req.auth!.adminUser!;
 
       const result = await reconcilePayment(Number(req.params.paymentId));
       res.json(result);
@@ -3520,7 +3600,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // P0-04: requireAdminGuard
   app.get("/api/admin/payments", requireAdminGuard, async (req, res) => {
     try {
-      const admin = req.adminUser;
+      const admin = req.auth!.adminUser!;
 
       const sqlClient = neon(process.env.DATABASE_URL!);
       const rows = await sqlClient(
@@ -3535,7 +3615,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // P0-04: requireAdminGuard
   app.get("/api/admin/payments/:paymentPublicId", requireAdminGuard, async (req, res) => {
     try {
-      const admin = req.adminUser;
+      const admin = req.auth!.adminUser!;
 
       const sqlClient = neon(process.env.DATABASE_URL!);
       const [payment] = await sqlClient(
@@ -3674,17 +3754,26 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/agencies/members/:memberId/approve — owner approves a pending member
-  app.post("/api/agencies/members/:memberId/approve", async (req, res) => {
+  // A0-AG1
+  app.post("/api/agencies/members/:memberId/approve", requireAuth, async (req, res) => {
     try {
-      const memberId = parseInt(req.params.memberId);
-      const { userId } = req.body;
+      const memberId = parseInt(String(req.params.memberId));
+      // A0: load member to find agencyId, then verify caller is the agency owner
+      const memberRows = await db.select().from(schema.agencyMembers).where(eq(schema.agencyMembers.id, memberId)).limit(1);
+      if (!memberRows.length) return res.status(404).json({ error: "Member not found" });
+      const memberRecord = memberRows[0];
+      const agency = await storage.getAgency(memberRecord.agencyId);
+      if (!agency) return res.status(404).json({ error: "Agency not found" });
+      if (req.auth!.userId !== agency.ownerUserId) return res.status(403).json({ error: "Only the agency owner can approve members" });
 
+      // body userId is the member being approved (not the caller)
+      const { userId } = req.body;
       await storage.approveAgencyMember(memberId);
 
       if (userId) {
-        const memberRecord = await storage.getAgencyMemberByUser(userId);
-        if (memberRecord) {
-          await storage.updateUserAgencyFields(userId, { accountSubtype: "agency_member", agencyId: memberRecord.agencyId });
+        const mr = await storage.getAgencyMemberByUser(userId);
+        if (mr) {
+          await storage.updateUserAgencyFields(userId, { accountSubtype: "agency_member", agencyId: mr.agencyId });
         }
       }
 
@@ -3695,10 +3784,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // DELETE /api/agencies/:agencyId/members/:userId — owner removes a member
-  app.delete("/api/agencies/:agencyId/members/:userId", async (req, res) => {
+  // A0-AG2
+  app.delete("/api/agencies/:agencyId/members/:userId", requireAuth, async (req, res) => {
     try {
-      const agencyId = parseInt(req.params.agencyId);
-      const userId = parseInt(req.params.userId);
+      const agencyId = parseInt(String(req.params.agencyId));
+      const userId = parseInt(String(req.params.userId));
+      // A0: verify caller is the agency owner
+      const agency = await storage.getAgency(agencyId);
+      if (!agency) return res.status(404).json({ error: "Agency not found" });
+      if (req.auth!.userId !== agency.ownerUserId) return res.status(403).json({ error: "Only the agency owner can remove members" });
       await storage.removeAgencyMember(agencyId, userId);
       res.json({ ok: true });
     } catch (e: any) {
@@ -3760,9 +3854,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PATCH /api/agencies/:id — owner updates agency profile (featuredWork, testimonials, bio, etc.)
-  app.patch("/api/agencies/:id", async (req, res) => {
+  // A0-AG3
+  app.patch("/api/agencies/:id", requireAuth, async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = parseInt(String(req.params.id));
+      // A0: verify caller is the agency owner
+      const agencyForAuth = await storage.getAgency(id);
+      if (!agencyForAuth) return res.status(404).json({ error: "Agency not found" });
+      if (req.auth!.userId !== agencyForAuth.ownerUserId) return res.status(403).json({ error: "Only the agency owner can update agency details" });
       const { name, bio, location, website, specialisms, reelUrl, logo, banner, featuredWork, testimonials } = req.body;
       const patch: Record<string, any> = {};
       if (name !== undefined) patch.name = name;
@@ -4335,9 +4434,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-    // P0-04: requireAdminGuard
+  // P0-04: requireAdminGuard
   app.get('/api/admin/projects', requireAdminGuard, async (req, res) => {
-    const requester = req.adminUser;
+    const requester = req.auth!.adminUser!;
     try {
       const projects = await storage.getAllProjects();
       res.json(projects);
@@ -4351,7 +4450,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   /** GET /api/admin/accreditation — all freelancer profiles with accreditation data */
   // P0-04: requireAdminGuard
   app.get('/api/admin/accreditation', requireAdminGuard, async (req, res) => {
-    const requester = req.adminUser;
+    const requester = req.auth!.adminUser!;
     try {
       const profiles = await storage.getFreelancerProfilesWithAccreditation();
       res.json(profiles);
@@ -4363,7 +4462,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   /** GET /api/admin/accreditation/history — recent audit log */
   // P0-04: requireAdminGuard
   app.get('/api/admin/accreditation/history', requireAdminGuard, async (req, res) => {
-    const requester = req.adminUser;
+    const requester = req.auth!.adminUser!;
     try {
       const history = await storage.getAllAccreditationHistory(100);
       res.json(history);
@@ -4375,7 +4474,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   /** GET /api/admin/accreditation/history/:freelancerUserId — history for one freelancer */
   // P0-04: requireAdminGuard
   app.get('/api/admin/accreditation/history/:freelancerUserId', requireAdminGuard, async (req, res) => {
-    const requester = req.adminUser;
+    const requester = req.auth!.adminUser!;
     try {
       const history = await storage.getAccreditationHistory(Number(req.params.freelancerUserId));
       res.json(history);
@@ -4393,7 +4492,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // P0-04: requireAdminGuard — accreditation changes require authenticated Founder/admin
   app.post('/api/admin/accreditation/update', requireAdminGuard, async (req, res) => {
     const { freelancerUserId, profileId, newLevel, action, reason, internalNotes } = req.body;
-    const requester = req.adminUser;
+    const requester = req.auth!.adminUser!;
 
     // Validate level if provided
     const VALID_LEVELS = ['verified', 'approved', 'elite', null];
@@ -4480,7 +4579,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // P0-04: requireAdminGuard
   app.patch('/api/admin/accreditation/notes', requireAdminGuard, async (req, res) => {
     const { profileId, internalNotes } = req.body;
-    const requester = req.adminUser;
+    const requester = req.auth!.adminUser!;
     try {
       await storage.updateAccreditationNotes(Number(profileId), internalNotes ?? '');
       res.json({ success: true });
@@ -4490,9 +4589,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── PRD-006: Notification Preferences (inlined inside registerRoutes) ────
-  app.get("/api/notifications/preferences/:userId", async (req, res) => {
+  // A0-NT4
+  app.get("/api/notifications/preferences/:userId", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
-      const prefs = await (storage as any).getNotifPrefs(Number(req.params.userId));
+      const prefs = await (storage as any).getNotifPrefs(req.auth!.userId);
       if (!prefs) {
         return res.json({
           emailProjectInvitations: true, emailNewOffers: true,
@@ -4507,10 +4608,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.patch("/api/notifications/preferences/:userId", async (req, res) => {
+  // A0-NT5
+  app.patch("/api/notifications/preferences/:userId", requireAuth, async (req, res) => {
+    if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
-      const userId = Number(req.params.userId);
-      const prefs = await (storage as any).upsertNotifPrefs(userId, req.body);
+      const prefs = await (storage as any).upsertNotifPrefs(req.auth!.userId, req.body);
       res.json(prefs);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -4520,12 +4622,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── PRD-008: Server-authoritative retainer payment ───────────────────────
   // POST /api/retainer-cycles/:cyclePublicId/payments
   // Body: { clientUserId } — NO amountPence allowed from client
-  app.post("/api/retainer-cycles/:cyclePublicId/payments", async (req, res) => {
+  // A0-F3
+  app.post("/api/retainer-cycles/:cyclePublicId/payments", requireAuth, async (req, res) => {
     try {
-      const { cyclePublicId } = req.params;
-      const { clientUserId } = req.body;
-      if (!clientUserId) return res.status(400).json({ error: "clientUserId required" });
-      const result = await createRetainerPayment(cyclePublicId, Number(clientUserId));
+      const cyclePublicId = String(req.params.cyclePublicId);
+      // A0: verify caller is the client on the project linked to this cycle
+      const dbConn = neon(process.env.DATABASE_URL!);
+      const cycleRows = await dbConn`SELECT project_id FROM retainer_cycles WHERE public_id = ${cyclePublicId} LIMIT 1`;
+      if (!cycleRows.length) return res.status(404).json({ error: "Retainer cycle not found" });
+      const cycleProject = await storage.getProject(Number(cycleRows[0].project_id));
+      if (!cycleProject || cycleProject.project.clientId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Only the project client can pay a retainer cycle" });
+      }
+      const result = await createRetainerPayment(cyclePublicId, req.auth!.userId);
       res.json(result);
     } catch (e: any) {
       const status = (e as any).status ?? 500;
@@ -4608,10 +4717,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // GET /api/stripe/earnings/:userId — FR-07 (PRD-010): freelancer earnings dashboard data
-  app.get("/api/stripe/earnings/:userId", async (req, res) => {
+  // A0-S4
+  app.get("/api/stripe/earnings/:userId", requireAuth, async (req, res) => {
     try {
       const userId = Number(req.params.userId);
       if (!userId) return res.status(400).json({ error: "userId required" });
+      // A0: caller may only access their own earnings
+      if (req.auth!.userId !== userId) return res.status(403).json({ error: "Forbidden." });
       const db = neon(process.env.DATABASE_URL!);
 
       const [totals] = await db`
@@ -4674,10 +4786,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── PRD-008: Freelancer payout timeline ─────────────────────────────────
-  app.get("/api/me/payouts", async (req, res) => {
+  // A0-S5
+  app.get("/api/me/payouts", requireAuth, async (req, res) => {
     try {
-      const userId = Number(req.query.userId);
-      if (!userId) return res.status(400).json({ error: "userId required" });
+      // A0: identity from session only
+      const userId = req.auth!.userId;
       const timeline = await getFreelancerPayoutTimeline(userId);
       res.json(timeline);
     } catch (e: any) {
@@ -4703,12 +4816,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/legal/terms/accept — record terms acceptance
-  app.post("/api/legal/terms/accept", async (req, res) => {
+  // A0-L2
+  app.post("/api/legal/terms/accept", requireAuth, async (req, res) => {
     try {
       const db = neon(process.env.DATABASE_URL!);
-      const { userId, document, version, context } = req.body;
-      if (!userId || !document || !version) {
-        return res.status(400).json({ error: "userId, document, version required" });
+      // A0: body userId is IGNORED; terms are always recorded for the authenticated caller
+      const { document, version, context } = req.body;
+      if (!document || !version) {
+        return res.status(400).json({ error: "document and version required" });
       }
       const tv = await db`SELECT id FROM terms_versions WHERE document = ${document} AND version = ${version} LIMIT 1`;
       if (!tv.length) return res.status(404).json({ error: "Terms version not found" });
@@ -4716,7 +4831,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const ua = req.headers["user-agent"] ?? "";
       await db`
         INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
-        VALUES (${userId}, ${tv[0].id}, ${document}, ${version}, ${context ?? "manual"}, ${ip}, ${ua})
+        VALUES (${req.auth!.userId}, ${tv[0].id}, ${document}, ${version}, ${context ?? "manual"}, ${ip}, ${ua})
         ON CONFLICT (user_id, terms_version_id) DO UPDATE SET accepted_at = NOW()::TEXT
       `;
       res.json({ accepted: true });
