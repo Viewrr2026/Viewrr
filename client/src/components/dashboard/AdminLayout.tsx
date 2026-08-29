@@ -45,12 +45,28 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // Auth guard
+  // Auth guard: client-side check
   useEffect(() => {
     if (!isFounderPanelUser(user)) {
       navigate("/");
     }
   }, [user]);
+
+  // Session guard: verify the server-side session cookie is still valid.
+  // After a deploy or cookie expiry, the vr_sess cookie may be gone even though
+  // localStorage still shows the user as logged in. If the server returns 401,
+  // clear the stale localStorage session so the user is prompted to re-login.
+  useEffect(() => {
+    if (!isFounderPanelUser(user)) return;
+    fetch("/api/admin/dashboard", { method: "HEAD" })
+      .then(res => {
+        if (res.status === 401) {
+          logout();
+          navigate("/");
+        }
+      })
+      .catch(() => { /* network error — let the page handle it */ });
+  }, []);
 
   if (!isFounderPanelUser(user)) return null;
 

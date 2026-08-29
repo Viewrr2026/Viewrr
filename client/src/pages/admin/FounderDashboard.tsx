@@ -9,7 +9,7 @@ import RecentActivity from "@/components/dashboard/RecentActivity";
 import { Loader2, RefreshCw } from "lucide-react";
 
 export default function FounderDashboard() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
 
   const {
     data,
@@ -21,6 +21,12 @@ export default function FounderDashboard() {
     queryKey: ["founder-dashboard", user?.id],
     queryFn: async () => {
       const res = await fetch(`/api/admin/dashboard?userId=${user?.id}`);
+      if (res.status === 401) {
+        // Session cookie expired or was cleared — log out and redirect to home.
+        logout();
+        window.location.hash = "/";
+        throw new Error("Session expired");
+      }
       if (!res.ok) throw new Error("Failed to load dashboard data");
       return res.json();
     },
