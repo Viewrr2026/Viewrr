@@ -156,7 +156,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   // Step 2 — all remaining fields needed to proceed to verify
   function validateDetails() {
     if (!validateClientStep1()) return false;
-    if (!clientPhone.trim()) { toast({ title: "Please enter your contact number", variant: "destructive" }); return false; }
+    // FR-01: phone is now optional — no longer blocks signup
     return true;
   }
 
@@ -169,7 +169,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     return true;
   }
   function validateFreeStep2() {
-    if (!freePhone.trim()) { toast({ title: "Please enter your contact number", variant: "destructive" }); return false; }
+    // FR-01: phone is now optional — no longer blocks signup
     if (freeSpecialisms.length === 0) { toast({ title: "Please select at least one specialism", variant: "destructive" }); return false; }
     return true;
   }
@@ -412,10 +412,12 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
   // Step 1 complete: name + email + password
   const canProceedStep1 = !!(clientFirstName.trim() && clientLastName.trim() && clientEmail.trim() && clientPassword.length >= 8);
   // Full client form complete: step 1 + phone
-  const canProceed = canProceedStep1 && !!clientPhone.trim();
+  // FR-01: phone no longer required to proceed (SMS disabled)
+  const canProceed = canProceedStep1;
   // Freelancer per-step completion flags
   const canFreeStep1 = !!(freeFirstName.trim() && freeLastName.trim() && freeEmail.trim() && freePassword.length >= 8);
-  const canFreeStep2 = canFreeStep1 && !!freePhone.trim() && freeSpecialisms.length > 0;
+  // FR-01: phone no longer required (SMS disabled)
+  const canFreeStep2 = canFreeStep1 && freeSpecialisms.length > 0;
   const canFreeProceed = canFreeStep2; // kept for proceedToFreeVerify compat
   const activeEmail = role === "freelancer" ? freeEmail : clientEmail;
   const activePhone = role === "freelancer" ? freePhone : clientPhone;
@@ -596,8 +598,9 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                   <Label>Business Name <span className="text-muted-foreground font-normal">(optional)</span></Label>
                   <Input placeholder="Acme Studios" value={company} onChange={e => setCompany(e.target.value)} autoFocus />
                 </div>
+                {/* FR-04: phone field kept for profile/contact purposes but no longer required */}
                 <div className="space-y-1.5">
-                  <Label>Contact Number <span className="text-destructive">*</span></Label>
+                  <Label>Contact Number <span className="text-muted-foreground font-normal">(optional)</span></Label>
                   <div className="relative">
                     <Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                     <Input
@@ -610,40 +613,20 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <Label className="text-sm">Verify your account via</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => canProceed && proceedToVerify("email")}
-                      disabled={!canProceed}
-                      className={[
-                        "flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all duration-300",
-                        canProceed
-                          ? "border-primary bg-primary text-white hover:bg-primary/90 shadow-sm shadow-primary/20"
-                          : "border-border text-muted-foreground opacity-50 cursor-not-allowed",
-                      ].join(" ")}
-                    >
-                      <Mail size={15}/> Email
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => canProceed && proceedToVerify("phone")}
-                      disabled={!canProceed}
-                      className={[
-                        "flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all",
-                        canProceed
-                          ? "border-border hover:border-primary hover:bg-primary/5"
-                          : "border-border text-muted-foreground opacity-50 cursor-not-allowed",
-                      ].join(" ")}
-                    >
-                      <Phone size={15}/> Phone
-                    </button>
-                  </div>
-                  {!canProceed && (
-                    <p className="text-xs text-muted-foreground text-center">Enter your contact number to continue</p>
-                  )}
-                </div>
+                {/* FR-01: email-only verification — SMS disabled */}
+                <button
+                  type="button"
+                  onClick={() => canProceed && proceedToVerify("email")}
+                  disabled={!canProceed}
+                  className={[
+                    "w-full flex items-center justify-center gap-2 py-3 px-4 rounded-full border-2 text-sm font-semibold transition-all duration-300",
+                    canProceed
+                      ? "border-primary bg-primary text-white hover:bg-primary/90 shadow-md shadow-primary/25"
+                      : "border-border text-muted-foreground opacity-50 cursor-not-allowed",
+                  ].join(" ")}
+                >
+                  <Mail size={15}/> Verify via Email
+                </button>
               </div>
             )}
           </>
@@ -691,9 +674,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                     : <button onClick={() => sendVerificationCode(verifyMethod, clientEmail, clientPhone)} className="flex items-center gap-1 text-primary font-medium hover:underline"><RefreshCw size={11} /> Resend code</button>
                   }
                 </div>
-                <button onClick={() => proceedToVerify(verifyMethod === "email" ? "phone" : "email")} className="text-primary hover:underline">
-                  Try via {verifyMethod === "email" ? "phone" : "email"} instead
-                </button>
+{/* FR-01: SMS disabled — phone toggle removed */}
               </div>
             </div>
           </>
@@ -781,8 +762,9 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
             {freeSubStep === 2 && (
               <div className="space-y-4">
                 <p className="text-sm text-muted-foreground -mt-1">Tell us about your craft and how you work.</p>
+{/* FR-04: phone field kept for profile/contact purposes but no longer required */}
                 <div className="space-y-1.5">
-                  <Label>Contact Number <span className="text-destructive">*</span></Label>
+                  <Label>Contact Number <span className="text-muted-foreground font-normal">(optional)</span></Label>
                   <div className="relative"><Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input type="tel" placeholder="+44 7700 900000" value={freePhone} onChange={e => setFreePhone(e.target.value)} className="pl-9" autoFocus /></div>
                 </div>
 
@@ -860,13 +842,20 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                 </div>
 
                 {/* Verify method — completes registration */}
-                <div className="space-y-2">
-                  <Label className="text-sm">Verify to complete registration</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button type="button" onClick={() => canFreeProceed && proceedToFreeVerify("email")} disabled={!canFreeProceed} className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${canFreeProceed ? "border-primary bg-primary text-white hover:bg-primary/90" : "border-border text-muted-foreground opacity-50 cursor-not-allowed"}`}><Mail size={15}/> Via Email</button>
-                    <button type="button" onClick={() => canFreeProceed && proceedToFreeVerify("phone")} disabled={!canFreeProceed} className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all ${canFreeProceed ? "border-border hover:border-primary hover:bg-primary/5" : "border-border text-muted-foreground opacity-50 cursor-not-allowed"}`}><Phone size={15}/> Via Phone</button>
-                  </div>
-                </div>
+{/* FR-01: email-only verification — SMS disabled */}
+                <button
+                  type="button"
+                  onClick={() => canFreeProceed && proceedToFreeVerify("email")}
+                  disabled={!canFreeProceed}
+                  className={[
+                    "w-full flex items-center justify-center gap-2 py-3 px-4 rounded-full border-2 text-sm font-semibold transition-all duration-300",
+                    canFreeProceed
+                      ? "border-primary bg-primary text-white hover:bg-primary/90 shadow-md shadow-primary/25"
+                      : "border-border text-muted-foreground opacity-50 cursor-not-allowed",
+                  ].join(" ")}
+                >
+                  <Mail size={15}/> Verify via Email
+                </button>
                 <p className="text-xs text-muted-foreground text-center">By joining you agree to our Terms &amp; Conditions and Privacy Policy.</p>
               </div>
             )}
@@ -915,9 +904,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                     : <button onClick={() => sendVerificationCode(verifyMethod, freeEmail, freePhone)} className="flex items-center gap-1 text-primary font-medium hover:underline"><RefreshCw size={11} /> Resend code</button>
                   }
                 </div>
-                <button onClick={() => proceedToFreeVerify(verifyMethod === "email" ? "phone" : "email")} className="text-primary hover:underline">
-                  Try via {verifyMethod === "email" ? "phone" : "email"} instead
-                </button>
+{/* FR-01: SMS disabled — phone toggle removed */}
               </div>
             </div>
           </>

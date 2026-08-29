@@ -1,4 +1,5 @@
-import { LucideIcon } from "lucide-react";
+import { useLocation } from "wouter";
+import { LucideIcon, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface StatCardProps {
@@ -9,6 +10,10 @@ interface StatCardProps {
   trendLabel?: string;
   accent?: "orange" | "green" | "blue" | "violet" | "default";
   className?: string;
+  /** Wouter path to navigate to on click (e.g. "/founder/users/creatives"). Uses hash routing. */
+  href?: string;
+  /** Accessible label for screen readers */
+  ariaLabel?: string;
 }
 
 const accentMap = {
@@ -42,20 +47,35 @@ export default function StatCard({
   trendLabel,
   accent = "default",
   className,
+  href,
+  ariaLabel,
 }: StatCardProps) {
+  const [, navigate] = useLocation();
   const colors = accentMap[accent];
+  const isClickable = !!href;
 
-  return (
-    <div
-      className={cn(
-        "rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 flex flex-col gap-3 shadow-sm hover:shadow-md transition-shadow",
-        className
-      )}
-    >
+  function handleClick() {
+    if (href) navigate(href);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (href && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      navigate(href);
+    }
+  }
+
+  const inner = (
+    <>
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-zinc-500 dark:text-zinc-400">{title}</span>
-        <div className={cn("w-9 h-9 rounded-lg flex items-center justify-center", colors.icon)}>
-          <Icon size={18} strokeWidth={1.75} />
+        <div className="flex items-center gap-1.5">
+          <div className={cn("w-9 h-9 rounded-lg flex items-center justify-center", colors.icon)}>
+            <Icon size={18} strokeWidth={1.75} />
+          </div>
+          {isClickable && (
+            <ChevronRight size={14} className="text-zinc-400 dark:text-zinc-600 shrink-0" />
+          )}
         </div>
       </div>
 
@@ -78,6 +98,35 @@ export default function StatCard({
           <span>{trendLabel}</span>
         </div>
       )}
+    </>
+  );
+
+  const baseClass = cn(
+    "rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 flex flex-col gap-3 shadow-sm transition-all",
+    isClickable
+      ? "hover:shadow-md hover:border-zinc-300 dark:hover:border-zinc-700 cursor-pointer hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+      : "hover:shadow-md",
+    className
+  );
+
+  if (isClickable) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        className={baseClass}
+        onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        aria-label={ariaLabel ?? `View all ${title}`}
+      >
+        {inner}
+      </div>
+    );
+  }
+
+  return (
+    <div className={baseClass}>
+      {inner}
     </div>
   );
 }

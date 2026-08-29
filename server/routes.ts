@@ -362,17 +362,27 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // Send verification code via SMS (phone)
+  // ─── SMS Verification ──────────────────────────────────────────────────────
+  // FR-01/PRD-017: SMS_VERIFICATION_ENABLED controls whether phone-based signup is active.
+  // Set SMS_VERIFICATION_ENABLED=true in the environment (alongside an SMS provider) to re-enable.
+  // While false: route returns 503, no provider is required, implementation is callable code below.
+  const SMS_VERIFICATION_ENABLED = process.env.SMS_VERIFICATION_ENABLED === "true";
+
   app.post("/api/auth/send-sms-verification", async (req, res) => {
+    if (!SMS_VERIFICATION_ENABLED) {
+      return res.status(503).json({
+        error: "SMS verification is not currently available. Please use email verification instead.",
+        code: "SMS_DISABLED",
+      });
+    }
+
+    // SMS implementation — active when SMS_VERIFICATION_ENABLED=true
     const { phone, email } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number required" });
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    // Store against phone number as key
     verificationCodes.set(phone.replace(/\s+/g, ""), { code, expires: Date.now() + 10 * 60 * 1000 });
 
-    // For now send via email to the provided email as fallback (Twilio can be added later)
-    // If no Resend, just log
     if (!resend || !email) {
       console.log(`[verify-sms] Code for ${phone}: ${code}`);
       return res.json({ ok: true, dev: true });
@@ -4153,7 +4163,179 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // P0-04: requireAdminGuard
+  // ── PRD-017: Founder User Directories ─────────────────────────────────────
+  // GET /api/admin/users/creatives — paginated creative directory with search + filters
+  // Security: requireAdminGuard — only admin/founder can access. safeUserDto strips sensitive fields.
+  app.get('/api/admin/users/creatives', requireAdminGuard, async (req, res) => {
+    try {
+      const { search = '', status, accreditation, pro, limit = '100', offset = '0' } = req.query as Record<string, string>;
+      const allUsers = await storage.getAllUsers(); // already stripped via safeUser in storage
+      const allProfiles = await db.select().from(schema.profiles);
+      const profileByUser = new Map(allProfiles.map(p => [p.userId, p]));
+
+      // Count projects per freelancer
+      const allProjects = await db.select({ id: schema.projects.id, freelancerId: schema.projects.freelancerId }).from(schema.projects);
+      const projectCountMap = new Map<number, number>();
+      for (const proj of allProjects) {
+        if (proj.freelancerId) projectCountMap.set(proj.freelancerId, (projectCountMap.get(proj.freelancerId) ?? 0) + 1);
+      }
+
+      let creatives = allUsers.filter((u: any) => u.role === 'freelancer');
+
+      // Search: name or email
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        creatives = creatives.filter((u: any) =>
+          (u.name ?? '').toLowerCase().includes(q) ||
+          (u.email ?? '').toLowerCase().includes(q)
+        );
+      }
+
+      // Filter: accreditation level
+      if (accreditation && accreditation !== 'all') {
+        creatives = creatives.filter((u: any) => {
+          const profile = profileByUser.get(u.id);
+          if (accreditation === 'none') return !profile?.accreditationLevel;
+          return profile?.accreditationLevel === accreditation;
+        });
+      }
+
+      // Filter: pro status
+      if (pro && pro !== 'all') {
+        creatives = creatives.filter((u: any) => {
+          const profile = profileByUser.get(u.id);
+          return pro === 'pro' ? !!profile?.isPro : !profile?.isPro;
+        });
+      }
+
+      const total = creatives.length;
+      const paginated = creatives.slice(Number(offset), Number(offset) + Number(limit));
+
+      const result = paginated.map((u: any) => {
+        const profile = profileByUser.get(u.id);
+        return {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          avatar: u.avatar ?? null,
+          createdAt: u.createdAt,
+          isAdmin: u.isAdmin,
+          accreditationLevel: profile?.accreditationLevel ?? null,
+          isPro: !!(profile?.isPro),
+          projectCount: projectCountMap.get(u.id) ?? (profile?.projectCount ?? 0),
+          specialisms: profile?.specialisms ?? '[]',
+        };
+      });
+
+      res.json({ total, offset: Number(offset), limit: Number(limit), users: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/admin/users/clients — paginated client directory with search + filters
+  // Security: requireAdminGuard — only admin/founder can access.
+  app.get('/api/admin/users/clients', requireAdminGuard, async (req, res) => {
+    try {
+      const { search = '', hasProjects, limit = '100', offset = '0' } = req.query as Record<string, string>;
+      const allUsers = await storage.getAllUsers();
+
+      const allProjects = await db.select({
+        id: schema.projects.id,
+        clientId: schema.projects.clientId,
+        status: schema.projects.status,
+      }).from(schema.projects);
+      const projectsByClient = new Map<number, typeof allProjects>();
+      for (const proj of allProjects) {
+        if (!projectsByClient.has(proj.clientId)) projectsByClient.set(proj.clientId, []);
+        projectsByClient.get(proj.clientId)!.push(proj);
+      }
+
+      let clients = allUsers.filter((u: any) => u.role === 'client');
+
+      // Search: name or email
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        clients = clients.filter((u: any) =>
+          (u.name ?? '').toLowerCase().includes(q) ||
+          (u.email ?? '').toLowerCase().includes(q) ||
+          (u.company ?? '').toLowerCase().includes(q)
+        );
+      }
+
+      // Filter: has at least one project
+      if (hasProjects === 'true') {
+        clients = clients.filter((u: any) => (projectsByClient.get(u.id)?.length ?? 0) > 0);
+      } else if (hasProjects === 'false') {
+        clients = clients.filter((u: any) => (projectsByClient.get(u.id)?.length ?? 0) === 0);
+      }
+
+      const total = clients.length;
+      const paginated = clients.slice(Number(offset), Number(offset) + Number(limit));
+
+      const result = paginated.map((u: any) => {
+        const projects = projectsByClient.get(u.id) ?? [];
+        return {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          company: u.company ?? null,
+          avatar: u.avatar ?? null,
+          createdAt: u.createdAt,
+          totalProjects: projects.length,
+          activeProjects: projects.filter(p => p.status === 'active' || p.status === 'in_progress').length,
+          completedProjects: projects.filter(p => p.status === 'completed').length,
+        };
+      });
+
+      res.json({ total, offset: Number(offset), limit: Number(limit), users: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/admin/users/:userId — founder inspection of a single user (creative or client)
+  // Security: requireAdminGuard. Never returns passwordHash, session tokens or Stripe secrets.
+  app.get('/api/admin/users/:userId', requireAdminGuard, async (req, res) => {
+    try {
+      const userId = Number(req.params.userId);
+      const user = await storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: 'User not found' });
+      const safe = safeUserDto(user);
+
+      const projects = await db.select({
+        id: schema.projects.id,
+        title: schema.projects.title,
+        status: schema.projects.status,
+        createdAt: schema.projects.createdAt,
+      }).from(schema.projects).where(
+        user.role === 'freelancer'
+          ? eq(schema.projects.freelancerId, userId)
+          : eq(schema.projects.clientId, userId)
+      );
+
+      const profile = user.role === 'freelancer'
+        ? await db.select().from(schema.profiles).where(eq(schema.profiles.userId, userId)).limit(1).then(r => r[0] ?? null)
+        : null;
+
+      res.json({
+        user: safe,
+        profile: profile ? {
+          accreditationLevel: profile.accreditationLevel,
+          isPro: !!(profile.isPro),
+          projectCount: profile.projectCount,
+          specialisms: profile.specialisms,
+          availability: profile.availability,
+          yearsExperience: profile.yearsExperience,
+        } : null,
+        projects,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+    // P0-04: requireAdminGuard
   app.get('/api/admin/projects', requireAdminGuard, async (req, res) => {
     const requester = req.adminUser;
     try {

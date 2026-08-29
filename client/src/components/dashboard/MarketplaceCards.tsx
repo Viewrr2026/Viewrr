@@ -21,17 +21,23 @@ export default function MarketplaceCards({ data }: MarketplaceCardsProps) {
         Marketplace Snapshot
       </h2>
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+        {/* FR-06: Creatives card — clickable drill-down to /founder/users/creatives */}
         <StatCard
           title="Creatives"
           value={data.totalFreelancers}
           icon={Users}
           accent="violet"
+          href="/founder/users/creatives"
+          ariaLabel={`View all ${data.totalFreelancers} creatives`}
         />
+        {/* FR-06: Clients card — clickable drill-down to /founder/users/clients */}
         <StatCard
           title="Clients"
           value={data.totalClients}
           icon={UserCheck}
           accent="blue"
+          href="/founder/users/clients"
+          ariaLabel={`View all ${data.totalClients} clients`}
         />
         <StatCard
           title="Active Projects"
