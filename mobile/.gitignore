@@ -1,0 +1,46 @@
+# Viewrr Mobile — isolated package.
+# The root repository has historical node_modules tracking. Nothing generated
+# inside /mobile may ever be committed. Do not relax these rules.
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+
+# generated native projects (managed workflow — regenerate with prebuild)
+ios/
+android/
+.kotlin/
+*.orig.*
+
+# logs
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# signing / credentials — never commit
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+google-services.json
+GoogleService-Info.plist
+
+# local env files
+.env
+.env.local
+.env.*.local
+
+# typescript
+*.tsbuildinfo
+
+# macOS
+.DS_Store
