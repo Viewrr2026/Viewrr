@@ -48,10 +48,15 @@ const NAME: Record<AppEnv, string> = {
   production: "Viewrr",
 };
 
+/**
+ * Reverse-DNS identifiers for viewrr.co.uk. Permanent once a build is submitted:
+ * a bundle identifier cannot be renamed on the App Store or Play, so do not
+ * change these after the first store release.
+ */
 const BUNDLE_ID: Record<AppEnv, string> = {
-  development: "co.uk.viewrr.app.dev",
-  staging: "co.uk.viewrr.app.staging",
-  production: "co.uk.viewrr.app",
+  development: "uk.co.viewrr.app.dev",
+  staging: "uk.co.viewrr.app.staging",
+  production: "uk.co.viewrr.app",
 };
 
 /**
