@@ -12,11 +12,19 @@ import type { ConfigContext, ExpoConfig } from "expo/config";
  *   APP_ENV=staging                 → staging Render service
  *   APP_ENV=production              → live Viewrr backend
  *
- * EAS LINKAGE — deliberately NOT hardcoded.
- * The Expo dashboard project already exists. `owner` and `extra.eas.projectId`
- * are only emitted when supplied via env, so an incorrect or invented project id
- * can never be baked in, and `eas init` can never silently create a second
- * project. See mobile/README.md for the linking procedure.
+ * EAS LINKAGE — fixed project identity, intentionally hardcoded.
+ * The Expo dashboard project already exists and its identity never varies by
+ * environment, so `owner`, `slug` and `extra.eas.projectId` are literals here
+ * rather than env-driven. This is what lets EAS commands resolve the project
+ * from a dynamic config: EAS can READ these values but cannot write them, which
+ * is why `eas init` fails against an app.config.ts.
+ *
+ * They are public identifiers, not secrets — they ship inside every bundle.
+ * Do NOT change them, and do NOT run bare `eas init`: a second Expo project
+ * must never be created for Viewrr.
+ *
+ * Only environment-varying configuration stays dynamic (APP_ENV, API base URL,
+ * app name, bundle identifier, scheme).
  */
 
 type AppEnv = "development" | "staging" | "production";
@@ -46,10 +54,14 @@ const BUNDLE_ID: Record<AppEnv, string> = {
   production: "co.uk.viewrr.app",
 };
 
-/** Existing Expo dashboard identifiers — supplied by env until confirmed. */
-const EXPO_SLUG = process.env.EXPO_SLUG ?? "viewrr";
-const EXPO_OWNER = process.env.EXPO_OWNER;
-const EAS_PROJECT_ID = process.env.EAS_PROJECT_ID;
+/**
+ * Existing Expo project identity — confirmed against the Expo dashboard.
+ * Shared by every APP_ENV: one Expo project serves development, staging and
+ * production, which differ only by name, bundle identifier and scheme.
+ */
+const EXPO_OWNER = "viewrr-limited";
+const EXPO_SLUG = "viewrr-app";
+const EAS_PROJECT_ID = "1d650340-9486-46f3-894f-86b4f4d9eb5e";
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
@@ -60,7 +72,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   scheme: IS_DEV ? "viewrr-dev" : IS_STAGING ? "viewrr-staging" : "viewrr",
   userInterfaceStyle: "automatic",
   icon: "./assets/images/icon.png",
-  ...(EXPO_OWNER ? { owner: EXPO_OWNER } : {}),
+  owner: EXPO_OWNER,
   ios: {
     bundleIdentifier: BUNDLE_ID[APP_ENV],
     supportsTablet: false,
@@ -117,8 +129,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     reactCompiler: true,
   },
   extra: {
+    // Preserve anything Expo already put on `extra` (e.g. the router plugin's
+    // own keys) instead of replacing the object outright.
+    ...config.extra,
     appEnv: APP_ENV,
     apiBaseUrl: API_BASE_URL[APP_ENV],
-    ...(EAS_PROJECT_ID ? { eas: { projectId: EAS_PROJECT_ID } } : {}),
+    eas: {
+      ...config.extra?.eas,
+      projectId: EAS_PROJECT_ID,
+    },
   },
 });

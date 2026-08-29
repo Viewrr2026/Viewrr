@@ -51,9 +51,9 @@ Copy `.env.example` to `.env` and fill it in. `.env*` is git-ignored.
 | -------------------------- | -------------------------------------------------------- |
 | `APP_ENV`                  | `development` \| `staging` \| `production`                |
 | `EXPO_PUBLIC_API_BASE_URL` | Overrides the per-environment API base URL               |
-| `EXPO_SLUG`                | Existing Expo project slug                                |
-| `EXPO_OWNER`               | Existing Expo account/organisation that owns the project |
-| `EAS_PROJECT_ID`           | Existing EAS project ID                                   |
+
+Only environment configuration lives in `.env`. The Expo project identity is
+**not** env-driven — see below.
 
 The API base URL must be **absolute**. `src/config/env.ts` throws at startup on
 a relative value — a native binary has no origin to resolve against.
@@ -66,22 +66,38 @@ a Bearer credential. The single seam for that is `attachCredential()` in
 `src/api/client.ts`, which currently returns no headers. The sign-in screen
 validates input and sends nothing.
 
-## Linking the existing EAS project
+## EAS project linkage
 
-An Expo dashboard project already exists. **Do not run bare `eas init`** — it
-would create a second project.
+The Expo dashboard project already exists and is linked declaratively in
+`app.config.ts`:
 
-1. `eas login` as the account that owns the existing project.
-2. Read the project's **slug**, **owner** and **project ID** from the Expo
-   dashboard (Project settings).
-3. Put them in `mobile/.env` as `EXPO_SLUG`, `EXPO_OWNER`, `EAS_PROJECT_ID`.
-   `app.config.ts` only emits `owner` and `extra.eas.projectId` when those
-   variables are present, so no placeholder ID is ever committed.
-4. `npx eas build:configure` inside `mobile/` to generate `eas.json`.
-5. `npx eas project:info` to confirm the link points at the existing project
-   before any build is queued.
+| Field | Value |
+| --- | --- |
+| `owner` | `viewrr-limited` |
+| `slug` | `viewrr-app` |
+| `extra.eas.projectId` | `1d650340-9486-46f3-894f-86b4f4d9eb5e` |
 
-If a link must be created explicitly, use `eas init --id <existing-project-id>`.
+These are hardcoded on purpose. They are public identifiers that ship in every
+bundle, they are identical across all three `APP_ENV` values, and EAS needs to
+read them where no `.env` exists — including on EAS build servers. They were
+previously env-driven, which made `eas project:info` report *EAS project not
+configured* whenever the env wasn't loaded.
+
+**Never run bare `eas init`** — it would create a second Expo project. `eas init
+--id <id>` also fails here, because EAS cannot write into a dynamic
+`app.config.ts`; that is expected and needs no fix, since the ID is already in
+the config.
+
+To verify the link (read-only, creates and changes nothing):
+
+```
+eas login          # as a member of the viewrr-limited organisation
+npx eas-cli@latest project:info
+```
+
+Expect `@viewrr-limited/viewrr-app` and the ID above. Any prompt offering to
+create or relink a project means something is wrong — decline and investigate.
+`eas.json` does not exist yet and is only needed once builds begin.
 
 ## Render / deployment isolation
 
