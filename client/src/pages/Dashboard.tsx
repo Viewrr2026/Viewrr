@@ -22,7 +22,7 @@ import MeetingSection from "@/components/MeetingSection";
 import { useAuth } from "@/components/AuthProvider";
 import { useToast } from "@/hooks/use-toast";
 import { Link, useLocation } from "wouter";
-import { connectionCount } from "@/lib/storage";
+// PRD-018 D3: removed unused connectionCount stub import
 
 type ProfileWithUser = { profile: any; user: any };
 

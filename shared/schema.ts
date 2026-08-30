@@ -77,10 +77,12 @@ export const reviews = pgTable("reviews", {
   comment: text("comment").notNull(),
   projectType: text("project_type"),
   projectId: integer("project_id"),               // which project this review is for
+  verifiedProjectReview: integer("verified_project_review").default(0),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 
-export const insertReviewSchema = createInsertSchema(reviews).omit({ id: true, createdAt: true });
+// verifiedProjectReview is ALWAYS server-set — never accepted from request body
+export const insertReviewSchema = createInsertSchema(reviews).omit({ id: true, createdAt: true, verifiedProjectReview: true });
 export type InsertReview = z.infer<typeof insertReviewSchema>;
 export type Review = typeof reviews.$inferSelect;
 
