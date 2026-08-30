@@ -1,6 +1,6 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import { Link } from "wouter";
-import { ArrowRight, Sparkles, Star, Shield, Zap, Users, CheckCircle, Video, Camera, Megaphone, Scissors } from "lucide-react";
+import { ArrowRight, Sparkles, Star, Shield, Zap, Users, CheckCircle, Video, Camera, Megaphone, Scissors, Play, Pause } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -71,25 +71,84 @@ const TESTIMONIALS = [
 export default function Landing() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [posterVisible, setPosterVisible] = useState(true);
+  // Initialise to false — derived from actual media events, not optimistic.
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  // Ref callback: sets `muted` as a DOM attribute before the browser makes its
+  // autoplay-eligibility decision. React 18 does not reflect the `muted` JSX
+  // prop to the DOM attribute, so Safari blocks autoplay without this.
+  const videoCallbackRef = useCallback((el: HTMLVideoElement | null) => {
+    (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = el;
+    if (!el) return;
+    el.setAttribute("muted", "");
+    el.muted = true;
+    el.removeAttribute("controls");
+    el.controls = false;
+  }, []);
 
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    v.muted = true;
-    v.removeAttribute("controls");
-    v.controls = false;
 
-    // Hide the poster once the video has enough data to play smoothly.
-    // We listen to multiple events so whichever fires first wins.
+    // ── Derive playback state from actual media events ──────────────────────
+    // Never set isPlaying optimistically — let the browser tell us.
+    const onPlay    = () => setIsPlaying(true);
+    const onPause   = () => setIsPlaying(false);
+    const onEnded   = () => setIsPlaying(false);
+    const onError   = () => setIsPlaying(false);
     const hidePoster = () => setPosterVisible(false);
-    v.addEventListener("playing", hidePoster);
-    v.addEventListener("canplaythrough", hidePoster);
-    v.play().catch(() => {});
+
+    v.addEventListener("play",          onPlay);
+    v.addEventListener("playing",       onPlay);
+    v.addEventListener("pause",         onPause);
+    v.addEventListener("ended",         onEnded);
+    v.addEventListener("error",         onError);
+    v.addEventListener("playing",       hidePoster);
+    v.addEventListener("canplaythrough",hidePoster);
+
+    // ── prefers-reduced-motion ──────────────────────────────────────────────
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    function applyMotionPreference(reduced: boolean) {
+      if (reduced) {
+        v!.pause();
+        // State will be set by the 'pause' event listener above.
+      } else {
+        v!.play().catch(() => {
+          // Autoplay rejected (e.g. browser policy) — state stays false via listeners.
+        });
+      }
+    }
+
+    // Apply on mount.
+    applyMotionPreference(mq.matches);
+
+    // Re-apply if the OS/browser preference changes while the page is open.
+    const onMotionChange = (e: MediaQueryListEvent) => applyMotionPreference(e.matches);
+    mq.addEventListener("change", onMotionChange);
+
     return () => {
-      v.removeEventListener("playing", hidePoster);
-      v.removeEventListener("canplaythrough", hidePoster);
+      v.removeEventListener("play",          onPlay);
+      v.removeEventListener("playing",       onPlay);
+      v.removeEventListener("pause",         onPause);
+      v.removeEventListener("ended",         onEnded);
+      v.removeEventListener("error",         onError);
+      v.removeEventListener("playing",       hidePoster);
+      v.removeEventListener("canplaythrough",hidePoster);
+      mq.removeEventListener("change",       onMotionChange);
     };
   }, []);
+
+  function togglePlayback() {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      v.play().catch(() => { /* rejected — 'error' listener sets isPlaying false */ });
+    } else {
+      v.pause();
+    }
+    // Do NOT call setIsPlaying here — wait for the play/pause media events.
+  }
 
   const { data: featured = [] } = useQuery<ProfileWithUser[]>({
     queryKey: ["/api/profiles/featured"],
@@ -116,7 +175,7 @@ export default function Landing() {
           }}
         >
           <video
-            ref={videoRef}
+            ref={videoCallbackRef}
             src="/videos/hero_showreel_web.mp4"
             autoPlay
             muted
@@ -148,6 +207,38 @@ export default function Landing() {
               background: "linear-gradient(105deg, hsl(var(--background)) 30%, hsl(var(--background) / 0.75) 55%, hsl(var(--background) / 0.15) 100%)",
             }}
           />
+          {/* ── Discreet play/pause control ────────────────────────────────────
+               Positioned bottom-right of the hero, clear of:
+               - @WOL Productions watermark (bottom-4 right-5, ~90px wide)
+               - Specialism pills (bottom-10 right-6, desktop only)
+               Interactive target: 44×44px (min recommended touch target).
+               Visual icon: 16px, semi-transparent glass treatment.
+          ──────────────────────────────────────────────────────────────────── */}
+          <button
+            onClick={togglePlayback}
+            aria-label={isPlaying ? "Pause hero video" : "Play hero video"}
+            aria-pressed={!isPlaying}
+            style={{ zIndex: 10 }}
+            className="
+              absolute bottom-10 right-[7.5rem] md:bottom-4 md:right-[9rem]
+              w-11 h-11
+              flex items-center justify-center
+              rounded-full
+              bg-black/30 backdrop-blur-sm
+              border border-white/20
+              text-white/75 hover:text-white
+              hover:bg-black/50
+              transition-colors duration-150
+              focus-visible:outline-none
+              focus-visible:ring-2 focus-visible:ring-white/70
+              focus-visible:ring-offset-1 focus-visible:ring-offset-transparent
+            "
+          >
+            {isPlaying
+              ? <Pause  size={16} strokeWidth={2} aria-hidden="true" />
+              : <Play   size={16} strokeWidth={2} aria-hidden="true" />}
+          </button>
+
           {/* Video credit watermark */}
           <div
             className="absolute bottom-4 right-5 z-10 select-none pointer-events-none"
