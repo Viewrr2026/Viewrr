@@ -540,7 +540,7 @@ export interface IStorage {
 
   // Reviews
   getReviewsByProfile(profileId: number): Promise<schema.Review[]>;
-  createReview(data: schema.InsertReview): Promise<schema.Review>;
+  createReview(data: schema.InsertReview & { verifiedProjectReview?: number }): Promise<schema.Review>;
   markReviewGiven(projectId: number, role: "client" | "freelancer"): Promise<void>;
 
   // Messages
@@ -573,6 +573,8 @@ export interface IStorage {
 
   // Projects
   getProjectsForUser(userId: number): Promise<ProjectWithDetails[]>;
+  getCompletedProjectCount(freelancerUserId: number): Promise<number>;
+  getCompletedProjectCountsBulk(freelancerUserIds: number[]): Promise<Map<number, number>>;
   getProject(id: number): Promise<ProjectWithDetails | undefined>;
   getProjectByInterestId(interestId: number): Promise<schema.Project | undefined>;
   createProject(data: schema.InsertProject): Promise<schema.Project>;
@@ -588,6 +590,7 @@ export interface IStorage {
 
   // Meetings
   getMeetingsForProject(projectId: number): Promise<schema.Meeting[]>;
+  getMeeting(id: number): Promise<schema.Meeting | undefined>;
   createMeeting(data: schema.InsertMeeting): Promise<schema.Meeting>;
   cancelMeeting(id: number): Promise<void>;
 
@@ -682,6 +685,7 @@ export interface IStorage {
   upsertInvoiceTemplate(userId: number, data: Partial<schema.InsertInvoiceTemplate>): Promise<schema.InvoiceTemplate>;
   // Invoices
   createInvoice(data: schema.InsertInvoice): Promise<schema.Invoice>;
+  getInvoiceById(invoiceId: number): Promise<schema.Invoice | undefined>;
   getInvoiceByProject(projectId: number): Promise<schema.Invoice | undefined>;
   getInvoicesByFreelancer(freelancerId: number): Promise<schema.Invoice[]>;
   markInvoicePaid(invoiceId: number): Promise<void>;
@@ -972,7 +976,7 @@ class Storage implements IStorage {
     return db.select().from(schema.reviews).where(eq(schema.reviews.profileId, profileId));
   }
 
-  async createReview(data: schema.InsertReview): Promise<schema.Review> {
+  async createReview(data: schema.InsertReview & { verifiedProjectReview?: number }): Promise<schema.Review> {
     const r = await db.insert(schema.reviews).values(data).returning();
     const review = r[0];
     // Update profile rating
@@ -1372,6 +1376,36 @@ class Storage implements IStorage {
     return results;
   }
 
+  async getCompletedProjectCount(freelancerUserId: number): Promise<number> {
+    const r = await db.select({ count: drizzleSql<number>`count(*)::int` })
+      .from(schema.projects)
+      .where(and(
+        eq(schema.projects.freelancerId, freelancerUserId),
+        eq(schema.projects.status, "completed")
+      ));
+    return r[0]?.count ?? 0;
+  }
+
+  // Bulk version for list endpoints — one SQL query for all user ids, avoids N+1.
+  async getCompletedProjectCountsBulk(freelancerUserIds: number[]): Promise<Map<number, number>> {
+    if (freelancerUserIds.length === 0) return new Map();
+    const rows = await db.select({
+      freelancerId: schema.projects.freelancerId,
+      count: drizzleSql<number>`count(*)::int`,
+    })
+      .from(schema.projects)
+      .where(and(
+        inArray(schema.projects.freelancerId, freelancerUserIds),
+        eq(schema.projects.status, "completed")
+      ))
+      .groupBy(schema.projects.freelancerId);
+    const map = new Map<number, number>();
+    for (const row of rows) {
+      if (row.freelancerId !== null) map.set(row.freelancerId, row.count);
+    }
+    return map;
+  }
+
   async getProject(id: number): Promise<ProjectWithDetails | undefined> {
     const r = await db.select().from(schema.projects).where(eq(schema.projects.id, id));
     const project = r[0];
@@ -1484,6 +1518,11 @@ class Storage implements IStorage {
       .where(eq(schema.meetings.projectId, projectId))
       .orderBy(schema.meetings.createdAt);
     return r;
+  }
+
+  async getMeeting(id: number): Promise<schema.Meeting | undefined> {
+    const r = await db.select().from(schema.meetings).where(eq(schema.meetings.id, id)).limit(1);
+    return r[0];
   }
 
   async createMeeting(data: schema.InsertMeeting): Promise<schema.Meeting> {
@@ -2143,6 +2182,11 @@ class Storage implements IStorage {
 
   async createInvoice(data: schema.InsertInvoice): Promise<schema.Invoice> {
     const r = await db.insert(schema.invoices).values(data).returning();
+    return r[0];
+  }
+
+  async getInvoiceById(invoiceId: number): Promise<schema.Invoice | undefined> {
+    const r = await db.select().from(schema.invoices).where(eq(schema.invoices.id, invoiceId));
     return r[0];
   }
 

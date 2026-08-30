@@ -6,13 +6,14 @@
  *
  * Conventions followed:
  * - Raw neon() tagged-template SQL only (Drizzle is pinned to 0.43.1, not used here).
- * - No server-side sessions — userId always comes from req.body / req.query.
+ * - PRD-018: No req.body.userId for identity. requireAuth sets req.auth!.userId.
  * - All monetary amounts are integers in pence.
  * - Public IDs follow `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`.
  */
 
 import type { Express } from "express";
 import { neon } from "@neondatabase/serverless";
+import { requireAuth, requireAdminGuard } from "./auth-middleware";
 
 const FOUNDER_USER_ID = 22;
 
@@ -86,11 +87,12 @@ async function insertNotification(
 
 export function registerRetainerBuilderRoutes(app: Express): void {
   // ─── POST /api/retainer-builder/create ────────────────────────────────────
-  app.post("/api/retainer-builder/create", async (req, res) => {
+  // PRD-018: requireAuth + session-derived userId
+  app.post("/api/retainer-builder/create", requireAuth, async (req, res) => {
     const db = getDb();
     try {
+      const userId = req.auth!.userId;
       const {
-        userId,
         templateIds,
         commercialModel,
         goal,
@@ -116,7 +118,6 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         title,
       } = req.body ?? {};
 
-      if (!userId) return res.status(400).json({ error: "userId is required" });
       if (!recipientUserId) return res.status(400).json({ error: "recipientUserId is required" });
       if (!billingFrequency) return res.status(400).json({ error: "billingFrequency is required" });
       if (!Number.isFinite(Number(amountPerCyclePence))) {
@@ -295,12 +296,12 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   });
 
   // ─── POST /api/retainer/:publicId/accept ──────────────────────────────────
-  app.post("/api/retainer/:publicId/accept", async (req, res) => {
+  // PRD-018: requireAuth + session-derived userId
+  app.post("/api/retainer/:publicId/accept", requireAuth, async (req, res) => {
     const db = getDb();
     try {
       const { publicId } = req.params;
-      const { userId } = req.body ?? {};
-      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const userId = req.auth!.userId;
 
       const rows = await db`
         SELECT ra.*, p.client_id, p.freelancer_id
@@ -312,7 +313,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       if (!rows.length) return res.status(404).json({ error: "Retainer agreement not found" });
       const agreement = rows[0];
 
-      if (Number(userId) !== agreement.client_id) {
+      if (userId !== agreement.client_id) {
         return res.status(403).json({ error: "Only the client can accept this retainer proposal" });
       }
       if (agreement.status !== "awaiting_client_acceptance") {
@@ -388,12 +389,13 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   });
 
   // ─── POST /api/retainer/:publicId/requests ────────────────────────────────
-  app.post("/api/retainer/:publicId/requests", async (req, res) => {
+  // PRD-018: requireAuth + session-derived userId
+  app.post("/api/retainer/:publicId/requests", requireAuth, async (req, res) => {
     const db = getDb();
     try {
       const { publicId } = req.params;
-      const { userId, title, description, priority, dueDate, relatedDeliverableId } = req.body ?? {};
-      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const userId = req.auth!.userId;
+      const { title, description, priority, dueDate, relatedDeliverableId } = req.body ?? {};
       if (!title) return res.status(400).json({ error: "title is required" });
 
       const rows = await db`
@@ -443,12 +445,13 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   });
 
   // ─── PATCH /api/retainer/requests/:requestPublicId ────────────────────────
-  app.patch("/api/retainer/requests/:requestPublicId", async (req, res) => {
+  // PRD-018: requireAuth + session-derived userId
+  app.patch("/api/retainer/requests/:requestPublicId", requireAuth, async (req, res) => {
     const db = getDb();
     try {
       const { requestPublicId } = req.params;
-      const { userId, status, creativeResponse, outOfScopeQuotePence } = req.body ?? {};
-      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const userId = req.auth!.userId;
+      const { status, creativeResponse, outOfScopeQuotePence } = req.body ?? {};
 
       const rows = await db`
         SELECT rr.*, ra.title as agreement_title, ra.id as agreement_id, p.client_id, p.freelancer_id
@@ -496,12 +499,13 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   });
 
   // ─── POST /api/retainer/:publicId/usage ───────────────────────────────────
-  app.post("/api/retainer/:publicId/usage", async (req, res) => {
+  // PRD-018: requireAuth + session-derived userId
+  app.post("/api/retainer/:publicId/usage", requireAuth, async (req, res) => {
     const db = getDb();
     try {
       const { publicId } = req.params;
-      const { userId, deliverableId, description, quantity, unit } = req.body ?? {};
-      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const userId = req.auth!.userId;
+      const { deliverableId, description, quantity, unit } = req.body ?? {};
 
       const rows = await db`
         SELECT ra.*, p.client_id, p.freelancer_id
@@ -538,12 +542,13 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   });
 
   // ─── POST /api/retainer/:publicId/cycle-review ────────────────────────────
-  app.post("/api/retainer/:publicId/cycle-review", async (req, res) => {
+  // PRD-018: requireAuth + session-derived userId
+  app.post("/api/retainer/:publicId/cycle-review", requireAuth, async (req, res) => {
     const db = getDb();
     try {
       const { publicId } = req.params;
+      const userId = req.auth!.userId;
       const {
-        userId,
         cycleId,
         completedDeliverables,
         outstandingItems,
@@ -551,7 +556,6 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         satisfactionScore,
         satisfactionComment,
       } = req.body ?? {};
-      if (!userId) return res.status(400).json({ error: "userId is required" });
       if (!cycleId) return res.status(400).json({ error: "cycleId is required" });
 
       const agreementRows = await db`
@@ -627,12 +631,13 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   });
 
   // ─── POST /api/retainer/:publicId/pause ───────────────────────────────────
-  app.post("/api/retainer/:publicId/pause", async (req, res) => {
+  // PRD-018: requireAuth + session-derived userId
+  app.post("/api/retainer/:publicId/pause", requireAuth, async (req, res) => {
     const db = getDb();
     try {
       const { publicId } = req.params;
-      const { userId, reason, effectiveFromCycle, feesContinue, deliverablesContinue, rolloverContinues } = req.body ?? {};
-      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const userId = req.auth!.userId;
+      const { reason, effectiveFromCycle, feesContinue, deliverablesContinue, rolloverContinues } = req.body ?? {};
 
       const rows = await db`
         SELECT ra.*, p.client_id, p.freelancer_id
@@ -680,12 +685,13 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   });
 
   // ─── POST /api/retainer/:publicId/end ──────────────────────────────────────
-  app.post("/api/retainer/:publicId/end", async (req, res) => {
+  // PRD-018: requireAuth + session-derived userId
+  app.post("/api/retainer/:publicId/end", requireAuth, async (req, res) => {
     const db = getDb();
     try {
       const { publicId } = req.params;
-      const { userId, reason } = req.body ?? {};
-      if (!userId) return res.status(400).json({ error: "userId is required" });
+      const userId = req.auth!.userId;
+      const { reason } = req.body ?? {};
 
       const rows = await db`
         SELECT ra.*, p.client_id, p.freelancer_id
@@ -697,7 +703,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       if (!rows.length) return res.status(404).json({ error: "Retainer agreement not found" });
       const agreement = rows[0];
 
-      if (Number(userId) !== agreement.client_id && Number(userId) !== agreement.freelancer_id) {
+      if (userId !== agreement.client_id && userId !== agreement.freelancer_id) {
         return res.status(403).json({ error: "You do not have access to this retainer agreement" });
       }
 
@@ -735,14 +741,11 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   });
 
   // ─── GET /api/founder/retainer-metrics ─────────────────────────────────────
-  app.get("/api/founder/retainer-metrics", async (req, res) => {
+  // PRD-018: requireAdminGuard
+  app.get("/api/founder/retainer-metrics", requireAdminGuard, async (req, res) => {
     const db = getDb();
     try {
-      const userId = Number(req.query.userId ?? req.body?.userId);
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-      if (userId !== FOUNDER_USER_ID) {
-        return res.status(403).json({ error: "Forbidden — founder access only" });
-      }
+      // requireAdminGuard has already verified admin status
 
       const nowIso = new Date().toISOString();
       const ninetyDaysAgo = new Date(Date.now() - 90 * 86400_000).toISOString();
