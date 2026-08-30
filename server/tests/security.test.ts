@@ -116,12 +116,12 @@ describe("A: Anonymous → 401 on all sensitive mutation routes", () => {
     { method: "DELETE", path: "/api/time-entries/9999" },
     { method: "PATCH",  path: "/api/notifications/9999/read" },
     // Workspace
-    { method: "POST",   path: "/api/workspace-tasks" },
-    { method: "PATCH",  path: "/api/workspace-tasks/9999" },
-    { method: "DELETE", path: "/api/workspace-tasks/9999" },
-    { method: "POST",   path: "/api/workspace-events" },
-    { method: "PATCH",  path: "/api/workspace-events/9999" },
-    { method: "DELETE", path: "/api/workspace-events/9999" },
+    { method: "POST",   path: "/api/workspace/tasks" },
+    { method: "PATCH",  path: "/api/workspace/tasks/9999" },
+    { method: "DELETE", path: "/api/workspace/tasks/9999" },
+    { method: "POST",   path: "/api/workspace/events" },
+    { method: "PATCH",  path: "/api/workspace/events/9999" },
+    { method: "DELETE", path: "/api/workspace/events/9999" },
     // Connections
     { method: "POST",   path: "/api/connections/request" },
     { method: "PATCH",  path: "/api/connections/request/9999" },
