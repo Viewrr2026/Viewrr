@@ -81,6 +81,21 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ios: {
     bundleIdentifier: BUNDLE_ID[APP_ENV],
     supportsTablet: false,
+    infoPlist: {
+      // App Store export-compliance declaration.
+      //
+      // Viewrr Mobile uses only encryption that Apple treats as exempt: HTTPS/TLS
+      // provided by iOS for API calls, and the iOS Keychain (via
+      // expo-secure-store) for the PRD-019 Bearer token. There is no proprietary
+      // or non-standard cryptography in the app.
+      //
+      // Declaring this here means EAS and App Store Connect stop asking
+      // "iOS app only uses standard/exempt encryption?" on every build — EAS can
+      // read a dynamic config but cannot write to it, which is why the prompt
+      // recurred. If the app ever adds its own cryptography, this must be
+      // revisited before submission.
+      ITSAppUsesNonExemptEncryption: false,
+    },
   },
   android: {
     package: BUNDLE_ID[APP_ENV],

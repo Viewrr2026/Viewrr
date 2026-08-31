@@ -1,0 +1,137 @@
+# Viewrr — EAS build upload context.
+#
+# WHAT THIS FILE IS
+# Only `eas-cli` reads this file. Git, Vite, Render, Node, npm and the Viewrr
+# web/server build all ignore it completely — it is not a .gitignore and it
+# changes nothing about what the repository tracks or what Render deploys.
+#
+# WHY IT LIVES AT THE REPOSITORY ROOT AND NOT IN mobile/
+# Before every build, `eas-cli` compresses an "archive root" and uploads it. It
+# resolves that root with `git rev-parse --show-toplevel`, so the archive root is
+# this whole repository, and `.easignore` is only read from that same root. A
+# file at mobile/.easignore is never read and would have no effect.
+#
+# WHAT IT FIXES
+# Without this file the upload was ~339 MB, measured as:
+#   ~205 MB  the shallow clone's .git (this repo tracks ~22.7k files under the
+#            root node_modules/, plus the marketing videos, so the packfile is huge)
+#   ~138 MB  client/ — the web marketing site, of which client/public/videos is 137 MB
+#    ~0.9 MB mobile/ — the app EAS is actually building
+# The iOS/Android app needs none of the web app, so none of it is uploaded.
+#
+# VCS INTEGRATION IS UNAFFECTED
+# `.git` below only removes git metadata from the uploaded tarball. `eas-cli`
+# still runs as a normal Git-aware build: it reads the commit hash and message
+# from this working repository, so the EAS dashboard keeps full build/commit
+# traceability. EAS_NO_VCS is deliberately NOT used.
+#
+# IMPORTANT CAVEAT WHEN EDITING
+# As soon as this file exists, `eas-cli` STOPS reading every .gitignore in the
+# repository, including mobile/.gitignore. Every rule the upload needs must
+# therefore be restated here.
+#
+# NEVER EXCLUDE — the mobile build depends on all of these:
+#   mobile/src/  mobile/assets/  mobile/app.config.ts  mobile/eas.json
+#   mobile/package.json  mobile/package-lock.json  mobile/tsconfig.json
+#   mobile/.env.example
+# mobile/ is a fully isolated package (its own package.json, lockfile, Expo and
+# TypeScript config, no npm workspaces), which is what makes this safe.
+
+# ---------------------------------------------------------------------------
+# Git metadata and installed dependencies.
+# EAS reinstalls dependencies on the build worker from mobile/package-lock.json.
+# ---------------------------------------------------------------------------
+.git
+node_modules
+
+# ---------------------------------------------------------------------------
+# The Viewrr web app and backend. Not inputs to the React Native build.
+# Nothing is deleted from the repository — these are simply not uploaded.
+# ---------------------------------------------------------------------------
+/client/
+/server/
+/shared/
+/migrations/
+/script/
+/attached_assets/
+/dist/
+/drizzle.config.ts
+/components.json
+/postcss.config.js
+/tailwind.config.ts
+/vite.config.ts
+/render.yaml
+/*.md
+
+# Root package.json, package-lock.json and tsconfig.json are intentionally KEPT.
+# They are a few hundred KB and eas-cli inspects the archive root when working
+# out whether the project sits inside a monorepo, so their presence matches the
+# layout of every build made so far.
+
+# ---------------------------------------------------------------------------
+# Generated native projects. Managed (CNG) workflow — EAS runs `expo prebuild`
+# on the worker, so any local ios/ or android/ folder is stale.
+# ---------------------------------------------------------------------------
+mobile/ios/
+mobile/android/
+mobile/.kotlin/
+*.orig.*
+
+# ---------------------------------------------------------------------------
+# Expo, Metro and TypeScript caches and build output — all regenerated.
+# ---------------------------------------------------------------------------
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+mobile/expo-env.d.ts
+.metro-health-check*
+*.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Local, machine-specific environment files and databases.
+# The EAS build reads APP_ENV from the matching eas.json build profile, so no
+# .env is needed in the archive. mobile/.env.example is deliberately kept.
+# ---------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.db
+
+# ---------------------------------------------------------------------------
+# Signing material. EAS uses the credentials stored in the Expo project;
+# nothing signing-related should ever travel inside an upload.
+# ---------------------------------------------------------------------------
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+
+# ---------------------------------------------------------------------------
+# Logs and test artefacts.
+# ---------------------------------------------------------------------------
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+coverage/
+test-results/
+playwright-report/
+shots/
+
+# ---------------------------------------------------------------------------
+# Editor and OS cruft.
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ---------------------------------------------------------------------------
+# Developer tooling the native build never runs.
+# ---------------------------------------------------------------------------
+mobile/scripts/
