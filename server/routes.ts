@@ -62,6 +62,8 @@ import {
   type ResourceType,
 } from "./object-storage";
 import { createVerificationCode, verifyCode, type VerificationPurpose } from "./verification-service";
+import { compileUserExport, checkDeletionBlockers, anonymiseUserAccount } from "./services/privacy-service";
+import { createReport, resolveReport, suspendUser, unsuspendUser, blockUser, unblockUser, getBlockList } from "./services/trust-service";
 
 import multer from "multer";
 import path from "path";
@@ -2732,7 +2734,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Briefs ────────────────────────────────────────────────────────────────
   app.get("/api/briefs", async (req, res) => {
     const { category, location, clientId } = req.query;
-    let briefs = await storage.getBriefs();
+    // WS-E: pagination support (default limit 50, offset 0 — backwards-compatible)
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const offset = Number(req.query.offset ?? 0);
+    let briefs = await storage.getBriefs(limit, offset);
     if (category && category !== "All") briefs = briefs.filter(b => b.category === category);
     if (location) briefs = briefs.filter(b => b.location.toLowerCase().includes(String(location).toLowerCase()));
     if (clientId) briefs = briefs.filter(b => b.clientId === Number(clientId));
@@ -3393,7 +3398,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         await db`
           INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
           VALUES (${user.id}, ${tv[0].id}, 'stripe_connect_disclosure', 'v1.0', 'stripe_connect_onboarding', ${ip}, ${ua})
-          ON CONFLICT (user_id, terms_version_id) DO UPDATE SET accepted_at = NOW()::TEXT
+          ON CONFLICT (user_id, terms_version_id) DO NOTHING
         `;
       }
 
@@ -5133,10 +5138,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!tv.length) return res.status(404).json({ error: "Terms version not found" });
       const ip = req.headers["x-forwarded-for"]?.toString() ?? req.socket.remoteAddress;
       const ua = req.headers["user-agent"] ?? "";
+      // WS-A: Append-only — never overwrite accepted_at (original timestamp preserved)
       await db`
         INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
         VALUES (${req.auth!.userId}, ${tv[0].id}, ${document}, ${version}, ${context ?? "manual"}, ${ip}, ${ua})
-        ON CONFLICT (user_id, terms_version_id) DO UPDATE SET accepted_at = NOW()::TEXT
+        ON CONFLICT (user_id, terms_version_id) DO NOTHING
       `;
       res.json({ accepted: true });
     } catch (e: any) {
@@ -5157,6 +5163,39 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         ORDER BY ta.accepted_at DESC
       `;
       res.json({ acceptances });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/me/terms-status — PRD-021 WS-A
+  // Returns: for each document type, the currently effective version and whether the caller has accepted it.
+  // Supports v1→v2 version checks without overwriting either acceptance record.
+  app.get("/api/me/terms-status", requireAuth, async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const userId = req.auth!.userId;
+      // Current effective version per document (highest effective_date)
+      const current = await db`
+        SELECT DISTINCT ON (document) id, document, version, effective_date
+        FROM terms_versions
+        ORDER BY document, effective_date DESC
+      `;
+      // All acceptances for this user (preserves both v1 and v2 rows)
+      const accepted = await db`
+        SELECT ta.document, ta.version, ta.terms_version_id, ta.accepted_at
+        FROM terms_acceptances ta
+        WHERE ta.user_id = ${userId}
+      `;
+      const acceptedMap = new Map(accepted.map((a: any) => [a.terms_version_id, a]));
+      const status = current.map((tv: any) => ({
+        document: tv.document,
+        currentVersion: tv.version,
+        effectiveDate: tv.effective_date,
+        accepted: acceptedMap.has(tv.id),
+        acceptedAt: acceptedMap.get(tv.id)?.accepted_at ?? null,
+      }));
+      res.json({ status });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -5776,6 +5815,241 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   setInterval(async () => {
     try { await recoverStaleStripeEvents(); } catch {}
   }, 5 * 60 * 1000);
+
+  // ─── PRD-021 WS-B: Data export ────────────────────────────────────────────
+  // GET /api/me/export — compile and return user's personal data
+  app.get("/api/me/export", requireAuth, async (req: any, res: any) => {
+    try {
+
+      const userId = req.auth!.userId;
+      const exportData = await compileUserExport(userId);
+      res.setHeader("Content-Disposition", `attachment; filename="viewrr-data-export-${userId}-${Date.now()}.json"`);
+      res.setHeader("Content-Type", "application/json");
+      res.json(exportData);
+    } catch (e: any) {
+      res.status(500).json({ error: "Export failed. Please try again later." });
+    }
+  });
+
+  // ─── PRD-021 WS-B: Account deletion request ────────────────────────────────
+  // POST /api/me/request-deletion — check blockers, create deletion request
+  app.post("/api/me/request-deletion", requireAuth, async (req: any, res: any) => {
+    try {
+
+      const userId = req.auth!.userId;
+      const blocker = await checkDeletionBlockers(userId);
+      if (blocker.blocked) {
+        return res.status(409).json({
+          ok: false,
+          blocked: true,
+          code: blocker.code,
+          message: blocker.reason,
+        });
+      }
+      const sql = neon(process.env.DATABASE_URL!);
+      const now = new Date().toISOString();
+      await sql`
+        INSERT INTO account_deletion_requests (user_id, status, requested_at)
+        VALUES (${userId}, 'pending', ${now})
+      `;
+      res.json({ ok: true, message: "Deletion request submitted. Your account will be anonymised within 30 days." });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/me/confirm-deletion — actually anonymise (requires re-auth: password confirmation)
+  // Separated from request to prevent accidental/automated deletion
+  app.post("/api/me/confirm-deletion", requireAuth, async (req: any, res: any) => {
+    try {
+
+      const userId = req.auth!.userId;
+
+      // Require password re-confirmation
+      const { password } = req.body;
+      if (!password) return res.status(400).json({ error: "Password confirmation required" });
+
+      const user = await storage.getUserByEmail(
+        (await storage.getUser(userId))?.email ?? ""
+      );
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (!user.passwordHash) return res.status(400).json({ error: "No password set — contact support" });
+
+      const { valid } = await verifyPassword(password, user.passwordHash);
+      if (!valid) return res.status(403).json({ error: "Incorrect password" });
+
+      // Final blocker check
+      const blocker = await checkDeletionBlockers(userId);
+      if (blocker.blocked) {
+        return res.status(409).json({ ok: false, blocked: true, code: blocker.code, message: blocker.reason });
+      }
+
+      // Mark in-progress, then anonymise
+      const sql = neon(process.env.DATABASE_URL!);
+      await sql`
+        UPDATE account_deletion_requests
+        SET status = 'processing'
+        WHERE user_id = ${userId} AND status = 'pending'
+      `;
+
+      await anonymiseUserAccount(userId);
+
+      // Clear session cookie
+      clearSessionCookie(res);
+      res.json({ ok: true, message: "Account anonymised. We are sorry to see you go." });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Admin: GET /api/admin/deletion-requests — view pending deletion requests
+  app.get("/api/admin/deletion-requests", requireAdminGuard, async (req: any, res: any) => {
+    try {
+      const sql = neon(process.env.DATABASE_URL!);
+      const requests = await sql`
+        SELECT adr.*, u.email, u.name FROM account_deletion_requests adr
+        LEFT JOIN users u ON u.id = adr.user_id
+        ORDER BY adr.requested_at DESC
+        LIMIT 100
+      `;
+      res.json({ requests });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-021 WS-F: Reports ─────────────────────────────────────────────────
+  const reportLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many reports submitted. Please wait before reporting again." },
+    keyGenerator: (req) => String((req as any).auth?.userId ?? req.ip),
+  });
+
+  // POST /api/reports — submit a moderation report
+  app.post("/api/reports", requireAuth, reportLimiter, async (req: any, res: any) => {
+    try {
+
+      const { subjectType, subjectId, reason, description } = req.body;
+      if (!subjectType || !subjectId || !reason) {
+        return res.status(400).json({ error: "subjectType, subjectId, and reason are required" });
+      }
+      const reportId = await createReport({
+        reporterUserId: req.auth!.userId,
+        subjectType,
+        subjectId: Number(subjectId),
+        reason,
+        description,
+      });
+      res.status(201).json({ ok: true, reportId });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // GET /api/admin/reports — list reports (admin only)
+  app.get("/api/admin/reports", requireAdminGuard, async (req: any, res: any) => {
+    try {
+      const sql = neon(process.env.DATABASE_URL!);
+      const status = (req.query.status as string) ?? "open";
+      const limit = Math.min(Number(req.query.limit ?? 50), 100);
+      const offset = Number(req.query.offset ?? 0);
+      const reports = await sql`
+        SELECT ur.*, u.name AS reporter_name, u.email AS reporter_email
+        FROM user_reports ur
+        LEFT JOIN users u ON u.id = ur.reporter_user_id
+        WHERE ur.status = ${status}
+        ORDER BY ur.created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+      const [{ count }] = await sql`SELECT COUNT(*) FROM user_reports WHERE status = ${status}`;
+      res.json({ reports, total: Number(count), limit, offset });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/admin/reports/:id/resolve — resolve a report
+  app.patch("/api/admin/reports/:id/resolve", requireAdminGuard, async (req: any, res: any) => {
+    try {
+
+      const { resolution, note } = req.body;
+      if (!resolution) return res.status(400).json({ error: "resolution required" });
+      await resolveReport({
+        reportId: Number(req.params.id),
+        adminUserId: req.auth!.userId,
+        resolution,
+        note,
+      });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-021 WS-F: Suspension ──────────────────────────────────────────────
+  // POST /api/admin/users/:id/suspend
+  app.post("/api/admin/users/:id/suspend", requireAdminGuard, async (req: any, res: any) => {
+    try {
+
+      const { reason } = req.body;
+      if (!reason) return res.status(400).json({ error: "reason required" });
+      const targetId = Number(req.params.id);
+      if (targetId === req.auth!.userId) return res.status(400).json({ error: "Cannot suspend yourself" });
+      await suspendUser(targetId, req.auth!.userId, reason);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/admin/users/:id/unsuspend
+  app.post("/api/admin/users/:id/unsuspend", requireAdminGuard, async (req: any, res: any) => {
+    try {
+
+      const { note } = req.body;
+      await unsuspendUser(Number(req.params.id), req.auth!.userId, note ?? "");
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-021 WS-F: Blocking ────────────────────────────────────────────────
+  // POST /api/me/block/:userId
+  app.post("/api/me/block/:userId", requireAuth, async (req: any, res: any) => {
+    try {
+
+      await blockUser(req.auth!.userId, Number(req.params.userId));
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // DELETE /api/me/block/:userId — unblock
+  app.delete("/api/me/block/:userId", requireAuth, async (req: any, res: any) => {
+    try {
+
+      await unblockUser(req.auth!.userId, Number(req.params.userId));
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/me/blocks — list who I have blocked
+  app.get("/api/me/blocks", requireAuth, async (req: any, res: any) => {
+    try {
+
+      const blockedIds = await getBlockList(req.auth!.userId);
+      res.json({ blockedIds });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // PRD-012: Retainer builder + workspace routes
   registerRetainerBuilderRoutes(app);

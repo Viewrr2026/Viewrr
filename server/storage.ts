@@ -115,7 +115,7 @@ export interface IStorage {
   cancelMeeting(id: number): Promise<void>;
 
   // Briefs
-  getBriefs(): Promise<schema.Brief[]>;
+  getBriefs(limit?: number, offset?: number): Promise<schema.Brief[]>;
   getBrief(id: number): Promise<schema.Brief | undefined>;
   createBrief(data: schema.InsertBrief): Promise<schema.Brief>;
 
@@ -1058,10 +1058,13 @@ class Storage implements IStorage {
   }
 
   // ─── Briefs ────────────────────────────────────────────────────────────────
-  async getBriefs(): Promise<schema.Brief[]> {
+  async getBriefs(limit = 50, offset = 0): Promise<schema.Brief[]> {
     const r = await db.select().from(schema.briefs)
-      .where(eq(schema.briefs.isActive, true));
-    return r.reverse();
+      .where(eq(schema.briefs.isActive, true))
+      .orderBy(desc(schema.briefs.createdAt))
+      .limit(limit)
+      .offset(offset);
+    return r;
   }
 
   async getBrief(id: number): Promise<schema.Brief | undefined> {
