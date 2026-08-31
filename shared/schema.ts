@@ -25,6 +25,10 @@ export const users = pgTable("users", {
   stripeAccountId: text("stripe_account_id"),           // Express account ID (acct_...)
   stripeOnboarded: integer("stripe_onboarded").default(0), // 1 = fully verified
   stripePendingPence: integer("stripe_pending_pence").default(0), // held earnings in pence
+  accountStatus: text("account_status").notNull().default("active"),
+  suspendedAt: text("suspended_at"),
+  suspendedReason: text("suspended_reason"),
+  suspendedBy: integer("suspended_by"),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
@@ -933,3 +937,56 @@ export const verificationCodes = pgTable("verification_codes", {
 
 export type VerificationCode = typeof verificationCodes.$inferSelect;
 export type InsertVerificationCode = typeof verificationCodes.$inferInsert;
+
+// ─── PRD-021: Data Export Requests ───────────────────────────────────────────
+export const dataExportRequests = pgTable("data_export_requests", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  status: text("status").notNull().default("pending"),
+  requestedAt: text("requested_at").notNull().default(new Date().toISOString()),
+  completedAt: text("completed_at"),
+  expiresAt: text("expires_at"),
+  exportSizeBytes: integer("export_size_bytes"),
+  errorMessage: text("error_message"),
+});
+export type DataExportRequest = typeof dataExportRequests.$inferSelect;
+
+// ─── PRD-021: Account Deletion Requests ──────────────────────────────────────
+export const accountDeletionRequests = pgTable("account_deletion_requests", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  status: text("status").notNull().default("pending"),
+  requestedAt: text("requested_at").notNull().default(new Date().toISOString()),
+  processedAt: text("processed_at"),
+  blockerReason: text("blocker_reason"),
+  processedBy: integer("processed_by"),
+  anonymisedAt: text("anonymised_at"),
+});
+export type AccountDeletionRequest = typeof accountDeletionRequests.$inferSelect;
+
+// ─── PRD-021: User Reports (moderation) ──────────────────────────────────────
+export const userReports = pgTable("user_reports", {
+  id: serial("id").primaryKey(),
+  reporterUserId: integer("reporter_user_id").notNull(),
+  subjectType: text("subject_type").notNull(),
+  subjectId: integer("subject_id").notNull(),
+  reason: text("reason").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("open"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  reviewedAt: text("reviewed_at"),
+  reviewedBy: integer("reviewed_by"),
+  resolutionNote: text("resolution_note"),
+  moderatorAction: text("moderator_action"),
+});
+export type UserReport = typeof userReports.$inferSelect;
+export const insertUserReportSchema = createInsertSchema(userReports).omit({ id: true, createdAt: true, status: true, reviewedAt: true, reviewedBy: true, resolutionNote: true, moderatorAction: true });
+
+// ─── PRD-021: User Blocks ─────────────────────────────────────────────────────
+export const userBlocks = pgTable("user_blocks", {
+  id: serial("id").primaryKey(),
+  blockerUserId: integer("blocker_user_id").notNull(),
+  blockedUserId: integer("blocked_user_id").notNull(),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export type UserBlock = typeof userBlocks.$inferSelect;
