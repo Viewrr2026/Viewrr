@@ -285,7 +285,7 @@ export type BriefInterest = typeof briefInterests.$inferSelect;
 export const notifications = pgTable("notifications", {
   id: serial("id").primaryKey(),
   recipientId: integer("recipient_id").notNull(),  // who receives this
-  actorId: integer("actor_id").notNull(),           // who triggered it
+  actorId: integer("actor_id"),                     // who triggered it (null for system events)
   actorName: text("actor_name").notNull(),
   actorAvatar: text("actor_avatar"),
   type: text("type").notNull(), // "like" | "comment" | "message" | "interest" | "interest_accepted" | "interest_declined" | "profile_view" | "connection"

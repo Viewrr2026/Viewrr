@@ -41,6 +41,12 @@ declare global {
          */
         adminUser?: User;
       };
+      /**
+       * FR-35 (WS-F): Correlation / request ID assigned by the request-ID middleware.
+       * Either echoed from a trusted inbound X-Request-ID header or a fresh UUID.
+       * Always present after the middleware runs; undefined only on very early errors.
+       */
+      requestId?: string;
     }
   }
 }

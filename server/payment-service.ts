@@ -412,6 +412,7 @@ export async function claimStripeEvent(
   apiVersion: string
 ): Promise<boolean> {
   const db = getDb();
+  const now = new Date().toISOString();
 
   try {
     await db.insert(schema.stripeEvents).values({
@@ -421,8 +422,17 @@ export async function claimStripeEvent(
       apiVersion,
       processingStatus: "received",
       attemptCount: 1,
-      receivedAt: new Date().toISOString(),
+      receivedAt: now,
     });
+    // WS-A: immediately transition to 'processing' with timestamps
+    await db
+      .update(schema.stripeEvents)
+      .set({
+        processingStatus: "processing",
+        processingStartedAt: now,
+        lastAttemptAt: now,
+      })
+      .where(eq(schema.stripeEvents.stripeEventId, eventId));
     return true; // newly claimed
   } catch (e: any) {
     // Unique constraint violation = already received
@@ -441,15 +451,359 @@ export async function claimStripeEvent(
 
 export async function markEventProcessed(eventId: string, error?: string) {
   const db = getDb();
+  const now = new Date().toISOString();
   await db
     .update(schema.stripeEvents)
     .set({
       processingStatus: error ? "failed" : "processed",
-      processedAt: new Date().toISOString(),
+      processedAt: now,
+      lastAttemptAt: now,
       errorCode: error ? "processing_error" : null,
       errorSummary: error ?? null,
     })
     .where(eq(schema.stripeEvents.stripeEventId, eventId));
+}
+
+/**
+ * WS-A: Recover stripe events stuck in 'processing' for longer than the threshold.
+ * Uses SELECT FOR UPDATE SKIP LOCKED to safely run across multiple workers.
+ * - Events that have hit maxAttempts → marked failed
+ * - Others → reset to 'received' so they can be picked up again
+ */
+export async function recoverStaleStripeEvents(staleThresholdMinutes = 10): Promise<number> {
+  const sqlClient = neon(DB_URL);
+  const thresholdIso = new Date(Date.now() - staleThresholdMinutes * 60 * 1000).toISOString();
+
+  // Find stale events (stuck in 'processing') using FOR UPDATE SKIP LOCKED
+  const staleRows = await sqlClient.query(
+    `SELECT stripe_event_id, attempt_count, max_attempts
+     FROM stripe_events
+     WHERE processing_status = 'processing'
+       AND processing_started_at < $1
+     LIMIT 100
+     FOR UPDATE SKIP LOCKED`,
+    [thresholdIso]
+  ) as Array<{ stripe_event_id: string; attempt_count: number; max_attempts: number }>;
+
+  if (staleRows.length === 0) return 0;
+
+  const now = new Date().toISOString();
+  let recovered = 0;
+
+  for (const row of staleRows) {
+    const { stripe_event_id, attempt_count, max_attempts } = row;
+    if (attempt_count >= max_attempts) {
+      // Exhausted retries — mark as failed
+      await sqlClient.query(
+        `UPDATE stripe_events
+         SET processing_status = 'failed',
+             last_attempt_at   = $1,
+             error_code        = 'max_attempts_exceeded',
+             error_summary     = 'Stale recovery: max attempts reached'
+         WHERE stripe_event_id = $2`,
+        [now, stripe_event_id]
+      );
+    } else {
+      // Reset to 'received' so the webhook handler can pick it up again
+      await sqlClient.query(
+        `UPDATE stripe_events
+         SET processing_status      = 'received',
+             processing_started_at  = NULL,
+             last_attempt_at        = $1,
+             attempt_count          = attempt_count + 1
+         WHERE stripe_event_id = $2`,
+        [now, stripe_event_id]
+      );
+      recovered++;
+    }
+  }
+
+  return recovered;
+}
+
+/**
+ * WS-A FR-04: Canonical Stripe event processor — extracted from the inline
+ * webhook switch so it can be called both from the webhook handler and from
+ * the job queue (replay / recovery paths).
+ *
+ * All Pro-subscription functions (activateProFromWebhook, etc.) are imported
+ * here to keep payment-service.ts self-contained.
+ */
+export async function processStripeEvent(
+  event: Stripe.Event,
+  requestId: string
+): Promise<void> {
+  // Lazy imports to avoid circular dependencies
+  const { storage } = await import("./storage");
+  const {
+    activateProFromWebhook,
+    renewProFromWebhook,
+    markProPaymentFailed,
+    expireProEntitlement,
+  } = await import("./pro-service");
+  const stripe = getStripe();
+  const sqlClient = neon(DB_URL);
+
+  // FR-10: P0 event handlers
+  switch (event.type) {
+
+    case "payment_intent.succeeded": {
+      const intent = event.data.object as Stripe.PaymentIntent;
+      await handlePaymentIntentSucceeded(intent, requestId);
+      break;
+    }
+
+    case "payment_intent.payment_failed": {
+      const intent = event.data.object as Stripe.PaymentIntent;
+      const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
+      if (viewrrPaymentId) {
+        await sqlClient.query(
+          "UPDATE payments SET status='failed', failed_at=$1, version=version+1 WHERE public_id=$2 AND status NOT IN ('succeeded','refunded')",
+          [new Date().toISOString(), viewrrPaymentId]
+        );
+        await auditLog({
+          actorType: "webhook",
+          action: "payment_intent_failed",
+          afterState: { paymentIntentId: intent.id, failureCode: intent.last_payment_error?.code },
+          correlationId: requestId,
+        });
+      }
+      break;
+    }
+
+    case "payment_intent.canceled": {
+      const intent = event.data.object as Stripe.PaymentIntent;
+      const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
+      if (viewrrPaymentId) {
+        await sqlClient.query(
+          "UPDATE payments SET status='cancelled', cancelled_at=$1, version=version+1 WHERE public_id=$2",
+          [new Date().toISOString(), viewrrPaymentId]
+        );
+      }
+      break;
+    }
+
+    case "charge.refunded": {
+      const charge = event.data.object as Stripe.Charge;
+      console.log("[webhook] charge.refunded:", charge.id, "amount_refunded:", charge.amount_refunded);
+      break;
+    }
+
+    case "refund.created":
+    case "refund.updated": {
+      const refund = event.data.object as Stripe.Refund;
+      const viewrrRefundId = refund.metadata?.viewrr_refund_id;
+      if (viewrrRefundId && refund.status) {
+        const newStatus = refund.status === "succeeded" ? "succeeded" : refund.status === "failed" ? "failed" : "processing";
+        await sqlClient.query(
+          "UPDATE payment_refunds SET status=$1, stripe_refund_id=$2 WHERE public_id=$3",
+          [newStatus, refund.id, viewrrRefundId]
+        );
+      }
+      break;
+    }
+
+    case "transfer.reversed": {
+      const transfer = event.data.object as Stripe.Transfer;
+      await sqlClient.query(
+        "UPDATE payment_transfers SET status='partially_reversed', reversed_pence=$1 WHERE stripe_transfer_id=$2",
+        [transfer.amount_reversed, transfer.id]
+      );
+      break;
+    }
+
+    // FR-13: account.updated — sync readiness + release held earnings
+    case "account.updated": {
+      const account = event.data.object as Stripe.Account;
+      const viewrrUserId = Number(account.metadata?.viewrr_user_id);
+      if (!viewrrUserId) break;
+
+      const user = await storage.getUser(viewrrUserId);
+      if (!user) break;
+
+      await syncConnectAccount(viewrrUserId, account.id);
+
+      const isReady =
+        account.charges_enabled === true &&
+        (account.capabilities as any)?.transfers === "active";
+
+      if (isReady) {
+        await releaseHeldEarnings(viewrrUserId, account.id, requestId);
+        await storage.createNotification({
+          recipientId: viewrrUserId,
+          actorId: viewrrUserId,
+          actorName: "Viewrr",
+          actorAvatar: null,
+          type: "payment_received",
+          message: "Your Stripe account is verified. Any pending earnings have been allocated to your Stripe balance.",
+          link: "/your-work",
+          read: 0,
+        });
+      }
+      break;
+    }
+
+    // FR-10: P1 payout events
+    case "payout.created":
+    case "payout.updated":
+    case "payout.paid":
+    case "payout.failed": {
+      const payout = event.data.object as Stripe.Payout;
+      const accountId = (event as any).account as string | undefined;
+      if (accountId) {
+        const users = await sqlClient.query(
+          "SELECT id FROM users WHERE stripe_account_id = $1 LIMIT 1",
+          [accountId]
+        ) as Array<{ id: number }>;
+        if (users.length) {
+          const freelancerId = users[0].id;
+          const status =
+            event.type === "payout.paid" ? "paid" :
+            event.type === "payout.failed" ? "failed" :
+            event.type === "payout.created" ? "pending" : "in_transit";
+
+          await sqlClient.query(
+            `INSERT INTO payment_payouts (freelancer_id, stripe_payout_id, amount_pence, currency, status, arrival_date, failure_code, created_at, paid_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (stripe_payout_id) DO UPDATE SET status=$5, paid_at=$9`,
+            [
+              freelancerId,
+              payout.id,
+              payout.amount,
+              payout.currency,
+              status,
+              payout.arrival_date ? new Date(payout.arrival_date * 1000).toISOString() : null,
+              (payout as any).failure_code ?? null,
+              new Date().toISOString(),
+              event.type === "payout.paid" ? new Date().toISOString() : null,
+            ]
+          );
+
+          if (event.type === "payout.paid") {
+            await storage.createNotification({
+              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              type: "payment_received",
+              message: `\u2705 Payment Complete — Your earnings of £${(payout.amount / 100).toFixed(2)} have successfully reached your bank account.`,
+              link: "/your-work", read: 0,
+            });
+          } else if (event.type === "payout.created" || event.type === "payout.updated") {
+            const isInTransit = (event.data.object as any).status === "in_transit";
+            if (isInTransit) {
+              const arrivalStr = payout.arrival_date
+                ? new Date(payout.arrival_date * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+                : null;
+              await storage.createNotification({
+                recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+                type: "payment_received",
+                message: `\uD83D\uDCB8 Your payout is on its way — Stripe has initiated your payout of \u00a3${(payout.amount / 100).toFixed(2)}.${arrivalStr ? ` Estimated bank arrival: ${arrivalStr}.` : ""}`,
+                link: "/your-work", read: 0,
+              });
+            }
+          } else if (event.type === "payout.failed") {
+            await storage.createNotification({
+              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              type: "payment_received",
+              message: `A payout of \u00a3${(payout.amount / 100).toFixed(2)} failed. Please check your bank details in your Stripe account.`,
+              link: "/your-work", read: 0,
+            });
+          }
+        }
+      }
+      break;
+    }
+
+    // FR-09 (PRD-011): notify freelancer when funds become available
+    case "balance.available": {
+      const accountId = (event as any).account as string | undefined;
+      if (accountId) {
+        const users = await sqlClient.query(
+          "SELECT id FROM users WHERE stripe_account_id = $1 LIMIT 1",
+          [accountId]
+        ) as Array<{ id: number }>;
+        if (users.length) {
+          const freelancerId = users[0].id;
+          const balanceObj = event.data.object as any;
+          const available = (balanceObj.available ?? []).find((b: any) => b.currency === "gbp");
+          const amountPence = available?.amount ?? 0;
+          if (amountPence > 0) {
+            await storage.createNotification({
+              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              type: "payment_received",
+              message: `\uD83C\uDF89 Your earnings are now available — Stripe has released \u00a3${(amountPence / 100).toFixed(2)} and will automatically send it to your bank according to your payout schedule.`,
+              link: "/your-work", read: 0,
+            });
+          }
+        }
+      }
+      break;
+    }
+
+    case "charge.dispute.created": {
+      const dispute = event.data.object as Stripe.Dispute;
+      console.warn("[webhook] Dispute created:", dispute.id, "charge:", dispute.charge);
+      await auditLog({
+        actorType: "webhook",
+        action: "dispute_created",
+        afterState: { disputeId: dispute.id, chargeId: dispute.charge, amount: dispute.amount },
+        correlationId: requestId,
+      });
+      break;
+    }
+
+    // ── PRD-013: Pro Viewrr subscription lifecycle events ──────────────
+    case "customer.subscription.updated":
+    case "customer.subscription.created": {
+      const sub = event.data.object as any;
+      const viewrrUserId = sub.metadata?.viewrr_user_id
+        ? Number(sub.metadata.viewrr_user_id) : undefined;
+      if (sub.status === "active") {
+        await activateProFromWebhook(
+          sub.id,
+          sub.customer as string,
+          event.id,
+          sub.current_period_start,
+          sub.current_period_end,
+          viewrrUserId,
+        );
+      } else if (sub.status === "past_due" || sub.status === "unpaid") {
+        await markProPaymentFailed(sub.id, event.id);
+      } else if (sub.status === "canceled") {
+        await expireProEntitlement(sub.id, event.id);
+      }
+      break;
+    }
+    case "customer.subscription.deleted": {
+      const sub = event.data.object as any;
+      await expireProEntitlement(sub.id, event.id);
+      break;
+    }
+    case "invoice.payment_succeeded": {
+      const inv = event.data.object as any;
+      if (inv.subscription) {
+        try {
+          const stripeSub = await stripe.subscriptions.retrieve(inv.subscription as string) as any;
+          await renewProFromWebhook(
+            stripeSub.id,
+            stripeSub.customer as string,
+            event.id,
+            stripeSub.current_period_start,
+            stripeSub.current_period_end,
+          );
+        } catch (e) { console.error("[pro-renew]", e); }
+      }
+      break;
+    }
+    case "invoice.payment_failed": {
+      const inv = event.data.object as any;
+      if (inv.subscription) {
+        await markProPaymentFailed(inv.subscription as string, event.id);
+      }
+      break;
+    }
+
+    default:
+      console.log("[webhook] Unhandled event type:", event.type);
+  }
 }
 
 /**
