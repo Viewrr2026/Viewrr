@@ -553,7 +553,7 @@ describe("PRD-019 T13: mobile/login — no cookie in response", () => {
     });
     // Even a failed response must not set a session cookie
     const setCookie = res.headers.get("set-cookie") ?? "";
-    assert.ok(!setCookie.includes("viewrr_session="), "mobile/login must never set a session cookie");
+    assert.ok(!setCookie.includes("vr_sess="), "mobile/login must never set a session cookie");
   });
 });
 
@@ -582,5 +582,22 @@ describe("PRD-019 T19: registration — no raw token in body", () => {
     const body = await res.json().catch(() => ({}));
     assert.ok(!body.token, "No raw token in registration response");
     assert.ok(!body.rawToken, "No rawToken in registration response");
+  });
+});
+
+// ─── PRD-019 R1: Finance permission routes use canonical requireAuth ───────────
+
+describe("PRD-019 R1: finance routes reject requests with no session", () => {
+  it("R1-SEC: /api/founder/finance/overview returns 401 with no cookie or Bearer", async () => {
+    const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
+    const res = await fetch(`${BASE_URL}/api/founder/finance/overview`);
+    // Must be 401 (no auth) not 500 (HMAC crash) — proves requireAuth path is active
+    assert.equal(res.status, 401, "Finance route must return 401 with no credentials");
+  });
+
+  it("R1-SEC: /api/founder/finance/payments returns 401 with no cookie or Bearer", async () => {
+    const BASE_URL = process.env.TEST_BASE_URL || "http://localhost:5000";
+    const res = await fetch(`${BASE_URL}/api/founder/finance/payments`);
+    assert.equal(res.status, 401, "Finance payments route must return 401 with no credentials");
   });
 });

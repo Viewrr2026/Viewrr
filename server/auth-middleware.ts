@@ -129,6 +129,9 @@ export async function requireAuth(
     return;
   }
   // Legacy session: no sessionId or clientType (drain-period only)
+  // R2: HMAC drain telemetry — distinguishes legacy auth from DB-backed auth.
+  // Never logs credentials, cookies, tokens, or hashes.
+  console.warn(`[auth] legacy-hmac-drain userId=${legacy.userId}`);
   req.auth = { userId: legacy.userId };
   next();
 }
