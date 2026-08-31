@@ -285,7 +285,7 @@ export type BriefInterest = typeof briefInterests.$inferSelect;
 export const notifications = pgTable("notifications", {
   id: serial("id").primaryKey(),
   recipientId: integer("recipient_id").notNull(),  // who receives this
-  actorId: integer("actor_id").notNull(),           // who triggered it
+  actorId: integer("actor_id"),                     // who triggered it (null for system events)
   actorName: text("actor_name").notNull(),
   actorAvatar: text("actor_avatar"),
   type: text("type").notNull(), // "like" | "comment" | "message" | "interest" | "interest_accepted" | "interest_declined" | "profile_view" | "connection"
@@ -743,6 +743,11 @@ export const stripeEvents = pgTable("stripe_events", {
   processedAt: text("processed_at"),
   errorCode: text("error_code"),
   errorSummary: text("error_summary"),
+  // WS-A: PRD-020 stale-event recovery fields (migration 0008)
+  processingStartedAt: text("processing_started_at"),
+  lastAttemptAt: text("last_attempt_at"),
+  maxAttempts: integer("max_attempts").notNull().default(5),
+  rawPayload: text("raw_payload"),
 });
 export type StripeEvent = typeof stripeEvents.$inferSelect;
 
@@ -891,3 +896,40 @@ export const authSessions = pgTable("auth_sessions", {
 
 export type AuthSession = typeof authSessions.$inferSelect;
 export type InsertAuthSession = typeof authSessions.$inferInsert;
+
+// ─── Upload Objects (PRD-020 WS-D) ───────────────────────────────────────────
+// Durable record for every uploaded file — backed by Cloudflare R2 object storage
+export const uploadObjects = pgTable("upload_objects", {
+  id: serial("id").primaryKey(),
+  ownerUserId: integer("owner_user_id").notNull(),
+  objectKey: text("object_key").notNull().unique(),
+  resourceType: text("resource_type").notNull(), // portfolio | profile | project | deliverable | message
+  resourceId: integer("resource_id"),            // nullable — set after resource is created
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes"),
+  originalFilename: text("original_filename"),    // stored as metadata only (never used as path)
+  status: text("status").notNull().default("pending"), // pending | uploaded | ready | deleted
+  uploadIntentExpiresAt: text("upload_intent_expires_at").notNull(), // when presigned PUT URL expires
+  confirmedAt: text("confirmed_at"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+
+export type UploadObject = typeof uploadObjects.$inferSelect;
+export type InsertUploadObject = typeof uploadObjects.$inferInsert;
+
+// ─── Verification Codes (PRD-020 WS-E) ───────────────────────────────────────
+// DB-backed verification codes — restart-safe replacement for in-memory Map
+export const verificationCodes = pgTable("verification_codes", {
+  id: serial("id").primaryKey(),
+  purpose: text("purpose").notNull(),            // email_verification | sms_verification
+  destinationHash: text("destination_hash").notNull(), // SHA-256(lowercased destination)
+  codeHash: text("code_hash").notNull(),          // SHA-256(code + destination + purpose)
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  expiresAt: text("expires_at").notNull(),
+  usedAt: text("used_at"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  invalidatedAt: text("invalidated_at"),          // set when resend invalidates this code
+});
+
+export type VerificationCode = typeof verificationCodes.$inferSelect;
+export type InsertVerificationCode = typeof verificationCodes.$inferInsert;
