@@ -21,6 +21,8 @@ import {
   syncConnectAccount,
   reconcilePayment,
   auditLog,
+  processStripeEvent,
+  recoverStaleStripeEvents,
   VIEWRR_FEE_PERCENT as PAYMENT_FEE_PERCENT,
 } from "./payment-service";
 import { getDashboardData } from "./services/dashboard.service";
@@ -53,6 +55,13 @@ import {
 import {
   verifyPassword, migratePasswordIfLegacy, hashPasswordArgon2id,
 } from "./password-service";
+import {
+  STORAGE_CONFIGURED, generateObjectKey, createPresignedUploadUrl,
+  createPresignedDownloadUrl, verifyObjectExists,
+  MAX_UPLOAD_BYTES, isAllowedMime,
+  type ResourceType,
+} from "./object-storage";
+import { createVerificationCode, verifyCode, type VerificationPurpose } from "./verification-service";
 
 import multer from "multer";
 import path from "path";
@@ -97,9 +106,8 @@ import { Resend } from "resend";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-// PRD-019 C13: In-memory verification code store (not DB-backed — out of scope).
-// Codes generated with crypto.randomInt (CSPRNG — replaces Math.random()).
-const verificationCodes = new Map<string, { code: string; expires: number }>();
+// PRD-020 WS-E: Verification codes are now DB-backed (see verification-service.ts).
+// The in-memory Map has been replaced; codes survive server restarts.
 import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema, insertBriefInterestSchema, insertAgencySchema, insertAgencyMemberSchema } from "@shared/schema";
 
 // Helper: fire-and-forget notification (never throws)
@@ -473,8 +481,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log(`[verify] Request received for: ${email}`);
     if (!email) return res.status(400).json({ error: "Email required" });
 
-    const code = String(crypto.randomInt(100000, 1000000));
-    verificationCodes.set(email.toLowerCase(), { code, expires: Date.now() + 10 * 60 * 1000 }); // 10 min expiry
+    // PRD-020 WS-E: code stored in DB (hashed); raw code returned only to caller for emailing
+    const code = await createVerificationCode(email, "email_verification");
 
     if (!resend) {
       // PRD-018 H4: RESEND not configured.
@@ -536,8 +544,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const { phone, email } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number required" });
 
-    const code = String(crypto.randomInt(100000, 1000000));
-    verificationCodes.set(phone.replace(/\s+/g, ""), { code, expires: Date.now() + 10 * 60 * 1000 });
+    // PRD-020 WS-E: code stored in DB (hashed); raw code returned only to caller for emailing
+    const code = await createVerificationCode(phone.replace(/\s+/g, ""), "sms_verification");
 
     if (!resend || !email) {
       // PRD-018 H4: RESEND not configured or no email address.
@@ -579,22 +587,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PRD-019 C13: verifyCodeLimiter applied (10/10min/IP — brute-force protection)
+  // PRD-020 WS-E: Now DB-backed via verification-service (hashed codes, attempt counting)
   app.post("/api/auth/verify-code", verifyCodeLimiter, async (req, res) => {
     const { email, phone, code } = req.body;
     const key = phone ? phone.replace(/\s+/g, "") : email?.toLowerCase();
     if (!key || !code) return res.status(400).json({ error: "Email or phone and code required" });
 
-    const stored = verificationCodes.get(key);
-    if (!stored) return res.status(400).json({ error: "No code found — please request a new one" });
-    if (Date.now() > stored.expires) {
-      verificationCodes.delete(key);
-      return res.status(400).json({ error: "Code expired — please request a new one" });
-    }
-    if (stored.code !== String(code).trim()) {
-      return res.status(400).json({ error: "Incorrect code" });
-    }
-
-    verificationCodes.delete(key);
+    const purpose: VerificationPurpose = phone ? "sms_verification" : "email_verification";
+    const result = await verifyCode(key, purpose, String(code).trim());
+    if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ ok: true });
   });
 
@@ -739,6 +740,205 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
     if (err?.message) return res.status(400).json({ error: err.message });
     next(err);
+  });
+
+  // ─── WS-D: Durable object storage upload flow ─────────────────────────────────────
+  // POST /api/upload/request  — get presigned PUT URL + create pending upload_objects record
+  // POST /api/upload/confirm/:objectKey — confirm upload, set status=ready
+  // GET  /api/upload/download/:id — get presigned GET URL (auth required, ownership check)
+
+  app.post("/api/upload/request", requireAuth, uploadLimiter, async (req: any, res: any) => {
+    try {
+      if (!STORAGE_CONFIGURED) {
+        return res.status(503).json({ error: "Object storage not configured" });
+      }
+
+      const { resourceType, mimeType, fileSizeBytes, originalFilename } = req.body;
+      const userId: number = req.auth!.userId;
+
+      // Validate resourceType
+      const validResourceTypes: ResourceType[] = ["portfolio", "profile", "project", "deliverable", "message"];
+      if (!validResourceTypes.includes(resourceType)) {
+        return res.status(400).json({ error: `Invalid resourceType. Must be one of: ${validResourceTypes.join(", ")}` });
+      }
+
+      // Validate mimeType
+      if (!mimeType || !isAllowedMime(resourceType as ResourceType, mimeType)) {
+        return res.status(400).json({ error: `MIME type '${mimeType}' not allowed for resourceType '${resourceType}'` });
+      }
+
+      // Validate fileSizeBytes
+      const maxBytes = MAX_UPLOAD_BYTES[resourceType as ResourceType];
+      if (!fileSizeBytes || fileSizeBytes <= 0) {
+        return res.status(400).json({ error: "fileSizeBytes must be a positive integer" });
+      }
+      if (fileSizeBytes > maxBytes) {
+        return res.status(400).json({
+          error: `File too large for resourceType '${resourceType}'. Maximum is ${Math.round(maxBytes / 1024 / 1024)} MB`,
+        });
+      }
+
+      // Extract extension from MIME type or original filename
+      let ext: string | undefined;
+      if (originalFilename) {
+        const dotIdx = originalFilename.lastIndexOf(".");
+        if (dotIdx !== -1) ext = originalFilename.slice(dotIdx + 1);
+      }
+      if (!ext) {
+        // Derive from MIME type
+        const mimeExt: Record<string, string> = {
+          "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+          "image/gif": "gif", "image/avif": "avif",
+          "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov",
+          "video/x-msvideo": "avi", "application/pdf": "pdf", "application/zip": "zip",
+        };
+        ext = mimeExt[mimeType];
+      }
+
+      // Generate server-controlled object key (FR-22)
+      const objectKey = generateObjectKey(resourceType as ResourceType, userId, ext);
+
+      // Presigned PUT URL (5 min expiry)
+      const uploadIntentExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      const uploadUrl = await createPresignedUploadUrl({
+        objectKey,
+        mimeType,
+        maxSizeBytes: fileSizeBytes,
+        expiresInSeconds: 300,
+      });
+
+      // Insert pending upload_objects record
+      const sql = neon(process.env.DATABASE_URL!);
+      const rows = await sql`
+        INSERT INTO upload_objects
+          (owner_user_id, object_key, resource_type, mime_type, original_filename,
+           status, upload_intent_expires_at, created_at)
+        VALUES
+          (${userId}, ${objectKey}, ${resourceType}, ${mimeType},
+           ${originalFilename ?? null}, 'pending', ${uploadIntentExpiresAt}, ${new Date().toISOString()})
+        RETURNING id
+      `;
+
+      return res.json({ uploadUrl, objectKey, uploadId: rows[0].id });
+    } catch (e: any) {
+      console.error("[upload/request] Error:", e.message);
+      return res.status(500).json({ error: "Failed to create upload intent", detail: e.message });
+    }
+  });
+
+  app.post("/api/upload/confirm/:objectKey(*)", requireAuth, async (req: any, res: any) => {
+    try {
+      if (!STORAGE_CONFIGURED) {
+        return res.status(503).json({ error: "Object storage not configured" });
+      }
+
+      const { objectKey } = req.params;
+      const userId: number = req.auth!.userId;
+
+      // Look up upload_objects record, verify ownership
+      const sql = neon(process.env.DATABASE_URL!);
+      const rows = await sql`
+        SELECT id, owner_user_id, status
+        FROM upload_objects
+        WHERE object_key = ${objectKey}
+        LIMIT 1
+      `;
+
+      if (!rows.length) return res.status(404).json({ error: "Upload record not found" });
+      const record = rows[0];
+      if (record.owner_user_id !== userId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      if (record.status === "ready") {
+        return res.json({ ok: true, objectId: record.id, alreadyConfirmed: true });
+      }
+
+      // FR-24: Verify object actually exists in R2
+      const existence = await verifyObjectExists(objectKey);
+      if (!existence.exists) {
+        return res.status(404).json({ error: "Object not found in storage — upload may not have completed" });
+      }
+
+      const now = new Date().toISOString();
+      await sql`
+        UPDATE upload_objects
+        SET status = 'ready',
+            confirmed_at = ${now},
+            size_bytes = ${existence.size ?? null}
+        WHERE id = ${record.id}
+      `;
+
+      return res.json({ ok: true, objectId: record.id });
+    } catch (e: any) {
+      console.error("[upload/confirm] Error:", e.message);
+      return res.status(500).json({ error: "Failed to confirm upload", detail: e.message });
+    }
+  });
+
+  app.get("/api/upload/download/:id", requireAuth, async (req: any, res: any) => {
+    try {
+      if (!STORAGE_CONFIGURED) {
+        return res.status(503).json({ error: "Object storage not configured" });
+      }
+
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid upload id" });
+
+      const userId: number = req.auth!.userId;
+      const sql = neon(process.env.DATABASE_URL!);
+
+      const rows = await sql`
+        SELECT id, owner_user_id, object_key, resource_type, resource_id, status
+        FROM upload_objects
+        WHERE id = ${id}
+        LIMIT 1
+      `;
+
+      if (!rows.length) return res.status(404).json({ error: "Upload not found" });
+      const record = rows[0];
+
+      if (record.status !== "ready") {
+        return res.status(404).json({ error: "Upload not ready" });
+      }
+
+      // Check ownership OR project membership for project/deliverable resources
+      let hasAccess = record.owner_user_id === userId;
+
+      if (!hasAccess && record.resource_id && ["project", "deliverable"].includes(record.resource_type)) {
+        // Check if user is a participant in the project
+        const projectId = record.resource_type === "deliverable"
+          ? await (async () => {
+              // deliverable's project_id lives on the resource — use upload resource_id as project_id hint
+              const proj = await sql`
+                SELECT id FROM projects
+                WHERE id = ${record.resource_id}
+                  AND (freelancer_id = ${userId} OR client_id = ${userId})
+                LIMIT 1
+              `;
+              return proj.length ? record.resource_id : null;
+            })()
+          : record.resource_id;
+
+        if (projectId) {
+          const projRows = await sql`
+            SELECT id FROM projects
+            WHERE id = ${projectId}
+              AND (freelancer_id = ${userId} OR client_id = ${userId})
+            LIMIT 1
+          `;
+          if (projRows.length) hasAccess = true;
+        }
+      }
+
+      if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+
+      // FR-25: 15-min presigned download URL
+      const downloadUrl = await createPresignedDownloadUrl(record.object_key, 900);
+      return res.json({ downloadUrl });
+    } catch (e: any) {
+      console.error("[upload/download] Error:", e.message);
+      return res.status(500).json({ error: "Failed to generate download URL", detail: e.message });
+    }
   });
 
     // ─── Profiles ──────────────────────────────────────────────────────────────
@@ -3581,289 +3781,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
         setImmediate(async () => {
         try {
-          // FR-10: P0 event handlers
-          switch (event.type) {
-
-            case "payment_intent.succeeded": {
-              const intent = event.data.object as Stripe.PaymentIntent;
-              await handlePaymentIntentSucceeded(intent, correlationId);
-              break;
-            }
-
-            case "payment_intent.payment_failed": {
-              const intent = event.data.object as Stripe.PaymentIntent;
-              const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
-              if (viewrrPaymentId) {
-                // Update payment status to failed
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                await sqlClient(
-                  "UPDATE payments SET status='failed', failed_at=$1, version=version+1 WHERE public_id=$2 AND status NOT IN ('succeeded','refunded')",
-                  [new Date().toISOString(), viewrrPaymentId]
-                );
-                await auditLog({
-                  actorType: "webhook",
-                  action: "payment_intent_failed",
-                  afterState: { paymentIntentId: intent.id, failureCode: intent.last_payment_error?.code },
-                  correlationId,
-                });
-              }
-              break;
-            }
-
-            case "payment_intent.canceled": {
-              const intent = event.data.object as Stripe.PaymentIntent;
-              const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
-              if (viewrrPaymentId) {
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                await sqlClient(
-                  "UPDATE payments SET status='cancelled', cancelled_at=$1, version=version+1 WHERE public_id=$2",
-                  [new Date().toISOString(), viewrrPaymentId]
-                );
-              }
-              break;
-            }
-
-            case "charge.refunded": {
-              // Handled by refund workflow — log for audit
-              const charge = event.data.object as Stripe.Charge;
-              console.log("[webhook] charge.refunded:", charge.id, "amount_refunded:", charge.amount_refunded);
-              break;
-            }
-
-            case "refund.created":
-            case "refund.updated": {
-              const refund = event.data.object as Stripe.Refund;
-              const viewrrRefundId = refund.metadata?.viewrr_refund_id;
-              if (viewrrRefundId && refund.status) {
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                const newStatus = refund.status === "succeeded" ? "succeeded" : refund.status === "failed" ? "failed" : "processing";
-                await sqlClient(
-                  "UPDATE payment_refunds SET status=$1, stripe_refund_id=$2 WHERE public_id=$3",
-                  [newStatus, refund.id, viewrrRefundId]
-                );
-              }
-              break;
-            }
-
-            case "transfer.reversed": {
-              const transfer = event.data.object as Stripe.Transfer;
-              const sqlClient = neon(process.env.DATABASE_URL!);
-              await sqlClient(
-                "UPDATE payment_transfers SET status='partially_reversed', reversed_pence=$1 WHERE stripe_transfer_id=$2",
-                [transfer.amount_reversed, transfer.id]
-              );
-              break;
-            }
-
-            // FR-13: account.updated — sync readiness + release held earnings
-            case "account.updated": {
-              const account = event.data.object as Stripe.Account;
-              const viewrrUserId = Number(account.metadata?.viewrr_user_id);
-              if (!viewrrUserId) break;
-
-              const user = await storage.getUser(viewrrUserId);
-              if (!user) break;
-
-              // Sync Connect account state
-              await syncConnectAccount(viewrrUserId, account.id);
-
-              const isReady =
-                account.charges_enabled === true &&
-                (account.capabilities as any)?.transfers === "active";
-
-              if (isReady) {
-                // FR-12: NO 35p payout clock transfer
-                // FR-08: release held earnings from ledger (not stripePendingPence)
-                await releaseHeldEarnings(viewrrUserId, account.id, correlationId);
-                await storage.createNotification({
-                  recipientId: viewrrUserId,
-                  actorId: viewrrUserId,
-                  actorName: "Viewrr",
-                  actorAvatar: null,
-                  type: "payment_received",
-                  // FR-16: accurate messaging — "allocated to Stripe balance" not "paid to bank"
-                  message: "Your Stripe account is verified. Any pending earnings have been allocated to your Stripe balance.",
-                  link: "/your-work",
-                  read: 0,
-                });
-              }
-              break;
-            }
-
-            // FR-10: P1 payout events
-            case "payout.created":
-            case "payout.updated":
-            case "payout.paid":
-            case "payout.failed": {
-              const payout = event.data.object as Stripe.Payout;
-              // Find freelancer by connected account
-              const accountId = (event as any).account as string | undefined;
-              if (accountId) {
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                const users = await sqlClient(
-                  "SELECT id FROM users WHERE stripe_account_id = $1 LIMIT 1",
-                  [accountId]
-                );
-                if (users.length) {
-                  const freelancerId = users[0].id;
-                  const status =
-                    event.type === "payout.paid" ? "paid" :
-                    event.type === "payout.failed" ? "failed" :
-                    event.type === "payout.created" ? "pending" : "in_transit";
-
-                  await sqlClient(
-                    `INSERT INTO payment_payouts (freelancer_id, stripe_payout_id, amount_pence, currency, status, arrival_date, failure_code, created_at, paid_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                     ON CONFLICT (stripe_payout_id) DO UPDATE SET status=$5, paid_at=$9`,
-                    [
-                      freelancerId,
-                      payout.id,
-                      payout.amount,
-                      payout.currency,
-                      status,
-                      payout.arrival_date ? new Date(payout.arrival_date * 1000).toISOString() : null,
-                      (payout as any).failure_code ?? null,
-                      new Date().toISOString(),
-                      event.type === "payout.paid" ? new Date().toISOString() : null,
-                    ]
-                  );
-
-                  // FR-09 (PRD-011): enriched payout notifications
-                  if (event.type === "payout.paid") {
-                    await storage.createNotification({
-                      recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
-                      type: "payment_received",
-                      message: `✅ Payment Complete — Your earnings of £${(payout.amount / 100).toFixed(2)} have successfully reached your bank account.`,
-                      link: "/your-work", read: 0,
-                    });
-                  } else if (event.type === "payout.created" || event.type === "payout.updated") {
-                    const isInTransit = (event.data.object as any).status === "in_transit";
-                    if (isInTransit) {
-                      const arrivalStr = payout.arrival_date
-                        ? new Date(payout.arrival_date * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
-                        : null;
-                      await storage.createNotification({
-                        recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
-                        type: "payment_received",
-                        message: `💸 Your payout is on its way — Stripe has initiated your payout of £${(payout.amount / 100).toFixed(2)}.${arrivalStr ? ` Estimated bank arrival: ${arrivalStr}.` : ""}`,
-                        link: "/your-work", read: 0,
-                      });
-                    }
-                  } else if (event.type === "payout.failed") {
-                    await storage.createNotification({
-                      recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
-                      type: "payment_received",
-                      message: `A payout of £${(payout.amount / 100).toFixed(2)} failed. Please check your bank details in your Stripe account.`,
-                      link: "/your-work", read: 0,
-                    });
-                  }
-                }
-              }
-              break;
-            }
-
-            // FR-09 (PRD-011): notify freelancer when funds become available
-            case "balance.available": {
-              const accountId = (event as any).account as string | undefined;
-              if (accountId) {
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                const users = await sqlClient(
-                  "SELECT id FROM users WHERE stripe_account_id = $1 LIMIT 1",
-                  [accountId]
-                );
-                if (users.length) {
-                  const freelancerId = users[0].id;
-                  const balanceObj = event.data.object as any;
-                  const available = (balanceObj.available ?? []).find((b: any) => b.currency === "gbp");
-                  const amountPence = available?.amount ?? 0;
-                  if (amountPence > 0) {
-                    await storage.createNotification({
-                      recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
-                      type: "payment_received",
-                      message: `🎉 Your earnings are now available — Stripe has released £${(amountPence / 100).toFixed(2)} and will automatically send it to your bank according to your payout schedule.`,
-                      link: "/your-work", read: 0,
-                    });
-                  }
-                }
-              }
-              break;
-            }
-
-            case "charge.dispute.created": {
-              const dispute = event.data.object as Stripe.Dispute;
-              console.warn("[webhook] Dispute created:", dispute.id, "charge:", dispute.charge);
-              // Alert admin — in production this would create an admin exception record
-              await auditLog({
-                actorType: "webhook",
-                action: "dispute_created",
-                afterState: { disputeId: dispute.id, chargeId: dispute.charge, amount: dispute.amount },
-                correlationId,
-              });
-              break;
-            }
-
-            // ── PRD-013: Pro Viewrr subscription lifecycle events ──────────────
-            case "customer.subscription.updated":
-            case "customer.subscription.created": {
-              const sub = event.data.object as any;
-              const viewrrUserId = sub.metadata?.viewrr_user_id
-                ? Number(sub.metadata.viewrr_user_id) : undefined;
-              if (sub.status === "active") {
-                await activateProFromWebhook(
-                  sub.id,
-                  sub.customer as string,
-                  event.id,
-                  sub.current_period_start,
-                  sub.current_period_end,
-                  viewrrUserId,
-                );
-              } else if (sub.status === "past_due" || sub.status === "unpaid") {
-                await markProPaymentFailed(sub.id, event.id);
-              } else if (sub.status === "canceled") {
-                await expireProEntitlement(sub.id, event.id);
-              }
-              break;
-            }
-            case "customer.subscription.deleted": {
-              const sub = event.data.object as any;
-              await expireProEntitlement(sub.id, event.id);
-              break;
-            }
-            case "invoice.payment_succeeded": {
-              const inv = event.data.object as any;
-              if (inv.subscription) {
-                // Renewal — update period
-                try {
-                  const stripeClient = stripe;
-                  const stripeSub = await stripeClient.subscriptions.retrieve(inv.subscription as string);
-                  await renewProFromWebhook(
-                    stripeSub.id,
-                    stripeSub.customer as string,
-                    event.id,
-                    stripeSub.current_period_start,
-                    stripeSub.current_period_end,
-                  );
-                } catch (e) { console.error("[pro-renew]", e); }
-              }
-              break;
-            }
-            case "invoice.payment_failed": {
-              const inv = event.data.object as any;
-              if (inv.subscription) {
-                await markProPaymentFailed(inv.subscription as string, event.id);
-              }
-              break;
-            }
-
-            default:
-              // Log unhandled event types for observability
-              console.log("[webhook] Unhandled event type:", event.type);
-          }
-
+          // FR-04: Delegate to canonical processor (WS-A extraction)
+          await processStripeEvent(event, correlationId);
           await markEventProcessed(event.id);
-
+          console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", event: "stripe_event_processed", requestId: correlationId, stripeEventId: event.id, eventType: event.type }));
         } catch (processingError: any) {
-          console.error("[webhook] Processing error:", processingError.message);
+          console.error(JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "stripe_event_failed", requestId: correlationId, stripeEventId: event.id, eventType: event.type, error: processingError.message.slice(0, 500) }));
           await markEventProcessed(event.id, processingError.message);
         }
         }); // end setImmediate
@@ -5794,8 +5717,64 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     await configureAutoDailyPayout(userId, stripeAccountId);
   });
 
+  // WS-A: process_stripe_event job handler — used by replay endpoint and recovery
+  registerJobHandler("process_stripe_event", async (payload, attemptCount) => {
+    const { stripeEventId } = payload as { stripeEventId: string };
+    if (!stripeEventId) return; // nothing to do
+
+    // Fetch the event record from DB to verify it exists and isn't already processed
+    const sqlClient = neon(process.env.DATABASE_URL!);
+    const rows = await sqlClient(
+      "SELECT stripe_event_id, processing_status, raw_payload FROM stripe_events WHERE stripe_event_id = $1 LIMIT 1",
+      [stripeEventId]
+    ) as Array<{ stripe_event_id: string; processing_status: string; raw_payload: string | null }>;
+
+    if (!rows.length) {
+      console.warn(`[process_stripe_event] Event not found in DB: ${stripeEventId}`);
+      return; // idempotent no-op
+    }
+
+    const row = rows[0];
+    if (row.processing_status === "processed") {
+      console.log(`[process_stripe_event] Already processed, skipping: ${stripeEventId}`);
+      return; // idempotent no-op
+    }
+
+    // Reconstruct event from raw_payload if available, else fetch from Stripe
+    let event: Stripe.Event;
+    if (row.raw_payload) {
+      event = JSON.parse(row.raw_payload) as Stripe.Event;
+    } else if (stripe) {
+      event = await stripe.events.retrieve(stripeEventId);
+    } else {
+      console.error(`[process_stripe_event] No raw_payload and Stripe not configured: ${stripeEventId}`);
+      return;
+    }
+
+    const requestId = `job_${stripeEventId}_attempt${attemptCount ?? 1}`;
+    try {
+      await processStripeEvent(event, requestId);
+      await markEventProcessed(stripeEventId);
+    } catch (e: any) {
+      await markEventProcessed(stripeEventId, e.message);
+      throw e; // re-throw so job-queue can apply retry/backoff
+    }
+  });
+
   // Start the worker (non-blocking)
   startWorker();
+
+  // WS-A: Recover stale stripe events on startup (async, non-blocking)
+  setImmediate(async () => {
+    try {
+      const recovered = await recoverStaleStripeEvents();
+      if (recovered > 0) console.log(`[stripe-recovery] Recovered ${recovered} stale events on startup`);
+    } catch (e: any) { console.error('[stripe-recovery] Startup recovery error:', e.message); }
+  });
+  // Also run periodic recovery every 5 minutes
+  setInterval(async () => {
+    try { await recoverStaleStripeEvents(); } catch {}
+  }, 5 * 60 * 1000);
 
   // PRD-012: Retainer builder + workspace routes
   registerRetainerBuilderRoutes(app);
