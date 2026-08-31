@@ -826,13 +826,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.post("/api/upload/confirm/:objectKey(*)", requireAuth, async (req: any, res: any) => {
+  app.post("/api/upload/confirm/*objectKey", requireAuth, async (req: any, res: any) => {
     try {
       if (!STORAGE_CONFIGURED) {
         return res.status(503).json({ error: "Object storage not configured" });
       }
 
-      const { objectKey } = req.params;
+      const raw = req.params.objectKey;
+      const objectKey = Array.isArray(raw) ? raw.join("/") : raw;
       const userId: number = req.auth!.userId;
 
       // Look up upload_objects record, verify ownership
