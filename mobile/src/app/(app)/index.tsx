@@ -15,14 +15,13 @@ import { useSession } from "@/session/SessionProvider";
 import { radii, spacing, status as statusColors, typography, useTheme } from "@/theme";
 
 const NEXT_UP = [
-  "Native auth against a reviewed endpoint",
   "Briefs feed",
   "Stage approvals",
   "Payout summary",
 ] as const;
 
 export default function Home() {
-  const { user, signOut } = useSession();
+  const { user, signOut, signingOut } = useSession();
   const { colors } = useTheme();
   const [connectivity, setConnectivity] = useState<Connectivity | null>(null);
   const [checking, setChecking] = useState(false);
@@ -93,8 +92,8 @@ export default function Home() {
         <CardLabel>Shell placeholder</CardLabel>
         <CardTitle>Foundation is in place</CardTitle>
         <CardBody>
-          Routing, theming and the API layer are wired up. Feature surfaces land after native auth
-          is approved.
+          Routing, theming, native sign-in and the authenticated API layer are wired up. Feature
+          surfaces land next.
         </CardBody>
         <View style={styles.list}>
           {NEXT_UP.map((item) => (
@@ -106,7 +105,14 @@ export default function Home() {
         </View>
       </Card>
 
-      <Button label="Sign out" variant="ghost" onPress={signOut} style={styles.signOut} />
+      <Button
+        label={signingOut ? "Signing out" : "Sign out"}
+        variant="ghost"
+        loading={signingOut}
+        onPress={() => void signOut()}
+        style={styles.signOut}
+        accessibilityHint="Signs out on this device and revokes the session"
+      />
     </Screen>
   );
 }

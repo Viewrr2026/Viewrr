@@ -6,8 +6,9 @@ import { useSession } from "@/session/SessionProvider";
 import { typography, useTheme } from "@/theme";
 
 /**
- * Authenticated shell. Guarded by session status only — there is no real
- * credential yet, so this gate exists to establish the routing contract.
+ * Authenticated shell. Guarded by session status, which is now backed by a real
+ * PRD-019 Bearer credential: any authenticated 401 clears secure storage and
+ * flips the session to signed-out, which drops the user out of this stack.
  *
  * The bar uses --card over --background with a hairline --border top edge, the
  * same surface/among-border relationship as the web navbar (bg-card, border-b

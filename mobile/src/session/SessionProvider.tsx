@@ -1,19 +1,41 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+
+import { fetchMe, logout as logoutRequest, mobileLogin, type MeResponse } from "@/api/auth";
+import { setUnauthorizedHandler } from "@/api/client";
+import { canPersistCredential, clearToken, getToken, setToken } from "@/session/tokenStore";
 
 /**
- * Session state — PLACEHOLDER for Alpha 0.1.
+ * Native session state — PRD-019 Bearer auth.
  *
- * There is intentionally NO real authentication here:
- *   • no credential is persisted (expo-secure-store is not wired up)
- *   • no network call is made
- *   • the web cookie model (HttpOnly `vr_sess`, SameSite=Strict) is untouched
+ * Contract:
+ *   • Sign-in POSTs /api/auth/mobile/login and persists the returned raw token
+ *     in the Keychain / Keystore (session/tokenStore). Nothing else is stored.
+ *   • Cold start reads that token and validates it with GET /api/auth/me. A 401
+ *     clears storage and drops to signed-out; a network failure keeps the token
+ *     and reports "offline" so a flight-mode launch does not sign the user out.
+ *   • Any authenticated 401 anywhere in the app clears the credential through
+ *     the global handler registered below.
+ *   • Sign-out calls POST /api/auth/logout with the Bearer header (server-side
+ *     revocation) and then clears secure storage — in that order, and the local
+ *     clear happens even if the network call fails.
+ *   • The web platform's HttpOnly `vr_sess` cookie flow is untouched; this
+ *     client never sends or stores a cookie.
  *
- * Native auth will be built against a separate reviewed native-auth endpoint
- * with a Bearer credential. When that lands, only `restore` and `signIn` below
- * change — screens consume this context and should not need edits.
+ * The raw token is never placed in state, props, logs or error copy. It exists
+ * only inside tokenStore and the Authorization header.
  */
 
 export type SessionUser = {
+  id: number;
   displayName: string;
   /** Mirrors the web platform's role vocabulary: client | freelancer | admin. */
   role: "client" | "freelancer" | "admin";
@@ -21,48 +43,162 @@ export type SessionUser = {
 
 export type SessionStatus = "restoring" | "signed-out" | "signed-in";
 
+/** Why a cold-start restore ended without a session. Drives no UI copy today. */
+export type RestoreOutcome = "no-credential" | "restored" | "rejected" | "unreachable";
+
 type SessionValue = {
   status: SessionStatus;
   user: SessionUser | null;
-  /** Placeholder: establishes a local-only stub session. No network, no token. */
-  signInPlaceholder: (user?: SessionUser) => void;
-  signOut: () => void;
+  /** Set when the last restore attempt failed for network reasons. */
+  restoreOutcome: RestoreOutcome | null;
+  /** Throws ApiError on failure; callers map it with describeAuthFailure. */
+  signIn: (email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  /** True while a sign-out round-trip is in flight. */
+  signingOut: boolean;
 };
 
-const STUB_USER: SessionUser = { displayName: "Preview User", role: "freelancer" };
-
 const SessionContext = createContext<SessionValue | null>(null);
+
+function normaliseRole(role: unknown, isAdmin: unknown): SessionUser["role"] {
+  if (isAdmin === true || isAdmin === 1) return "admin";
+  if (role === "freelancer" || role === "client" || role === "admin") return role;
+  return "client";
+}
+
+/** Minimum session state the app needs. Email, tokens and hashes are not kept. */
+function toSessionUser(input: {
+  id: number;
+  name?: string | null;
+  role?: string | null;
+  isAdmin?: boolean | number | null;
+}): SessionUser {
+  return {
+    id: input.id,
+    displayName: input.name?.trim() || "Viewrr",
+    role: normaliseRole(input.role, input.isAdmin),
+  };
+}
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<SessionStatus>("restoring");
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [restoreOutcome, setRestoreOutcome] = useState<RestoreOutcome | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const mounted = useRef(true);
 
   useEffect(() => {
-    // Credential restore seam. No secure store yet, so we resolve to signed-out.
-    let cancelled = false;
-    const restore = async () => {
-      if (cancelled) return;
-      setStatus("signed-out");
-    };
-    void restore();
+    mounted.current = true;
     return () => {
-      cancelled = true;
+      mounted.current = false;
     };
   }, []);
 
-  const signInPlaceholder = useCallback((next: SessionUser = STUB_USER) => {
-    setUser(next);
-    setStatus("signed-in");
-  }, []);
-
-  const signOut = useCallback(() => {
+  /** Local-only teardown. Used by cold-start rejection and the 401 handler. */
+  const forceSignedOut = useCallback(async () => {
+    await clearToken();
+    if (!mounted.current) return;
     setUser(null);
     setStatus("signed-out");
   }, []);
 
+  // A 401 on ANY authenticated request means the session was revoked or
+  // expired server-side. Clear the credential and return to sign-in.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      void forceSignedOut();
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [forceSignedOut]);
+
+  // Cold start: restore from secure storage, then validate through /api/auth/me.
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const restore = async () => {
+      if (!canPersistCredential) {
+        // Expo web preview holds no credential across reloads by design.
+        if (mounted.current) {
+          setRestoreOutcome("no-credential");
+          setStatus("signed-out");
+        }
+        return;
+      }
+
+      const token = await getToken();
+      if (!token) {
+        if (mounted.current) {
+          setRestoreOutcome("no-credential");
+          setStatus("signed-out");
+        }
+        return;
+      }
+
+      try {
+        const me: MeResponse = await fetchMe(controller.signal);
+        if (!mounted.current) return;
+        if (!me.authenticated || !me.user) {
+          setRestoreOutcome("rejected");
+          await forceSignedOut();
+          return;
+        }
+        setUser(toSessionUser(me.user));
+        setRestoreOutcome("restored");
+        setStatus("signed-in");
+      } catch (error) {
+        if (!mounted.current) return;
+        const status = (error as { status?: number }).status;
+        if (status === 401) {
+          // The 401 handler already cleared storage; record the reason.
+          setRestoreOutcome("rejected");
+          await forceSignedOut();
+          return;
+        }
+        // Offline / timeout / 5xx: keep the credential for the next launch.
+        setRestoreOutcome("unreachable");
+        setStatus("signed-out");
+      }
+    };
+
+    void restore();
+    return () => controller.abort();
+  }, [forceSignedOut]);
+
+  const signIn = useCallback(async (email: string, password: string) => {
+    const result = await mobileLogin(email.trim(), password);
+    if (!result?.token || !result.user) {
+      // Contract violation rather than a credential problem.
+      throw new Error("Sign-in response was incomplete.");
+    }
+    await setToken(result.token);
+    if (!mounted.current) return;
+    setUser(toSessionUser(result.user));
+    setRestoreOutcome("restored");
+    setStatus("signed-in");
+  }, []);
+
+  const signOut = useCallback(async () => {
+    setSigningOut(true);
+    try {
+      // Revoke server-side first — while the Bearer header can still be sent.
+      await logoutRequest();
+    } catch {
+      // Network failure must not trap the user in a signed-in shell. The token
+      // is discarded locally regardless; the server session expires on its own.
+    } finally {
+      await clearToken();
+      if (mounted.current) {
+        setUser(null);
+        setRestoreOutcome(null);
+        setStatus("signed-out");
+        setSigningOut(false);
+      }
+    }
+  }, []);
+
   const value = useMemo<SessionValue>(
-    () => ({ status, user, signInPlaceholder, signOut }),
-    [status, user, signInPlaceholder, signOut],
+    () => ({ status, user, restoreOutcome, signIn, signOut, signingOut }),
+    [status, user, restoreOutcome, signIn, signOut, signingOut],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

@@ -124,7 +124,7 @@ export default function Welcome() {
           label="Create an account"
           variant="outline"
           disabled
-          accessibilityHint="Account creation arrives after Alpha 0.1"
+          accessibilityHint="Account creation arrives after Alpha 0.1 — sign up on viewrr.co.uk for now"
         />
         <Text style={[styles.legal, { color: colors.mutedForeground }]}>
           Signing in confirms you accept Viewrr's Terms and Privacy Policy.

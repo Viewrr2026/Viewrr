@@ -1,33 +1,56 @@
 import { useRouter } from "expo-router";
 import { ChevronLeft } from "lucide-react-native";
-import { useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { useCallback, useRef, useState } from "react";
+import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { Button } from "@/components/Button";
-import { Card, CardBody, CardTitle } from "@/components/Card";
+import { ErrorState } from "@/components/ErrorState";
 import { Logo } from "@/components/Logo";
 import { Screen } from "@/components/Screen";
 import { TextField } from "@/components/TextField";
+import { describeAuthFailure, type AuthFailure } from "@/session/authErrors";
 import { useSession } from "@/session/SessionProvider";
 import { hitSlop, spacing, typography, useTheme } from "@/theme";
 
 /**
- * Sign-in PLACEHOLDER.
+ * Native sign-in — PRD-019.
  *
- * The form is real UI; the submit path is not wired to any endpoint. Native
- * sign-in waits on a separate reviewed native-auth endpoint with a Bearer
- * credential. The existing web POST /api/auth/login is untouched and keeps its
- * HttpOnly-cookie model.
+ * Submits to POST /api/auth/mobile/login through SessionProvider, which stores
+ * the returned Bearer token in the Keychain / Keystore. The web platform's
+ * HttpOnly cookie login (POST /api/auth/login) is untouched.
+ *
+ * Failure copy comes from describeAuthFailure, which never surfaces a raw
+ * response body, URL or credential.
  */
 export default function SignIn() {
   const router = useRouter();
-  const { signInPlaceholder } = useSession();
+  const { signIn } = useSession();
   const { colors } = useTheme();
+  const passwordRef = useRef<TextInput>(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [failure, setFailure] = useState<AuthFailure | null>(null);
 
-  const canSubmit = email.trim().length > 3 && password.length >= 8;
+  const canSubmit = email.trim().length > 3 && password.length >= 8 && !submitting;
+
+  const submit = useCallback(async () => {
+    if (email.trim().length < 4 || password.length < 8 || submitting) return;
+    setFailure(null);
+    setSubmitting(true);
+    try {
+      await signIn(email, password);
+      // On success the auth-stack guard redirects into (app); no imperative nav.
+    } catch (error) {
+      setFailure(describeAuthFailure(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }, [email, password, signIn, submitting]);
+
+  const bannerFailure = failure && !failure.fieldLevel ? failure : null;
+  const fieldError = failure?.fieldLevel ? failure.message : undefined;
 
   return (
     <Screen>
@@ -60,53 +83,61 @@ export default function SignIn() {
           <TextField
             label="Email"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={(next) => {
+              setEmail(next);
+              if (failure) setFailure(null);
+            }}
             placeholder="you@studio.co.uk"
             autoCapitalize="none"
+            autoCorrect={false}
             autoComplete="email"
             keyboardType="email-address"
             textContentType="emailAddress"
             returnKeyType="next"
+            editable={!submitting}
+            onSubmitEditing={() => passwordRef.current?.focus()}
           />
           <TextField
+            ref={passwordRef}
             label="Password"
             value={password}
-            onChangeText={setPassword}
+            onChangeText={(next) => {
+              setPassword(next);
+              if (failure) setFailure(null);
+            }}
             placeholder="••••••••"
             secureTextEntry
             autoCapitalize="none"
             autoComplete="current-password"
             textContentType="password"
-            returnKeyType="done"
+            returnKeyType="go"
+            editable={!submitting}
+            onSubmitEditing={() => void submit()}
             helperText="Minimum 8 characters."
+            errorText={fieldError}
           />
         </View>
 
-        <Card tone="brand" style={styles.notice}>
-          <CardTitle>Native sign-in pending review</CardTitle>
-          <CardBody>
-            Credentials are not sent anywhere yet. Native authentication ships against its own
-            reviewed endpoint — web cookie sign-in is unchanged.
-          </CardBody>
-        </Card>
+        {bannerFailure ? (
+          <View style={styles.notice}>
+            <ErrorState
+              inline
+              title={bannerFailure.title}
+              message={bannerFailure.message}
+              onRetry={bannerFailure.reason === "credentials" ? undefined : () => void submit()}
+              retryLabel="Try again"
+            />
+          </View>
+        ) : null}
 
         <View style={styles.actions}>
           <Button
-            label="Sign in"
-            disabled
-            accessibilityHint="Disabled until the native auth endpoint is approved"
+            label={submitting ? "Signing in" : "Sign in"}
+            loading={submitting}
+            disabled={!canSubmit}
+            onPress={() => void submit()}
+            accessibilityHint="Signs in to your Viewrr account"
           />
-          <Button
-            label="Preview the home shell"
-            variant="outline"
-            onPress={() => signInPlaceholder()}
-            accessibilityHint="Opens the authenticated shell with placeholder data"
-          />
-          {canSubmit ? (
-            <Text style={[styles.ready, { color: colors.mutedForeground }]}>
-              Form validation passes — submit path intentionally off.
-            </Text>
-          ) : null}
         </View>
       </KeyboardAvoidingView>
     </Screen>
@@ -153,9 +184,5 @@ const styles = StyleSheet.create({
     marginTop: "auto",
     paddingBottom: spacing[4],
     gap: spacing[3],
-  },
-  ready: {
-    ...typography.caption,
-    textAlign: "center",
   },
 });

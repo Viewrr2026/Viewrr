@@ -1,19 +1,19 @@
 import { API_BASE_URL, API_PREFIX, API_TIMEOUT_MS } from "@/config/env";
 import { ApiError, kindForStatus } from "@/api/errors";
+import { getToken } from "@/session/tokenStore";
 
 /**
- * Viewrr Mobile API client — FOUNDATION ONLY.
+ * Viewrr Mobile API client.
  *
- * Deliberate boundaries for Alpha 0.1:
+ * Deliberate boundaries:
  *   • Absolute base URL only. Never same-origin/relative like the web client.
  *   • `credentials` is NOT set. Cookie-based `vr_sess` auth is a web-only
- *     security model (HttpOnly + SameSite=Strict) and stays that way.
- *   • No Authorization header is attached, because no native credential exists
- *     yet. Native auth will arrive via a separate reviewed native-auth endpoint
- *     and Bearer architecture — see `attachCredential` below, which is the ONLY
- *     seam that should change when that lands.
- *
- * Do not add authenticated calls to this file until that endpoint is approved.
+ *     security model (HttpOnly + SameSite=Strict) and stays that way — this
+ *     client never sends or receives that cookie.
+ *   • Native auth is Bearer-only, per PRD-019. `attachCredential` below is the
+ *     single seam that reads the stored credential; nothing else in the app
+ *     knows how it is stored.
+ *   • Tokens are never logged and never placed in an ApiError.
  */
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
@@ -26,18 +26,32 @@ export type RequestOptions = {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /**
+   * Skip the Authorization header. Used by the login endpoint, which must be
+   * callable while a stale credential is still in storage.
+   */
+  anonymous?: boolean;
 };
 
 /**
- * Credential seam. Returns no headers today, by design.
- *
- * When native auth is approved this becomes the single place that reads the
- * stored Bearer credential (expo-secure-store) and returns
- * `{ Authorization: "Bearer <token>" }`. Nothing else in the app should know
- * how credentials are stored.
+ * Credential seam — the single place a stored credential becomes a header.
+ * Reads from expo-secure-store (see session/tokenStore).
  */
 async function attachCredential(): Promise<Record<string, string>> {
-  return {};
+  const token = await getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * Global 401 hook. SessionProvider registers here at mount so any authenticated
+ * request that meets a revoked or expired session clears secure storage and
+ * returns the user to sign-in, regardless of which screen made the call.
+ */
+type UnauthorizedHandler = () => void;
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
 }
 
 function buildUrl(path: string, query?: Query): string {
@@ -57,7 +71,15 @@ function buildUrl(path: string, query?: Query): string {
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, query, headers = {}, signal, timeoutMs = API_TIMEOUT_MS } = options;
+  const {
+    method = "GET",
+    body,
+    query,
+    headers = {},
+    signal,
+    timeoutMs = API_TIMEOUT_MS,
+    anonymous = false,
+  } = options;
 
   const url = buildUrl(path, query);
   const controller = new AbortController();
@@ -74,7 +96,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       headers: {
         Accept: "application/json",
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-        ...(await attachCredential()),
+        ...(anonymous ? {} : await attachCredential()),
         ...headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -94,13 +116,28 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
   if (!response.ok) {
     let detail = response.statusText;
+    let payload: unknown;
     try {
       const text = await response.text();
-      if (text) detail = text.slice(0, 300);
+      if (text) {
+        detail = text.slice(0, 300);
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          // non-JSON error body (HTML proxy page, empty) — detail is enough
+        }
+      }
     } catch {
       // body already consumed or unreadable — status alone is enough
     }
-    throw new ApiError(kindForStatus(response.status), detail, url, response.status);
+
+    // A 401 on an authenticated request means the session is gone server-side.
+    // The login endpoint's own 401 (bad credentials) must not sign anyone out.
+    if (response.status === 401 && !anonymous) {
+      unauthorizedHandler?.();
+    }
+
+    throw new ApiError(kindForStatus(response.status), detail, url, response.status, payload);
   }
 
   if (response.status === 204) return undefined as T;

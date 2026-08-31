@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type Ref } from "react";
 import { Platform, StyleSheet, Text, TextInput, View, type TextInputProps } from "react-native";
 
 import { control, radii, spacing, typography, useTheme } from "@/theme";
@@ -16,9 +16,14 @@ type TextFieldProps = TextInputProps & {
   label: string;
   helperText?: string;
   errorText?: string;
+  /**
+   * Forwarded to the underlying TextInput so a form can move focus between
+   * fields (React 19 passes `ref` to function components as a normal prop).
+   */
+  ref?: Ref<TextInput>;
 };
 
-export function TextField({ label, helperText, errorText, style, ...inputProps }: TextFieldProps) {
+export function TextField({ label, helperText, errorText, style, ref, ...inputProps }: TextFieldProps) {
   const { colors } = useTheme();
   const [focused, setFocused] = useState(false);
   const hasError = Boolean(errorText);
@@ -29,6 +34,7 @@ export function TextField({ label, helperText, errorText, style, ...inputProps }
     <View style={styles.wrapper}>
       <Text style={[styles.label, { color: colors.mutedForeground }]}>{label.toUpperCase()}</Text>
       <TextInput
+        ref={ref}
         {...inputProps}
         onFocus={(event) => {
           setFocused(true);

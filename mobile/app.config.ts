@@ -128,6 +128,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         },
       },
     ],
+    // PRD-019 native auth: the Bearer token is held in the iOS Keychain /
+    // Android Keystore via expo-secure-store. Never AsyncStorage.
+    "expo-secure-store",
   ],
   experiments: {
     typedRoutes: true,
