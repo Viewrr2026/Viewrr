@@ -8,6 +8,8 @@ export const users = pgTable("users", {
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash"),
+  // PRD-019: password algorithm discriminator ('sha256_v1' | 'argon2id')
+  passwordAlgo: text("password_algo").notNull().default("sha256_v1"),
   phone: text("phone"),
   role: text("role").notNull().default("freelancer"), // "freelancer" | "client"
   accountSubtype: text("account_subtype").default("sole"), // "sole" | "agency_owner" | "agency_member"
@@ -871,3 +873,21 @@ export const projectStageEvents = pgTable("project_stage_events", {
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 export type ProjectStageEvent = typeof projectStageEvents.$inferSelect;
+
+// ─── Auth Sessions (PRD-019) ──────────────────────────────────────────────────
+export const authSessions = pgTable("auth_sessions", {
+  id: serial("id").primaryKey(),
+  sessionId: text("session_id").notNull().unique(),    // public UUID; safe to log
+  userId: integer("user_id").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),    // SHA-256(rawToken); raw NEVER stored
+  clientType: text("client_type").notNull().default("web"), // 'web' | 'mobile'
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  idleExpiresAt: timestamp("idle_expires_at", { withTimezone: true }),  // mobile only
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  revokedReason: text("revoked_reason"),  // 'logout'|'password_reset'|'user_deleted'
+});
+
+export type AuthSession = typeof authSessions.$inferSelect;
+export type InsertAuthSession = typeof authSessions.$inferInsert;

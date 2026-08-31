@@ -62,7 +62,7 @@ export function log(message: string, source = "express") {
 // Phase 1 will introduce structured request-ID logging as the auth model matures.
 const LOG_REDACTED_KEYS = new Set([
   "passwordHash", "password_hash", "password", "newPassword",
-  "token", "resetToken", "refreshToken",
+  "token", "resetToken", "refreshToken", "rawToken", "tokenHash", "token_hash",
   "cookie", "authorization", "SESSION_SECRET",
   "stripeSecretKey", "webhookSecret", "STRIPE_SECRET_KEY",
   "clientSecret",  // Stripe PaymentIntent secret — must never be logged

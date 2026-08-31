@@ -40,10 +40,19 @@ import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import {
-  SESSION_COOKIE_NAME, SESSION_TTL_MS,
-  getSessionSecret, issueSessionToken, verifySessionToken,
+  SESSION_COOKIE_NAME,
   setSessionCookie, clearSessionCookie,
 } from "./session";
+import {
+  requireAuth, requireAdminGuard, requireBrowserOrigin,
+} from "./auth-middleware";
+import {
+  createWebSession, createMobileSession,
+  findSessionByToken, isSessionValid, revokeSession, revokeAllUserSessions,
+} from "./auth-sessions";
+import {
+  verifyPassword, migratePasswordIfLegacy, hashPasswordArgon2id,
+} from "./password-service";
 
 import multer from "multer";
 import path from "path";
@@ -59,11 +68,8 @@ const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
 const VIEWRR_FEE_PERCENT = 11; // 11% platform fee
 const APP_BASE_URL = process.env.APP_BASE_URL ?? "https://www.viewrr.co.uk";
 
-// Simple password hashing using SHA-256 + salt (no bcrypt needed for this use case)
-// NOTE(PRD-016A Phase 1): Replace with Argon2id before mobile launch.
-function hashPassword(password: string): string {
-  return crypto.createHash("sha256").update(password + "viewrr_salt_2026").digest("hex");
-}
+// PRD-019: hashPassword removed — Argon2id used via password-service.ts.
+// Legacy SHA-256 verification is handled inside password-service.verifyPassword().
 
 // ─── P0-02: Safe user DTO ────────────────────────────────────────────────────
 // NEVER return the raw DB user row to any client. passwordHash must never appear
@@ -71,7 +77,7 @@ function hashPassword(password: string): string {
 function safeUserDto(user: any): Record<string, any> {
   if (!user) return user;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { passwordHash, password_hash, ...safe } = user as any;
+  const { passwordHash, password_hash, passwordAlgo, password_algo, ...safe } = user as any;
   return safe;
 }
 
@@ -83,65 +89,16 @@ function safePublicProfile(profile: any): Record<string, any> {
   return safe;
 }
 
-// ─── P0-04: Admin Guard — session-cookie authenticated (Phase 0) ─────────────
-// Caller identity is derived ENTIRELY from the HMAC-verified session cookie.
-// req.body.userId and req.query.userId are IGNORED for admin authorisation.
-// Attack surface: attacker knowing userId=22 gets 401 (no valid cookie).
-// Ordinary logged-in user gets 403 (cookie valid, but isAdmin=false in DB).
-// SESSION_SECRET-signed tokens provide caller authentication — no separate guard secret needed.
-// Phase 1 adds DB token revocation for forced logout.
-async function requireAdminGuard(req: Request, res: Response, next: NextFunction): Promise<void> {
-  // Step 1: Must present a valid, unexpired HMAC session cookie.
-  const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
-  if (!rawCookie) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-  let secret: string;
-  try { secret = getSessionSecret(); } catch {
-    res.status(503).json({ error: "Admin routes unavailable — server misconfigured." });
-    return;
-  }
-  const session = verifySessionToken(rawCookie);
-  if (!session) {
-    clearSessionCookie(res); // clear stale/forged cookie
-    res.status(401).json({ error: "Session expired or invalid. Please sign in again." });
-    return;
-  }
-  // Step 2: DB lookup by userId from VERIFIED token — client cannot forge this.
-  const user = await storage.getUser(session.userId).catch(() => undefined);
-  if (!user) { res.status(401).json({ error: "Authentication required." }); return; }
-  if (!user.isAdmin) { res.status(403).json({ error: "Forbidden." }); return; }
-  req.auth = { userId: session.userId, adminUser: user };
-  next();
-}
-
-// ─── A0: Caller-Identity Guard ────────────────────────────────────────────────
-// Reuses Phase 0 HMAC session cookie (vr_sess) exclusively.
-// Sets req.auth!.userId from the VERIFIED token — body/query identity values
-// for the CALLER are IGNORED for authentication on all A0-guarded routes.
-// Phase 1 (Batch A) replaces this with a DB-backed verifySessionV2 + revocation.
-async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
-  if (!rawCookie) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-  const session = verifySessionToken(rawCookie);
-  if (!session) {
-    clearSessionCookie(res);
-    res.status(401).json({ error: "Session expired or invalid. Please sign in again." });
-    return;
-  }
-  req.auth = { userId: session.userId };
-  next();
-}
+// PRD-019: requireAuth and requireAdminGuard are now imported from auth-middleware.ts.
+// The local copies above have been removed. All existing usages in this file
+// continue to work via the imports added at the top of the file.
 
 import { Resend } from "resend";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-// In-memory store for verification codes (email -> { code, expires })
+// PRD-019 C13: In-memory verification code store (not DB-backed — out of scope).
+// Codes generated with crypto.randomInt (CSPRNG — replaces Math.random()).
 const verificationCodes = new Map<string, { code: string; expires: number }>();
 import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema, insertBriefInterestSchema, insertAgencySchema, insertAgencyMemberSchema } from "@shared/schema";
 
@@ -233,10 +190,12 @@ async function notify(data: Parameters<typeof storage.createNotification>[0]) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
-  // P0-04: Parse cookies so HMAC session tokens are accessible via req.cookies
+  // P0-04: Parse cookies so session tokens are accessible via req.cookies
   app.use(cookieParser());
+  // PRD-019: Origin validation defence-in-depth (CSRF mitigation for cookie-auth unsafe methods)
+  app.use(requireBrowserOrigin);
   // ─── Version / health ─────────────────────────────────────────────────────
-  // ─── P0-07: Rate limiting (Phase 0 emergency) ─────────────────────────────
+  // ─── P0-07: Rate limiting ──────────────────────────────────────────────────
   const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10,
@@ -295,10 +254,27 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     standardHeaders: true,
     legacyHeaders: false,
   });
+  // PRD-019 C13: Rate limiter for verify-code (brute-force protection)
+  const verifyCodeLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000, // 10 minutes
+    max: 10, // max 10 attempts per 10 min per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many verification attempts. Please try again later." },
+  });
+  // PRD-019: Rate limiter for registration (account creation spam prevention)
+  const registerLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many accounts created from this address. Please wait." },
+  });
 
   app.get("/api/version", (_req, res) => res.json({ version: "2026-05-11-agency", features: ["agency", "accountSubtype"] }));
 
-  // ─── Auth (simple demo auth by email) ─────────────────────────────────────
+  // ─── Auth ─────────────────────────────────────────────────────────────────
+  // PRD-019: Web login — issues DB-backed opaque cookie, never raw token in body.
   // P0-01: Null-password path closed | P0-02: safeUserDto | P0-07: loginLimiter
   app.post("/api/auth/login", loginLimiter, async (req, res) => {
     const { email, password } = req.body;
@@ -306,7 +282,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const user = await storage.getUserByEmail(email);
     if (!user) return res.status(401).json({ error: "Invalid email or password." });
 
-    // P0-01: Accounts with no password hash must never authenticate silently.
     if (!user.passwordHash) {
       return res.status(401).json({
         error: "This account does not have a password set. Please use 'Forgot password' to create one.",
@@ -314,8 +289,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       });
     }
     if (!password) return res.status(401).json({ error: "Password required." });
-    const hash = hashPassword(password);
-    if (hash !== user.passwordHash) return res.status(401).json({ error: "Invalid email or password." });
+
+    // PRD-019: Verify password (legacy SHA-256 or Argon2id)
+    const { valid, wasLegacy } = await verifyPassword(password, user.passwordHash);
+    if (!valid) return res.status(401).json({ error: "Invalid email or password." });
+
+    // PRD-019: Opportunistic Argon2id migration (fire-and-forget; never blocks login)
+    if (wasLegacy) {
+      migratePasswordIfLegacy(user.id, password).catch((e: any) =>
+        console.warn("[login] Password migration failed (non-fatal):", e?.message)
+      );
+    }
 
     let profile = user.role === "freelancer" ? await storage.getProfileByUserId(user.id) : null;
     if (user.role === "freelancer" && !profile) {
@@ -331,28 +315,62 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         console.warn("[login] Could not auto-create missing profile:", e.message);
       }
     }
-    // P0-02: Strip passwordHash before response. Never return raw DB row.
-    // P0-04: Issue HttpOnly HMAC session cookie — caller identity is now server-authoritative.
-    setSessionCookie(res, user.id);
+    // PRD-019: Issue DB-backed opaque cookie. Raw token NEVER returned in JSON.
+    const { rawToken } = await createWebSession(user.id);
+    res.cookie(SESSION_COOKIE_NAME, rawToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 8 * 60 * 60 * 1000,
+      path: "/",
+    });
     res.json({ user: safeUserDto(user), profile });
   });
 
-  app.post("/api/auth/register", async (req, res) => {
+  // PRD-019: Mobile login — separate endpoint; returns raw Bearer token in body once.
+  app.post("/api/auth/mobile/login", loginLimiter, async (req, res) => {
+    const { email, password } = req.body;
+    if (!email) return res.status(400).json({ error: "Email required" });
+    const user = await storage.getUserByEmail(email);
+    if (!user) return res.status(401).json({ error: "Invalid email or password." });
+    if (!user.passwordHash) {
+      return res.status(401).json({
+        error: "This account does not have a password set. Please use 'Forgot password' to create one.",
+        code: "NO_PASSWORD_SET",
+      });
+    }
+    if (!password) return res.status(401).json({ error: "Password required." });
+
+    const { valid, wasLegacy } = await verifyPassword(password, user.passwordHash);
+    if (!valid) return res.status(401).json({ error: "Invalid email or password." });
+
+    if (wasLegacy) {
+      migratePasswordIfLegacy(user.id, password).catch((e: any) =>
+        console.warn("[mobile/login] Password migration failed (non-fatal):", e?.message)
+      );
+    }
+    // PRD-019: Mobile session — Bearer token in body; NO cookie.
+    const { rawToken } = await createMobileSession(user.id);
+    res.json({ user: safeUserDto(user), token: rawToken });
+  });
+
+  // PRD-019: Registration — Argon2id for new hashes; DB-backed session; registerLimiter.
+  app.post("/api/auth/register", registerLimiter, async (req, res) => {
     try {
       const { name, email, role, phone, password } = req.body;
       if (!name || !email || !role) return res.status(400).json({ error: "Name, email and role are required" });
-      // P0-PRIV: Only permitted public roles. Prevents role=admin/payments_manager injection.
       const ALLOWED_ROLES = ["freelancer", "client"];
       if (!ALLOWED_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role" });
       const existing = await storage.getUserByEmail(email);
       if (existing) return res.status(409).json({ error: "Email already registered" });
-      // P0-PRIV: Never set isAdmin from request — always defaults to false in DB.
-      const userData: any = { name, email, role };
+      const userData: any = { name, email, role, passwordAlgo: "sha256_v1" };
       if (phone) userData.phone = phone;
-      if (password) userData.passwordHash = hashPassword(password);
+      if (password) {
+        userData.passwordHash = await hashPasswordArgon2id(password);
+        userData.passwordAlgo = "argon2id";
+      }
       const user = await storage.createUser(userData);
 
-      // Auto-create a profile row for freelancers so their dashboard loads correctly
       let profile = null;
       if (role === "freelancer") {
         try {
@@ -372,23 +390,80 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             isPro: 0,
           });
         } catch (profileErr: any) {
-          // Non-fatal — user is still created
           console.warn("[register] Could not auto-create profile:", profileErr.message);
         }
       }
 
-      // P0-04: Issue session cookie on registration
-      setSessionCookie(res, user.id);
-      res.json({ user: safeUserDto(user), profile }); // P0-02
+      // PRD-019: DB-backed session cookie on registration
+      const { rawToken } = await createWebSession(user.id);
+      res.cookie(SESSION_COOKIE_NAME, rawToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "strict",
+        maxAge: 8 * 60 * 60 * 1000,
+        path: "/",
+      });
+      res.json({ user: safeUserDto(user), profile });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  // ─── P0-04: Logout ────────────────────────────────────────────────────────
-  app.post("/api/auth/logout", (req, res) => {
+  // PRD-019: Revocable logout — D5 rules.
+  app.post("/api/auth/logout", async (req, res) => {
+    const bearerHeader = req.headers["authorization"];
+    const cookieValue  = req.cookies?.[SESSION_COOKIE_NAME];
+    const hasBearerHeader = (bearerHeader ?? "").startsWith("Bearer ");
+
+    const bearerSession = hasBearerHeader
+      ? await findSessionByToken(bearerHeader!.slice(7))
+      : null;
+    const cookieSession = cookieValue
+      ? await findSessionByToken(cookieValue)
+      : null;
+
+    if (bearerSession && cookieSession) {
+      if (bearerSession.userId !== cookieSession.userId) {
+        return res.status(401).json({ error: "Conflicting authentication credentials.", code: "AUTH_CONFLICT" });
+      }
+      await revokeSession(bearerSession.sessionId, "logout");
+      await revokeSession(cookieSession.sessionId, "logout");
+      clearSessionCookie(res);
+      return res.json({ ok: true });
+    }
+    if (bearerSession) {
+      if (isSessionValid(bearerSession)) await revokeSession(bearerSession.sessionId, "logout");
+      return res.json({ ok: true });
+    }
+    if (cookieSession) {
+      if (isSessionValid(cookieSession)) await revokeSession(cookieSession.sessionId, "logout");
+      clearSessionCookie(res);
+      return res.json({ ok: true });
+    }
+    // Legacy HMAC drain: clear cookie; server-side revocation impossible for HMAC tokens
     clearSessionCookie(res);
-    res.json({ ok: true });
+    return res.json({ ok: true });
+  });
+
+  // PRD-019: /api/auth/me
+  app.get("/api/auth/me", requireAuth, async (req, res) => {
+    const user = await storage.getUser(req.auth!.userId);
+    if (!user) {
+      clearSessionCookie(res);
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    return res.json({
+      authenticated: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        avatar: user.avatar ?? null,
+        isAdmin: user.isAdmin,
+        sessionType: req.auth!.clientType ?? "web",
+      },
+    });
   });
 
   // ─── Email Verification ───────────────────────────────────────────────────
@@ -398,7 +473,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     console.log(`[verify] Request received for: ${email}`);
     if (!email) return res.status(400).json({ error: "Email required" });
 
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = String(crypto.randomInt(100000, 1000000));
     verificationCodes.set(email.toLowerCase(), { code, expires: Date.now() + 10 * 60 * 1000 }); // 10 min expiry
 
     if (!resend) {
@@ -461,7 +536,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const { phone, email } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number required" });
 
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = String(crypto.randomInt(100000, 1000000));
     verificationCodes.set(phone.replace(/\s+/g, ""), { code, expires: Date.now() + 10 * 60 * 1000 });
 
     if (!resend || !email) {
@@ -503,7 +578,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.post("/api/auth/verify-code", async (req, res) => {
+  // PRD-019 C13: verifyCodeLimiter applied (10/10min/IP — brute-force protection)
+  app.post("/api/auth/verify-code", verifyCodeLimiter, async (req, res) => {
     const { email, phone, code } = req.body;
     const key = phone ? phone.replace(/\s+/g, "") : email?.toLowerCase();
     if (!key || !code) return res.status(400).json({ error: "Email or phone and code required" });
@@ -589,14 +665,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const tokenHash = crypto.createHash("sha256").update(String(token)).digest("hex");
       // P0-05: Atomic transaction — token consumption and password update committed together.
-      // SELECT...FOR UPDATE row lock: concurrent attempts race; only the first wins.
-      const result = await storage.atomicConsumeTokenAndResetPassword(tokenHash, hashPassword(newPassword));
+      // PRD-019: Password reset uses Argon2id; revokes all active DB sessions for that user.
+      const newHash = await hashPasswordArgon2id(newPassword);
+      const result = await storage.atomicConsumeTokenAndResetPassword(tokenHash, newHash);
       if (!result.ok) {
         const msg = result.reason === "used"
           ? "This reset link has already been used. Please request a new one."
           : "Invalid or expired reset link. Please request a new one.";
         return res.status(400).json({ error: msg });
       }
+      // PRD-019: Revoke all active DB-backed sessions after password reset.
+      const successResult = result as { ok: true; userId: number };
+      await revokeAllUserSessions(successResult.userId, "password_reset");
       res.json({ ok: true, message: "Password updated successfully. You can now sign in." });
     } catch (e: any) {
       console.error("[reset-password] Error:", e.message);
