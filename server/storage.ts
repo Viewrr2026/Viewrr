@@ -526,7 +526,7 @@ export interface IStorage {
   getPasswordResetToken(tokenHash: string): Promise<{ id: number; userId: number; expiresAt: string; usedAt: string | null } | null>;
   markPasswordResetTokenUsed(id: number): Promise<void>;
   atomicConsumeTokenAndResetPassword(tokenHash: string, newPasswordHash: string): Promise<
-    { ok: true } | { ok: false; reason: "not_found" | "used" | "expired" }
+    { ok: true; userId: number } | { ok: false; reason: string }
   >;
 
   // Profiles
@@ -836,9 +836,10 @@ class Storage implements IStorage {
       if (record.usedAt)                          { await sql`ROLLBACK`; return { ok: false, reason: "used" };      }
       if (new Date(record.expiresAt) < new Date()){ await sql`ROLLBACK`; return { ok: false, reason: "expired" };   }
       await sql`UPDATE password_reset_tokens SET used_at = NOW()::text WHERE id = ${record.id}`;
-      await sql`UPDATE users SET password_hash = ${newPasswordHash} WHERE id = ${record.userId}`;
+      // PRD-019: Also update password_algo to 'argon2id' when resetting password
+      await sql`UPDATE users SET password_hash = ${newPasswordHash}, password_algo = 'argon2id' WHERE id = ${record.userId}`;
       await sql`COMMIT`;
-      return { ok: true };
+      return { ok: true, userId: record.userId as number };
     } catch (e) {
       try { await sql`ROLLBACK`; } catch {}
       throw e;

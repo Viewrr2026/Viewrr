@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useState, useEffect } from "react";
 import type { User } from "@shared/schema";
 import { safeGet, safeSet, safeRemove } from "@/lib/storage";
 
@@ -43,6 +43,37 @@ function loadStoredUser(): User | null {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(loadStoredUser);
 
+  // PRD-019: Validate session against server on mount.
+  // If the server-side session is expired or revoked, clear localStorage and sign out.
+  useEffect(() => {
+    // Only validate if we have a locally stored user (i.e. think we're logged in)
+    const storedUser = loadStoredUser();
+    if (!storedUser) return;
+
+    fetch("/api/auth/me", { credentials: "include" })
+      .then(async (res) => {
+        if (res.status === 401) {
+          // Server-side session is gone — clear local state
+          setUser(null);
+          safeRemove(AUTH_KEY);
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.user) {
+            // Refresh local user object from server (role/name may have changed)
+            const refreshed = { ...storedUser, ...data.user };
+            setUser(refreshed);
+            try { safeSet(AUTH_KEY, JSON.stringify(refreshed)); } catch {}
+          }
+        }
+      })
+      .catch(() => {
+        // Network error — keep existing user; don't sign out (offline tolerance)
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function login(u: User) {
     setUser(u);
     try { safeSet(AUTH_KEY, JSON.stringify(u)); } catch {}
@@ -51,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   function logout() {
     setUser(null);
     safeRemove(AUTH_KEY);
-    // P0-04: Tell the server to clear the HttpOnly session cookie
+    // PRD-019: Tell the server to revoke the DB session (cookie or Bearer)
     fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
   }
 

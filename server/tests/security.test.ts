@@ -542,3 +542,45 @@ describe("R: Rating validation checks are present on review route", () => {
     assert.equal(res.status, 401);
   });
 });
+
+// ─── PRD-019 Extension: T13, T14, T19 security regressions ──────────────────
+
+describe("PRD-019 T13: mobile/login — no cookie in response", () => {
+  it("T13-SEC: /api/auth/mobile/login must not issue a Set-Cookie", async () => {
+    const res = await post("/api/auth/mobile/login", {
+      email: "anon@nonexistent.co.uk",
+      password: "WrongPassword!",
+    });
+    // Even a failed response must not set a session cookie
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    assert.ok(!setCookie.includes("viewrr_session="), "mobile/login must never set a session cookie");
+  });
+});
+
+describe("PRD-019 T14: mobile/login wrong password — no token", () => {
+  it("T14-SEC: wrong password must not return a token", async () => {
+    const res = await post("/api/auth/mobile/login", {
+      email: "anon@nonexistent.co.uk",
+      password: "WrongPassword!",
+    });
+    assert.equal(res.status, 401);
+    const body = await res.json().catch(() => ({}));
+    assert.ok(!body.token, "No token on failed mobile login");
+  });
+});
+
+describe("PRD-019 T19: registration — no raw token in body", () => {
+  it("T19-SEC: register response body must never include a raw token", async () => {
+    const res = await post("/api/auth/register", {
+      name: "Security Test",
+      email: `sec_t19_${Date.now()}@viewrr-test.co.uk`,
+      role: "client",
+      password: "SecureTestPassword1!",
+    });
+    // Accept 200 (created), 409 (duplicate — test ran twice), or 429 (rate-limited)
+    if ([409, 429, 503].includes(res.status)) return;
+    const body = await res.json().catch(() => ({}));
+    assert.ok(!body.token, "No raw token in registration response");
+    assert.ok(!body.rawToken, "No rawToken in registration response");
+  });
+});
