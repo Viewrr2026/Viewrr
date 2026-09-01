@@ -154,6 +154,9 @@ export const api = {
     request<T>(path, { ...options, method: "GET" }),
   post: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, "method" | "body">) =>
     request<T>(path, { ...options, method: "POST", body }),
+  /** PATCH is the verb the notification and profile endpoints use. */
+  patch: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, "method" | "body">) =>
+    request<T>(path, { ...options, method: "PATCH", body }),
 };
 
 /** Exposed for diagnostics screens only. */

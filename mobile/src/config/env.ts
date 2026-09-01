@@ -54,3 +54,14 @@ export const envSummary = {
   appEnv: APP_ENV,
   apiBaseUrl: API_BASE_URL,
 } as const;
+
+/**
+ * Public marketing site. Legal documents live on the web, not in the app, so
+ * screens link here instead of hardcoding an environment URL of their own.
+ */
+export const PUBLIC_SITE_URL = "https://www.viewrr.co.uk";
+
+export const LEGAL_URLS = {
+  privacy: `${PUBLIC_SITE_URL}/privacy`,
+  terms: `${PUBLIC_SITE_URL}/terms`,
+} as const;
