@@ -20,7 +20,8 @@ export type JobType =
   | "reconcile_payment"
   | "generate_finance_summary"
   | "generate_receipt"
-  | "process_retainer_cycle";
+  | "process_retainer_cycle"
+  | "process_account_deletion";
 
 export type JobStatus =
   | "queued"
@@ -41,6 +42,7 @@ const MAX_ATTEMPTS: Record<JobType, number> = {
   generate_finance_summary: 3,
   generate_receipt: 3,
   process_retainer_cycle: 3,
+  process_account_deletion: 5,
 };
 
 // Exponential backoff: attempt 1→30s, 2→2m, 3→8m, 4→30m, 5+→2h

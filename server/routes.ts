@@ -7086,8 +7086,193 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  // Account deletion executor.
+  //
+  // Only password-confirmed requests ever reach state='scheduled'.
+  // The scanner is deliberately separate from queue retry/backoff:
+  // contractual/financial blockers can last days or weeks, whereas retries
+  // are reserved for real processing failures.
+  registerJobHandler("process_account_deletion", async (payload, attemptCount) => {
+    const userId = Number(payload.userId);
+    const requestId = Number(payload.requestId);
+
+    if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(requestId) || requestId <= 0) {
+      throw new Error("Invalid account deletion job payload");
+    }
+
+    const sqlClient = neon(process.env.DATABASE_URL!);
+
+    const rows = await sqlClient`
+      SELECT id, user_id, state, status, scheduled_for
+      FROM account_deletion_requests
+      WHERE id = ${requestId} AND user_id = ${userId}
+      LIMIT 1
+    `;
+
+    if (!rows.length) return;
+
+    const currentState = String(rows[0].state ?? rows[0].status ?? "");
+
+    // A retry after partial anonymisation may find that the request itself was
+    // already marked anonymised before another cleanup step failed. The
+    // anonymisation service is idempotent, so allow that SAME durable job to
+    // retry and finish the remaining cleanup.
+    const recoveringPartial =
+      currentState === "anonymised" && attemptCount > 1;
+
+    if (
+      currentState !== "scheduled" &&
+      currentState !== "processing" &&
+      !recoveringPartial
+    ) {
+      return;
+    }
+
+    // scheduled -> processing is an atomic claim. A request already in
+    // processing is treated as recovery from an interrupted worker run.
+    if (currentState === "scheduled") {
+      const claimed = await sqlClient`
+        UPDATE account_deletion_requests
+        SET state = 'processing', status = 'processing'
+        WHERE id = ${requestId}
+          AND user_id = ${userId}
+          AND state = 'scheduled'
+        RETURNING id
+      `;
+
+      if (!claimed.length) return;
+    }
+
+    try {
+      if (!recoveringPartial) {
+        // Re-check obligations AFTER claiming and immediately before the
+        // irreversible anonymisation step.
+        const assessment = await checkDeletionBlockers(userId);
+
+        if (assessment.state === "scheduled") {
+          await sqlClient`
+            UPDATE account_deletion_requests
+            SET state = 'scheduled', status = 'scheduled'
+            WHERE id = ${requestId} AND user_id = ${userId}
+          `;
+
+          const scheduledAt = rows[0].scheduled_for
+            ? new Date(rows[0].scheduled_for).getTime()
+            : null;
+
+          if (
+            scheduledAt !== null &&
+            Number.isFinite(scheduledAt) &&
+            scheduledAt <= Date.now()
+          ) {
+            console.warn(
+              `[account-deletion] Request ${requestId} for user ${userId} is past scheduled_for but blockers remain; founder review required`,
+            );
+          }
+
+          return;
+        }
+      }
+
+      const report = await anonymiseUserAccount(userId);
+
+      if (report.skippedSteps.length) {
+        console.warn(
+          `[account-deletion] user ${userId}: skipped anonymisation steps`,
+          report.skippedSteps,
+        );
+      }
+
+      console.log(
+        `[account-deletion] Completed scheduled deletion request ${requestId} for user ${userId}`,
+      );
+    } catch (e: any) {
+      // Put the request back into a recoverable state. The anonymisation
+      // routine is intentionally idempotent, so both queue retry/backoff and
+      // a later hourly scan can safely finish a partial run.
+      try {
+        await sqlClient`
+          UPDATE account_deletion_requests
+          SET state = 'scheduled', status = 'scheduled'
+          WHERE id = ${requestId} AND user_id = ${userId}
+        `;
+      } catch (resetErr: any) {
+        console.error(
+          `[account-deletion] Could not restore request ${requestId} to scheduled after failure:`,
+          resetErr?.message,
+        );
+      }
+
+      throw e;
+    }
+  });
+
+  const scanScheduledAccountDeletions = async () => {
+    const sqlClient = neon(process.env.DATABASE_URL!);
+
+    try {
+      // Include 'processing' so an interrupted Render process cannot strand a
+      // confirmed deletion permanently. Pending/unconfirmed requests are never
+      // selected.
+      const requests = await sqlClient`
+        SELECT DISTINCT ON (user_id)
+          id, user_id, state, requested_at
+        FROM account_deletion_requests
+        WHERE state IN ('scheduled', 'processing')
+        ORDER BY user_id, requested_at DESC, id DESC
+      `;
+
+      const hourBucket = new Date().toISOString().slice(0, 13);
+
+      for (const request of requests) {
+        const userId = Number(request.user_id);
+        const requestId = Number(request.id);
+
+        if (
+          !Number.isInteger(userId) ||
+          userId <= 0 ||
+          !Number.isInteger(requestId) ||
+          requestId <= 0
+        ) {
+          continue;
+        }
+
+        try {
+          // requestId is part of the dedupe key so separate deletion requests
+          // for the same account can never collide.
+          await enqueueJob(
+            "process_account_deletion",
+            { userId, requestId },
+            `account-deletion:${requestId}:${hourBucket}`,
+          );
+        } catch (e: any) {
+          console.error(
+            `[account-deletion] Scanner failed for request ${requestId}:`,
+            e?.message,
+          );
+        }
+      }
+    } catch (e: any) {
+      console.error(
+        "[account-deletion] Scheduled deletion scan failed:",
+        e?.message,
+      );
+    }
+  };
+
   // Start the worker (non-blocking)
   startWorker();
+
+  // Check confirmed scheduled deletions on startup and then hourly.
+  // An hour is sufficiently responsive for account deletion while avoiding
+  // unnecessary production DB traffic.
+  setImmediate(() => {
+    void scanScheduledAccountDeletions();
+  });
+
+  setInterval(() => {
+    void scanScheduledAccountDeletions();
+  }, 60 * 60 * 1000);
 
   // WS-A: Recover stale stripe events on startup (async, non-blocking)
   setImmediate(async () => {
