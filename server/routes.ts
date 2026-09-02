@@ -122,6 +122,22 @@ function safePublicProfile(profile: any): Record<string, any> {
   return safe;
 }
 
+// Public marketplace/profile identity.
+// ALLOW-LIST: adding a new users column can never expose it publicly by default.
+function safePublicUser(user: any): Record<string, any> {
+  if (!user) return user;
+  return {
+    id: user.id,
+    name: user.name,
+    avatar: user.avatar ?? null,
+    banner: user.banner ?? null,
+    headline: user.headline ?? null,
+    bio: user.bio ?? null,
+    location: user.location ?? null,
+    role: user.role,
+  };
+}
+
 // PRD-019: requireAuth and requireAdminGuard are now imported from auth-middleware.ts.
 // The local copies above have been removed. All existing usages in this file
 // continue to work via the imports added at the top of the file.
@@ -1421,6 +1437,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     // PRD-018 E2: strip accreditation fields from public list
     res.json(profiles.map((p: any) => ({
       ...p,
+      user: safePublicUser(p.user),
       profile: { ...safePublicProfile(p.profile), projectCount: countMap.get(p.profile.userId) ?? 0 },
     })));
   });
@@ -1434,6 +1451,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     // too — reuse the same safePublicProfile helper as GET /api/profiles.
     res.json(profiles.map((p: any) => ({
       ...p,
+      user: safePublicUser(p.user),
       profile: { ...safePublicProfile(p.profile), projectCount: countMap.get(p.profile.userId) ?? 0 },
     })));
   });
@@ -1568,7 +1586,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           isPro: 0,
           proSince: null,
         },
-        user: userOnly,
+        user: safePublicUser(userOnly),
         reviews: [],
       });
     }
@@ -1579,7 +1597,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const completedProjectCount = await storage.getCompletedProjectCount(pw.profile.userId);
     const safeProfile = { ...safePublicProfile(pw.profile), projectCount: completedProjectCount };
     // PRD-018 E1: strip internal accreditation fields (safePublicProfile already applied above)
-    res.json({ ...pw, profile: safeProfile, reviews });
+    res.json({ ...pw, user: safePublicUser(pw.user), profile: safeProfile, reviews });
   });
 
   // A0-U2
@@ -2078,10 +2096,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(results);
   });
 
-  app.get("/api/users/:id", async (req, res) => {
-    const user = await storage.getUser(Number(req.params.id));
+  app.get("/api/users/:id", requireAuth, async (req, res) => {
+    const userId = Number(req.params.id);
+    if (req.auth!.userId !== userId) {
+      return res.status(403).json({ error: "Forbidden." });
+    }
+    const user = await storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "Not found" });
-    res.json(safeUserDto(user)); // P0-02
+    res.json(safeUserDto(user)); // authenticated self-account response
   });
 
   // A0-U1
