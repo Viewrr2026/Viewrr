@@ -6,8 +6,10 @@ import type { FeedItem } from "@/api/types";
 import { Avatar } from "@/components/Avatar";
 import { CommentThread } from "@/components/feed/CommentThread";
 import { PostMediaView } from "@/components/feed/PostMedia";
+import { SignInPrompt } from "@/components/SignInPrompt";
 import { parseJsonArray } from "@/lib/format";
 import { relativeTime } from "@/lib/time";
+import { useSession } from "@/session/SessionProvider";
 import { hitSlop, radii, spacing, typography, useTheme } from "@/theme";
 
 /**
@@ -30,6 +32,18 @@ import { hitSlop, radii, spacing, typography, useTheme } from "@/theme";
  * Everything present here is backed by a real endpoint. Likes are optimistic
  * with rollback, and the toggle is never auto-retried: the endpoint flips
  * rather than sets, so a blind retry would un-like the post.
+ *
+ * Interaction gating (PRD 1, Decision 1)
+ * --------------------------------------
+ * The feed is publicly readable with optional auth, so this card renders for a
+ * signed-out viewer too. Reads stay open — the author, the caption, the media,
+ * and the comment thread, whose GET is also optional-auth. The one WRITE on the
+ * card, the like, is gated: with no session the press opens SignInPrompt and
+ * fires nothing, so no like is ever optimistically painted that cannot persist.
+ * Owner-only controls simply do not render without a session.
+ *
+ * Repost is still absent, and gating does not change that: web keeps it in
+ * local state with no endpoint behind it, so there is nothing to gate.
  */
 
 type PostCardProps = {
@@ -51,10 +65,13 @@ function PostCardBase({
   onDelete,
 }: PostCardProps) {
   const { colors, shadows } = useTheme();
+  const { status } = useSession();
   const [showComments, setShowComments] = useState(false);
+  const [gatePrompt, setGatePrompt] = useState<string | null>(null);
 
+  const signedIn = status === "signed-in";
   const { post, user, liked } = item;
-  const isOwner = post.userId === viewerId;
+  const isOwner = signedIn && post.userId === viewerId;
 
   const tags = parseJsonArray(post.tags).filter(
     (tag): tag is string => typeof tag === "string" && tag.trim().length > 0,
@@ -68,6 +85,15 @@ function PostCardBase({
       { text: "Delete", style: "destructive", onPress: () => onDelete(post.id) },
     ]);
   }, [onDelete, post.id]);
+
+  const onLikePress = useCallback(() => {
+    if (!signedIn) {
+      // No request, no optimistic flip — just the gate.
+      setGatePrompt("like this post");
+      return;
+    }
+    onToggleLike(post.id);
+  }, [onToggleLike, post.id, signedIn]);
 
   return (
     <View
@@ -139,7 +165,7 @@ function PostCardBase({
 
       <View style={[styles.actions, { borderTopColor: colors.border }]}>
         <Pressable
-          onPress={() => onToggleLike(post.id)}
+          onPress={onLikePress}
           hitSlop={hitSlop}
           accessibilityRole="button"
           accessibilityLabel={liked ? "Unlike this post" : "Like this post"}
@@ -177,6 +203,12 @@ function PostCardBase({
       {showComments ? (
         <CommentThread postId={post.id} onCommentAdded={() => onCommentAdded(post.id)} />
       ) : null}
+
+      <SignInPrompt
+        visible={gatePrompt !== null}
+        action={gatePrompt ?? undefined}
+        onClose={() => setGatePrompt(null)}
+      />
     </View>
   );
 }

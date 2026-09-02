@@ -70,6 +70,15 @@ export interface IStorage {
   createMessage(data: schema.InsertMessage): Promise<schema.Message>;
   markMessagesRead(fromId: number, toId: number): Promise<void>;
   markInterestMessagesRead(interestId: number, userId: number): Promise<void>;
+  // PRD-1 wave 3 (Decisions 17, 18) — DM inbox, paging and explicit mark-read.
+  getConversationSummaries(userId: number): Promise<ConversationRow[]>;
+  getDmMessagePage(
+    userId: number,
+    otherUserId: number,
+    opts?: { after?: number; before?: number; limit?: number }
+  ): Promise<DmMessagePage>;
+  markDmMessagesRead(userId: number, otherUserId: number, upToMessageId?: number): Promise<number>;
+  getDmUnreadCount(userId: number): Promise<number>;
 
   // Saved
   getSaved(clientId: number): Promise<ProfileWithUser[]>;
@@ -101,6 +110,8 @@ export interface IStorage {
   advanceProjectStage(projectId: number, note: string, authorId: number): Promise<schema.Project | undefined>;
   addProjectUpdate(data: schema.InsertProjectUpdate): Promise<schema.ProjectUpdate>;
   getProjectUpdates(projectId: number): Promise<ProjectUpdateWithAuthor[]>;
+  // PRD-1 wave 3: the first reader for project_stage_events, merged with updates.
+  getProjectActivity(projectId: number, limit?: number): Promise<ProjectActivityItem[]>;
 
   // Retainer Cycles
   createRetainerCycle(data: schema.InsertRetainerCycle): Promise<schema.RetainerCycle>;
@@ -137,8 +148,9 @@ export interface IStorage {
 
   // Notifications
   createNotification(data: schema.InsertNotification): Promise<schema.Notification>;
-  getNotifications(recipientId: number, limit?: number): Promise<schema.Notification[]>;
-  markNotificationRead(id: number): Promise<void>;
+  getNotifications(recipientId: number, limit?: number, offset?: number): Promise<schema.Notification[]>;
+  /** PRD-1 wave 3: recipientId is required — ownership is enforced in SQL. */
+  markNotificationRead(id: number, recipientId: number): Promise<boolean>;
   markAllNotificationsRead(recipientId: number): Promise<void>;
   getUnreadNotificationCount(recipientId: number): Promise<number>;
 
@@ -217,15 +229,44 @@ export interface ProfileWithUser {
   user: schema.User;
 }
 
+// ─── PRD-1 Stage 1 (Decision 2): explicit public author allow-list ───────────
+// The ONLY user fields that may appear on a public surface (feed posts, feed
+// comments). This is an ALLOW-LIST, not a deny-list: new columns added to the
+// users table can never leak through it. Do NOT widen it casually, and do NOT
+// substitute safeUserDto() (routes.ts) — that is a deny-list and leaks by
+// default.
+export interface PublicAuthor {
+  id: number;
+  name: string;
+  avatar: string | null;
+  headline: string | null;
+  location: string | null;
+  role: string;
+}
+
+/** Project any user-shaped row down to the six public author fields. */
+export function toPublicAuthor(user: Record<string, any>): PublicAuthor {
+  return {
+    id: user.id,
+    name: user.name,
+    avatar: user.avatar ?? null,
+    headline: user.headline ?? null,
+    location: user.location ?? null,
+    role: user.role,
+  };
+}
+
 export interface PostWithUser {
   post: schema.Post;
-  user: schema.User;
+  // Narrowed to PublicAuthor so a raw user row FAILS TO COMPILE here.
+  user: PublicAuthor;
   liked: boolean;
 }
 
 export interface CommentWithUser {
   comment: schema.PostComment;
-  user: schema.User;
+  // Narrowed to PublicAuthor so a raw user row FAILS TO COMPILE here.
+  user: PublicAuthor;
 }
 
 export interface ProjectWithDetails {
@@ -277,6 +318,62 @@ export interface ConversationSummary {
   lastAt: string;
   unread: number;
 }
+
+// ─── PRD-1 wave 3: DM inbox row (contract section D, GET /api/conversations) ──
+// Superset of the legacy ConversationSummary. `getConversations` is kept as a
+// thin mapper onto the legacy shape so the existing web dashboard keeps working.
+export interface ConversationRow {
+  otherUserId: number;
+  name: string;
+  avatar: string | null;
+  headline: string | null;
+  lastMessage: string;
+  lastMessageId: number;
+  lastMessageAt: string;
+  unread: number;
+}
+
+export interface DmMessagePage {
+  items: schema.Message[];
+  /** Message id to pass as `before=` for the next older page. */
+  nextCursor: number | null;
+  hasMore: boolean;
+}
+
+// ─── PRD-1 wave 3: merged project activity (contract D, /activity) ───────────
+// `actor` is the six-field PublicAuthor allow-list, never a raw user row.
+export interface ProjectActivityItem {
+  /** Namespaced ("stage_event:12" / "update:8") — the two tables share id space. */
+  id: string;
+  kind: "stage_event" | "update";
+  at: string;
+  actor: PublicAuthor | null;
+  title: string;
+  body: string;
+  stageLabel?: string;
+}
+
+/**
+ * Human titles for the `project_stage_events.event_type` values that
+ * stage-service.ts actually writes. Unknown types fall back to the raw key with
+ * underscores replaced — nothing is invented (Truthful Data Rule).
+ */
+const STAGE_EVENT_LABELS: Record<string, string> = {
+  stage_added: "Stage added",
+  stages_bulk_set: "Plan drafted",
+  stage_edited_post_start: "Stage updated",
+  stage_deleted: "Stage removed",
+  stage_reordered: "Stages reordered",
+  plan_sent_to_client: "Plan sent to client",
+  plan_confirmed: "Plan confirmed",
+  plan_approved_by_client: "Plan approved by client",
+  plan_change_requested: "Plan changes requested",
+  stage_started: "Stage started",
+  stage_submitted: "Stage submitted for review",
+  stage_approved: "Stage approved",
+  stage_completed: "Stage completed",
+  stage_changes_requested: "Changes requested",
+};
 
 class Storage implements IStorage {
   async getUser(id: number): Promise<schema.User | undefined> {
@@ -379,7 +476,15 @@ class Storage implements IStorage {
   }
 
   async getUserByEmail(email: string): Promise<schema.User | undefined> {
-    const r = await db.select().from(schema.users).where(eq(schema.users.email, email));
+    // PRD 1: email lookups must be case-insensitive. Addresses are stored
+    // lowercased on new signups, but historic rows were stored verbatim, so a
+    // case-sensitive eq() let the same person register twice ("Jo@x.com" and
+    // "jo@x.com") and made login fail for anyone who typed a capital letter.
+    // Both sides are lowercased so old and new rows behave identically.
+    const needle = (email ?? "").trim().toLowerCase();
+    const r = await db.select().from(schema.users)
+      .where(drizzleSql`lower(${schema.users.email}) = ${needle}`)
+      .limit(1);
     return r[0];
   }
 
@@ -516,7 +621,14 @@ class Storage implements IStorage {
     await db.update(schema.projects).set(col).where(eq(schema.projects.id, projectId));
   }
 
-  async getMessagesBetween(fromId: number, toId: number): Promise<schema.Message[]> {
+  /**
+   * PRD-1 wave 3 performance fix: this used to pull the entire thread and sort
+   * it in JavaScript by `created_at`, which is a TEXT column and therefore not
+   * a reliable order. It now sorts and bounds in SQL by `id` and caps the
+   * result. Prefer `getDmMessagePage` — this remains only for the legacy
+   * `GET /api/messages/:fromId/:toId` alias the web product still calls.
+   */
+  async getMessagesBetween(fromId: number, toId: number, cap = 200): Promise<schema.Message[]> {
     // Only return general DMs (not interest-scoped messages)
     const msgs = await db.select().from(schema.messages)
       .where(
@@ -525,10 +637,68 @@ class Storage implements IStorage {
             and(eq(schema.messages.fromId, fromId), eq(schema.messages.toId, toId)),
             and(eq(schema.messages.fromId, toId), eq(schema.messages.toId, fromId))
           ),
-          drizzleSql`${schema.messages.interestId} IS NULL`
+          isNull(schema.messages.interestId)
         )
-      );
-    return msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      )
+      .orderBy(desc(schema.messages.id))
+      .limit(cap);
+    // Newest-first from SQL, flipped to chronological for the chat UI.
+    return msgs.reverse();
+  }
+
+  /**
+   * One page of a DM thread. Cursors are MESSAGE IDS, never `created_at`
+   * (section A of the contract: that column is text and unsafe to order by).
+   *
+   * - `after`  → strictly newer than the id, ascending (the polling cursor).
+   * - `before` → strictly older than the id, newest-first internally then
+   *              flipped, so `items` is always chronological.
+   */
+  async getDmMessagePage(
+    userId: number,
+    otherUserId: number,
+    opts: { after?: number; before?: number; limit?: number } = {}
+  ): Promise<DmMessagePage> {
+    const limit = Math.min(Math.max(Number(opts.limit) || 40, 1), 100);
+    const pair = and(
+      or(
+        and(eq(schema.messages.fromId, userId), eq(schema.messages.toId, otherUserId)),
+        and(eq(schema.messages.fromId, otherUserId), eq(schema.messages.toId, userId))
+      ),
+      isNull(schema.messages.interestId)
+    );
+
+    if (opts.after != null && Number.isFinite(opts.after)) {
+      const rows = await db.select().from(schema.messages)
+        .where(and(pair, drizzleSql`${schema.messages.id} > ${Math.trunc(opts.after)}`))
+        .orderBy(schema.messages.id)
+        .limit(limit + 1);
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      return {
+        items,
+        // Forward paging continues from the newest id returned.
+        nextCursor: items.length ? items[items.length - 1].id : null,
+        hasMore,
+      };
+    }
+
+    const where = opts.before != null && Number.isFinite(opts.before)
+      ? and(pair, drizzleSql`${schema.messages.id} < ${Math.trunc(opts.before)}`)
+      : pair;
+    const rows = await db.select().from(schema.messages)
+      .where(where)
+      .orderBy(desc(schema.messages.id))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const items = page.reverse();
+    return {
+      items,
+      // Backward paging continues from the OLDEST id returned.
+      nextCursor: items.length ? items[0].id : null,
+      hasMore,
+    };
   }
 
   async getMessagesByInterest(interestId: number): Promise<schema.Message[]> {
@@ -537,34 +707,73 @@ class Storage implements IStorage {
     return msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
+  /**
+   * PRD-1 wave 3 — the DM inbox.
+   *
+   * Replaces the previous implementation, which loaded EVERY message the user
+   * had ever sent or received, grouped them in JavaScript, and then issued one
+   * `getUser` per counterparty (N+1). This is a single statement: the
+   * counterparty is derived in SQL, unread is a
+   * `COUNT(*) FILTER (WHERE to_id = $me AND read is unset)`, the last message
+   * is joined by `MAX(id)` (never by `created_at`, which is text), and the user
+   * row is joined rather than re-fetched per row.
+   *
+   * Decision 17: `interest_id IS NULL` excludes interest / negotiation threads
+   * from the DM inbox entirely. Those live in Brief/Work context.
+   */
+  async getConversationSummaries(userId: number): Promise<ConversationRow[]> {
+    const rows = await sql`
+      WITH dm AS (
+        SELECT m.id, m.from_id, m.to_id, m.content, m.created_at, m.read,
+               CASE WHEN m.from_id = ${userId} THEN m.to_id ELSE m.from_id END AS other_id
+        FROM messages m
+        WHERE m.interest_id IS NULL
+          AND (m.from_id = ${userId} OR m.to_id = ${userId})
+      ),
+      agg AS (
+        SELECT other_id,
+               MAX(id) AS last_message_id,
+               COUNT(*) FILTER (
+                 WHERE to_id = ${userId} AND (read IS NULL OR read = 0)
+               )::int AS unread
+        FROM dm
+        GROUP BY other_id
+      )
+      SELECT a.other_id, a.last_message_id, a.unread,
+             m.content AS last_message, m.created_at AS last_message_at,
+             u.name, u.avatar, u.headline
+      FROM agg a
+      JOIN messages m ON m.id = a.last_message_id
+      JOIN users u ON u.id = a.other_id
+      ORDER BY a.last_message_id DESC
+    `;
+    return (rows as Record<string, any>[]).map(r => ({
+      otherUserId: Number(r.other_id),
+      name: r.name,
+      avatar: r.avatar ?? null,
+      headline: r.headline ?? null,
+      lastMessage: r.last_message ?? "",
+      lastMessageId: Number(r.last_message_id),
+      lastMessageAt: r.last_message_at ?? "",
+      unread: Number(r.unread ?? 0),
+    }));
+  }
+
+  /**
+   * Legacy shape used by the existing web dashboard
+   * (`GET /api/messages/:userId/conversations`). A thin mapper over
+   * `getConversationSummaries` — no second query, no N+1.
+   */
   async getConversations(userId: number): Promise<ConversationSummary[]> {
-    const allMessages = await db.select().from(schema.messages)
-      .where(or(eq(schema.messages.fromId, userId), eq(schema.messages.toId, userId)));
-
-    const convMap = new Map<number, schema.Message[]>();
-    for (const msg of allMessages) {
-      const otherId = msg.fromId === userId ? msg.toId : msg.fromId;
-      if (!convMap.has(otherId)) convMap.set(otherId, []);
-      convMap.get(otherId)!.push(msg);
-    }
-
-    const results: ConversationSummary[] = [];
-    for (const [otherId, msgs] of Array.from(convMap.entries())) {
-      const other = await this.getUser(otherId);
-      if (!other) continue;
-      const sorted = msgs.sort((a: schema.Message, b: schema.Message) => b.createdAt.localeCompare(a.createdAt));
-      const unread = msgs.filter((m: schema.Message) => m.toId === userId && !m.read).length;
-      results.push({
-        otherId,
-        otherName: other.name,
-        otherAvatar: other.avatar,
-        lastMessage: sorted[0].content,
-        lastAt: sorted[0].createdAt,
-        unread,
-      });
-    }
-
-    return results.sort((a, b) => b.lastAt.localeCompare(a.lastAt));
+    const rows = await this.getConversationSummaries(userId);
+    return rows.map(r => ({
+      otherId: r.otherUserId,
+      otherName: r.name,
+      otherAvatar: r.avatar,
+      lastMessage: r.lastMessage,
+      lastAt: r.lastMessageAt,
+      unread: r.unread,
+    }));
   }
 
   async createMessage(data: schema.InsertMessage): Promise<schema.Message> {
@@ -582,6 +791,50 @@ class Storage implements IStorage {
     await db.update(schema.messages)
       .set({ read: 1 })
       .where(and(eq(schema.messages.interestId, interestId), eq(schema.messages.toId, userId)));
+  }
+
+  /**
+   * PRD-1 wave 3 (Decision 17) — backs `POST /api/messages/read`.
+   *
+   * Same shape as `markInterestMessagesRead` above: `to_id = the caller`, which
+   * is the only correct direction. The caller's identity comes from the session,
+   * never from the path, so the `/:fromId/:toId` ambiguity cannot recur here.
+   * Restricted to DM rows (`interest_id IS NULL`).
+   *
+   * NOTE: `messages.read_at` is being added by migration 0006 (owned by B2).
+   * Once that column is declared in shared/schema.ts, set it here as well.
+   */
+  async markDmMessagesRead(userId: number, otherUserId: number, upToMessageId?: number): Promise<number> {
+    const conds = [
+      eq(schema.messages.toId, userId),
+      eq(schema.messages.fromId, otherUserId),
+      isNull(schema.messages.interestId),
+      drizzleSql`(${schema.messages.read} IS NULL OR ${schema.messages.read} = 0)`,
+    ];
+    if (upToMessageId != null && Number.isFinite(upToMessageId)) {
+      conds.push(drizzleSql`${schema.messages.id} <= ${Math.trunc(upToMessageId)}`);
+    }
+    const updated = await db.update(schema.messages)
+      .set({ read: 1 })
+      .where(and(...conds))
+      .returning({ id: schema.messages.id });
+    return updated.length;
+  }
+
+  /**
+   * DM unread total. Counted in SQL, DM-only (Decision 17), and deliberately
+   * SEPARATE from `getUnreadNotificationCount` — Decision 18 forbids summing
+   * inbox unread with notification-centre unread.
+   */
+  async getDmUnreadCount(userId: number): Promise<number> {
+    const r = await db.select({ count: drizzleSql<number>`count(*)::int` })
+      .from(schema.messages)
+      .where(and(
+        eq(schema.messages.toId, userId),
+        isNull(schema.messages.interestId),
+        drizzleSql`(${schema.messages.read} IS NULL OR ${schema.messages.read} = 0)`
+      ));
+    return Number(r[0]?.count ?? 0);
   }
 
   async getSaved(clientId: number): Promise<ProfileWithUser[]> {
@@ -646,7 +899,8 @@ class Storage implements IStorage {
 
     return rows.map(r => ({
       post: r.posts,
-      user: safeUser(r.users) as schema.User,
+      // Stage 1 (Decision 2): explicit allow-list — never the raw user row.
+      user: toPublicAuthor(r.users),
       liked: likedPostIds.has(r.posts.id),
     }));
   }
@@ -657,7 +911,8 @@ class Storage implements IStorage {
     if (!post) return undefined;
     const user = await this.getUser(post.userId);
     if (!user) return undefined;
-    return { post, user, liked: false };
+    // Stage 1 (Decision 2): explicit allow-list — never the raw user row.
+    return { post, user: toPublicAuthor(user), liked: false };
   }
 
   async createPost(data: schema.InsertPost): Promise<schema.Post> {
@@ -841,7 +1096,8 @@ class Storage implements IStorage {
     for (const comment of sorted) {
       const user = await this.getUser(comment.userId);
       if (!user) continue;
-      results.push({ comment, user: safeUser(user) as schema.User });
+      // Stage 1 (Decision 2): explicit allow-list — never the raw user row.
+      results.push({ comment, user: toPublicAuthor(user) });
     }
     return results;
   }
@@ -855,7 +1111,8 @@ class Storage implements IStorage {
       .set({ commentCount: (cur?.commentCount || 0) + 1 })
       .where(eq(schema.posts.id, data.postId));
     const user = await this.getUser(data.userId);
-    return { comment, user: user! };
+    // Stage 1 (Decision 2): explicit allow-list — never the raw user row.
+    return { comment, user: toPublicAuthor(user!) };
   }
 
   // ── Pro Viewrr ────────────────────────────────────────────────────────────
@@ -972,6 +1229,83 @@ class Storage implements IStorage {
   async addProjectUpdate(data: schema.InsertProjectUpdate): Promise<schema.ProjectUpdate> {
     const r = await db.insert(schema.projectUpdates).values(data).returning();
     return r[0];
+  }
+
+  /**
+   * PRD-1 wave 3 (contract D) — `GET /api/projects/:id/activity`.
+   *
+   * `project_stage_events` previously had NO reader anywhere in the codebase.
+   * This merges it with `project_updates`, newest first, and hydrates the actor
+   * through the six-field `PublicAuthor` allow-list — never a raw user row.
+   *
+   * Ordering is by table + id descending within each source and then merged;
+   * `created_at` is a TEXT column (contract section A) so it is used for display
+   * only. Actors are fetched in ONE batched query, not per row.
+   */
+  async getProjectActivity(projectId: number, limit = 100): Promise<ProjectActivityItem[]> {
+    const cap = Math.min(Math.max(Number(limit) || 100, 1), 200);
+
+    const [events, updates, stages] = await Promise.all([
+      db.select().from(schema.projectStageEvents)
+        .where(eq(schema.projectStageEvents.projectId, projectId))
+        .orderBy(desc(schema.projectStageEvents.id))
+        .limit(cap),
+      db.select().from(schema.projectUpdates)
+        .where(eq(schema.projectUpdates.projectId, projectId))
+        .orderBy(desc(schema.projectUpdates.id))
+        .limit(cap),
+      db.select({ id: schema.projectStages.id, title: schema.projectStages.title })
+        .from(schema.projectStages)
+        .where(eq(schema.projectStages.projectId, projectId)),
+    ]);
+
+    const stageTitles = new Map<number, string>(stages.map(s => [s.id, s.title]));
+
+    // Single batched actor lookup — deliberately not one getUser() per row.
+    const actorIds = Array.from(new Set<number>([
+      ...events.map(e => e.actorId),
+      ...updates.map(u => u.authorId),
+    ].filter(id => Number.isFinite(id))));
+    const actorRows = actorIds.length
+      ? await db.select().from(schema.users).where(inArray(schema.users.id, actorIds))
+      : [];
+    const actors = new Map<number, PublicAuthor>(
+      actorRows.map(u => [u.id, toPublicAuthor(u)])
+    );
+
+    const items: (ProjectActivityItem & { sortKey: number })[] = [];
+
+    for (const e of events) {
+      const stageLabel = e.stageId != null ? stageTitles.get(e.stageId) : undefined;
+      items.push({
+        id: `stage_event:${e.id}`,
+        kind: "stage_event",
+        at: e.createdAt,
+        actor: actors.get(e.actorId) ?? null,
+        title: STAGE_EVENT_LABELS[e.eventType] ?? e.eventType.replace(/_/g, " "),
+        body: e.note ?? "",
+        ...(stageLabel ? { stageLabel } : {}),
+        sortKey: e.createdAt ? Date.parse(e.createdAt) || 0 : 0,
+      });
+    }
+
+    for (const u of updates) {
+      items.push({
+        id: `update:${u.id}`,
+        kind: "update",
+        at: u.createdAt,
+        actor: actors.get(u.authorId) ?? null,
+        title: "Project update",
+        body: u.note ?? "",
+        sortKey: u.createdAt ? Date.parse(u.createdAt) || 0 : 0,
+      });
+    }
+
+    // Newest first. Timestamps are text, so ties fall back to the string form,
+    // which is stable for the ISO values both tables actually write.
+    items.sort((a, b) => (b.sortKey - a.sortKey) || b.at.localeCompare(a.at));
+
+    return items.slice(0, cap).map(({ sortKey, ...item }) => item);
   }
 
   async getProjectUpdates(projectId: number): Promise<ProjectUpdateWithAuthor[]> {
@@ -1209,16 +1543,36 @@ class Storage implements IStorage {
     return r[0];
   }
 
-  async getNotifications(recipientId: number, limit = 50): Promise<schema.Notification[]> {
+  /**
+   * PRD-1 wave 3: paging added (`offset`). Ordered by id descending, not by
+   * `created_at` — ordering by a text timestamp cannot page deterministically.
+   */
+  async getNotifications(recipientId: number, limit = 50, offset = 0): Promise<schema.Notification[]> {
+    const cappedLimit = Math.min(Math.max(Math.trunc(Number(limit) || 50), 1), 100);
+    const safeOffset = Math.max(Math.trunc(Number(offset) || 0), 0);
     const r = await db.select().from(schema.notifications)
       .where(eq(schema.notifications.recipientId, recipientId))
-      .orderBy(desc(schema.notifications.createdAt))
-      .limit(limit);
+      .orderBy(desc(schema.notifications.id))
+      .limit(cappedLimit)
+      .offset(safeOffset);
     return r;
   }
 
-  async markNotificationRead(id: number): Promise<void> {
-    await db.update(schema.notifications).set({ read: 1 }).where(eq(schema.notifications.id, id));
+  /**
+   * PRD-1 wave 3 ownership fix: `recipientId` is now REQUIRED and part of the
+   * WHERE clause. Previously any authenticated user could mark ANY
+   * notification id read by guessing it. Returns true when a row was actually
+   * updated, so the route can answer 404 instead of a silent ok.
+   */
+  async markNotificationRead(id: number, recipientId: number): Promise<boolean> {
+    const updated = await db.update(schema.notifications)
+      .set({ read: 1 })
+      .where(and(
+        eq(schema.notifications.id, id),
+        eq(schema.notifications.recipientId, recipientId)
+      ))
+      .returning({ id: schema.notifications.id });
+    return updated.length > 0;
   }
 
   async markAllNotificationsRead(recipientId: number): Promise<void> {
@@ -1227,10 +1581,15 @@ class Storage implements IStorage {
       .where(eq(schema.notifications.recipientId, recipientId));
   }
 
+  /** Counted in SQL rather than by loading every row (PRD-1 wave 3). */
   async getUnreadNotificationCount(recipientId: number): Promise<number> {
-    const r = await db.select().from(schema.notifications)
-      .where(and(eq(schema.notifications.recipientId, recipientId), eq(schema.notifications.read, 0)));
-    return r.length;
+    const r = await db.select({ count: drizzleSql<number>`count(*)::int` })
+      .from(schema.notifications)
+      .where(and(
+        eq(schema.notifications.recipientId, recipientId),
+        drizzleSql`(${schema.notifications.read} IS NULL OR ${schema.notifications.read} = 0)`
+      ));
+    return Number(r[0]?.count ?? 0);
   }
 
   // ── Workspace: Tasks ────────────────────────────────────────────────────
@@ -1830,16 +2189,54 @@ export async function initStorage() {
   return r[0] ?? null;
 };
 
-(Storage.prototype as any).upsertNotifPrefs = async function(userId: number, prefs: Partial<Omit<schema.NotifPrefs, 'id' | 'userId' | 'updatedAt'>>): Promise<schema.NotifPrefs> {
+// PRD 1 security fix: mass-assignment guard.
+// PATCH /api/notifications/preferences/:userId passed req.body straight through
+// to this function, which spread it into a Drizzle .set()/.values(). Any column
+// on notification_preferences — including `id` and `userId` — could be written
+// by the client, letting a caller re-point their preferences row at another
+// user's id. Only these keys are ever accepted now; everything else is dropped
+// silently rather than 400-ing, so an older app build that sends extra fields
+// keeps working.
+export const NOTIF_PREF_KEYS = [
+  "emailProjectInvitations",
+  "emailNewOffers",
+  "emailCounterOffers",
+  "emailMessages",
+  "emailStageUpdates",
+  "emailPaymentUpdates",
+  "emailReviewRequests",
+  "emailProductUpdates",
+] as const;
+
+export type NotifPrefKey = typeof NOTIF_PREF_KEYS[number];
+
+/** Keep only whitelisted boolean preference keys. Never trust req.body shape. */
+export function sanitiseNotifPrefs(input: unknown): Partial<Record<NotifPrefKey, boolean>> {
+  const out: Partial<Record<NotifPrefKey, boolean>> = {};
+  if (!input || typeof input !== "object") return out;
+  const src = input as Record<string, unknown>;
+  for (const key of NOTIF_PREF_KEYS) {
+    if (!(key in src)) continue;
+    const v = src[key];
+    // Coerce only unambiguous booleans; ignore anything else.
+    if (typeof v === "boolean") out[key] = v;
+    else if (v === 1 || v === "true" || v === "1") out[key] = true;
+    else if (v === 0 || v === "false" || v === "0") out[key] = false;
+  }
+  return out;
+}
+
+(Storage.prototype as any).upsertNotifPrefs = async function(userId: number, prefs: unknown): Promise<schema.NotifPrefs> {
+  const safe = sanitiseNotifPrefs(prefs);
   const existing = await (storage as any).getNotifPrefs(userId);
   const updatedAt = new Date().toISOString();
   if (existing) {
     const r = await db.update(schema.notificationPreferences)
-      .set({ ...prefs, updatedAt })
+      .set({ ...safe, updatedAt })
       .where(eq(schema.notificationPreferences.userId, userId))
       .returning();
     return r[0];
   }
-  const r = await db.insert(schema.notificationPreferences).values({ userId, ...prefs, updatedAt }).returning();
+  const r = await db.insert(schema.notificationPreferences).values({ userId, ...safe, updatedAt }).returning();
   return r[0];
 };

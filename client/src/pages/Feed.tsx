@@ -720,8 +720,9 @@ export default function Feed() {
     queryKey: ["/api/feed", user?.id],
     queryFn: async () => {
       try {
-        const viewerQ = user ? `&viewerUserId=${user.id}` : "";
-        const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=0${viewerQ}`);
+        // PRD-1 Decision 1: the viewer is now derived from the session
+        // server-side (optionalAuth) — no viewer id in the query string.
+        const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=0`);
         if (!res.ok) { setPosts([]); setHasMore(false); return []; }
         const data: PostWithUser[] = await res.json();
         setPosts(data);
@@ -746,8 +747,7 @@ export default function Feed() {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
-      const viewerQ = user ? `&viewerUserId=${user.id}` : "";
-      const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=${offset}${viewerQ}`);
+      const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=${offset}`);
       if (!res.ok) { setHasMore(false); return; }
       const data: PostWithUser[] = await res.json();
       setPosts(prev => {
@@ -772,8 +772,7 @@ export default function Feed() {
     // Re-fetch first page to get the newest post at the top
     (async () => {
       try {
-        const viewerQ = user ? `&viewerUserId=${user.id}` : "";
-        const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=0${viewerQ}`);
+        const res = await fetch(`/api/feed?limit=${PAGE_SIZE}&offset=0`);
         if (!res.ok) return;
         const data: PostWithUser[] = await res.json();
         setPosts(prev => {

@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { registerRetainerBuilderRoutes } from "./retainer-builder-routes";
 import { Server } from "http";
-import { storage, db } from "./storage";
+import { storage, db, sanitiseNotifPrefs } from "./storage";
 import {
   getProEntitlement, getFoundingProSpacesRemaining, claimFoundingPro,
   createProCheckout, scheduleProCancellation, getProDashboardStats,
@@ -26,6 +26,19 @@ import {
   VIEWRR_FEE_PERCENT as PAYMENT_FEE_PERCENT,
 } from "./payment-service";
 import { getDashboardData } from "./services/dashboard.service";
+// PRD 1 wave 4 (Decisions 14 + 15): native push + structured notification targeting.
+import {
+  registerPushToken as registerPushTokenRow,
+  deletePushTokenForUser,
+  getOrCreatePushPreferences,
+  updatePushPreferences,
+  sanitisePushPrefs,
+  dispatchPushAsync,
+  deriveTargeting,
+  asTargetType,
+  PUSH_PREFERENCE_KEYS,
+  type NotificationTargetType,
+} from "./services/push-service";
 import { neon } from "@neondatabase/serverless";
 import { requireFinancePermission, deriveFinanceRole, canApproveRefund, REFUND_THRESHOLD_HIGH_VALUE } from "./permission-service";
 import { createRetainerPayment, fulfilRetainerCyclePayment } from "./retainer-service";
@@ -46,7 +59,7 @@ import {
   setSessionCookie, clearSessionCookie,
 } from "./session";
 import {
-  requireAuth, requireAdminGuard, requireBrowserOrigin,
+  requireAuth, requireAdminGuard, requireBrowserOrigin, optionalAuth,
 } from "./auth-middleware";
 import {
   createWebSession, createMobileSession,
@@ -62,9 +75,18 @@ import {
   type ResourceType,
 } from "./object-storage";
 import { createVerificationCode, verifyCode, type VerificationPurpose } from "./verification-service";
-import { compileUserExport, checkDeletionBlockers, anonymiseUserAccount } from "./services/privacy-service";
-import { createReport, resolveReport, suspendUser, unsuspendUser, blockUser, unblockUser, getBlockList } from "./services/trust-service";
+import { compileUserExport, checkDeletionBlockers, anonymiseUserAccount, getDeletionStatus } from "./services/privacy-service";
+import { createReport, resolveReport, suspendUser, unsuspendUser, blockUser, unblockUser, getBlockList,
+  isBlockedEitherWay, isBlockedEitherWaySafe, getBlockedUserIds, sharesActiveEngagement, blocksMessaging,
+} from "./services/trust-service";
+import {
+  moderateContent, recordContentFlags, listContentFlags, resolveContentFlag,
+  POST_BODY_MAX, COMMENT_BODY_MAX, MEDIA_URL_MAX, TAGS_JSON_MAX, MEDIA_TYPES,
+  GUIDELINES_URL,
+} from "./services/moderation-service";
+import { assertProjectParty, sendProjectAccessError } from "./project-access";
 
+import { z } from "zod";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -137,11 +159,210 @@ const NOTIF_TYPE_LABELS: Record<string, string> = {
   message: "New message on Viewrr",
 };
 
-async function notify(data: Parameters<typeof storage.createNotification>[0]) {
-  // 1. Always create in-app notification
-  try { await storage.createNotification(data); } catch { /* non-fatal */ }
+// ─── PRD 1: shared verification-email sender ─────────────────────────────────
+// Extracted from POST /api/auth/send-verification so the mobile register and
+// resend endpoints send exactly the same email through exactly the same path,
+// and so the code is generated in one place only.
+async function sendVerificationEmail(rawEmail: string): Promise<{ ok: boolean; dev?: boolean }> {
+  const email = (rawEmail ?? '').trim().toLowerCase();
+  if (!email) return { ok: false };
 
-  // 2. Send email if resend is configured + event is email-worthy
+  // PRD-020 WS-E: the code is stored hashed; the raw code exists only in
+  // memory here, for the duration of this send.
+  const code = await createVerificationCode(email, 'email_verification');
+
+  if (!resend) {
+    // PRD-018 H4: never log or return a code in production.
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[verify][DEV ONLY] RESEND_API_KEY not set — code for ${email}: ${code}`);
+      return { ok: true, dev: true };
+    }
+    return { ok: false };
+  }
+
+  try {
+    await resend.emails.send({
+      from: 'Viewrr <noreply@viewrr.co.uk>',
+      to: email,
+      subject: 'Your Viewrr verification code',
+      html: `
+        <div style='font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;'>
+          <h1 style='font-size:24px;font-weight:700;color:#111;margin:0 0 8px;'>Your verification code</h1>
+          <p style='color:#555;margin:0 0 32px;'>Enter this code in Viewrr to confirm your email address. It expires in 10 minutes.</p>
+          <div style='background:#f5f5f5;border-radius:12px;padding:24px;text-align:center;margin-bottom:32px;'>
+            <span style='font-size:48px;font-weight:800;letter-spacing:12px;color:#FF5A1F;'>${code}</span>
+          </div>
+          <p style='color:#999;font-size:13px;'>If you did not request this, you can safely ignore this email — nobody can access your account with it.</p>
+        </div>
+      `,
+    });
+    return { ok: true };
+  } catch (e: any) {
+    console.error('[verify] Resend error:', e?.message, e?.statusCode);
+    return { ok: false };
+  }
+}
+
+// ─── PRD 1 (contract §F): per-viewer block filtering ─────────────────────────
+// Removes rows authored by anyone the viewer has blocked, and anyone who has
+// blocked the viewer (symmetric invisibility, Decision 2).
+//
+// Applied in the route layer, never inside a cached/shared query result, so the
+// anonymous feed cache can stay shared. Fails OPEN on error: showing content is
+// a smaller failure than an empty feed.
+async function filterBlockedAuthors<T>(
+  viewerUserId: number,
+  rows: T[],
+  getAuthorId: (row: T) => number | null | undefined,
+): Promise<T[]> {
+  if (!rows?.length) return rows;
+  try {
+    const blocked = await getBlockedUserIds(viewerUserId);
+    if (!blocked.length) return rows;
+    const blockedSet = new Set(blocked);
+    return rows.filter((row) => {
+      const authorId = getAuthorId(row);
+      return !(typeof authorId === "number" && blockedSet.has(authorId));
+    });
+  } catch (e: any) {
+    console.warn("[blocks] filterBlockedAuthors failed, returning unfiltered:", e?.message);
+    return rows;
+  }
+}
+
+// ─── PRD 1 wave 4: has the 0006 targeting column landed yet? ─────────────────
+// `notifications.target_type` / `target_id` are created by migration 0006,
+// which has NOT been applied to production. This branch may therefore boot
+// against a database without them. If the first targeted INSERT fails on the
+// missing column we remember that and fall back to the pre-0006 column set for
+// the rest of the process, so a notification row is NEVER lost to a schema the
+// branch got ahead of. Additive by construction: `link` is written exactly as
+// before either way (Decision 14).
+let notificationTargetingSupported: boolean | null = null;
+
+function isMissingColumnError(e: unknown): boolean {
+  const err = e as { code?: string; message?: string } | null;
+  if (!err) return false;
+  if (err.code === "42703" || err.code === "42P01") return true;
+  return /column .*target_(type|id).* does not exist/i.test(String(err.message ?? ""));
+}
+
+async function createNotificationRow(
+  data: Parameters<typeof storage.createNotification>[0],
+): Promise<{ id: number | null } | null> {
+  const { targetType, targetId, ...withoutTargeting } = data as any;
+  const hasTargeting = targetType != null || targetId != null;
+
+  if (hasTargeting && notificationTargetingSupported !== false) {
+    try {
+      const row = await storage.createNotification(data);
+      notificationTargetingSupported = true;
+      return { id: (row as any)?.id ?? null };
+    } catch (e: any) {
+      if (!isMissingColumnError(e)) throw e;
+      notificationTargetingSupported = false;
+      console.warn(
+        "[notify] notifications.target_type/target_id absent (migration 0006 not applied) — " +
+          "writing notification rows without structured targeting for the rest of this process.",
+      );
+    }
+  }
+
+  const row = await storage.createNotification(withoutTargeting);
+  return { id: (row as any)?.id ?? null };
+}
+
+/**
+ * `data` accepts the two additive Decision 14 fields on top of the existing
+ * notification shape. They are OPTIONAL at every call site: when a producer
+ * omits them, `deriveTargeting()` reconstructs what it can from `type` + the
+ * existing web `link`, so the mobile resolver still gets structure.
+ */
+async function notify(
+  data: Parameters<typeof storage.createNotification>[0] & {
+    targetType?: NotificationTargetType | null;
+    targetId?: number | null;
+  },
+) {
+  // 0. PRD 1 (contract §F): block enforcement, applied HERE on purpose.
+  //    notify() is the single choke point for ten separate notification
+  //    producers plus the Resend email path, so one check covers all of them —
+  //    a blocked user can no longer reach someone's inbox by triggering any
+  //    notification-producing action.
+  //
+  //    Decision 3 exemption: a block must NEVER break an in-flight project.
+  //    blocksMessaging() returns true only when the pair is blocked in either
+  //    direction AND they do not share an active engagement, so notifications
+  //    about a live project, its stages, its payments and its invoices still
+  //    get through. System notifications (no actor, or self-notification) are
+  //    never suppressed.
+  try {
+    const actorId = Number((data as any).actorId ?? 0);
+    // Platform notifications ('system') are never suppressed: a user must not
+    // be able to hide a moderation decision or an account notice by blocking
+    // the admin who issued it.
+    const isPlatformNotice = data.type === "system";
+    if (!isPlatformNotice && actorId > 0 && actorId !== data.recipientId) {
+      if (await blocksMessaging(actorId, data.recipientId)) return;
+    }
+  } catch (blockErr: any) {
+    // Fail OPEN: a trust-service outage must not silently stop all platform
+    // notifications. Logged so it is visible rather than invisible.
+    console.warn("[notify] block check failed, delivering anyway:", blockErr?.message);
+  }
+
+  // 1. Resolve structured targeting (Decision 14 — ADDITIVE).
+  //    `link` is passed straight through, byte for byte: the web notification
+  //    centre routes off it and nothing here may change it. `targetType` /
+  //    `targetId` are new columns alongside it, so a mobile tap can route to
+  //    the exact project / brief / conversation / profile without a second
+  //    fetch. When a producer already passed targeting we keep it; otherwise we
+  //    derive what we can from `type` + `link`.
+  const explicitTargetType = asTargetType((data as any).targetType);
+  const explicitTargetIdRaw = Number((data as any).targetId);
+  const explicitTargetId =
+    Number.isInteger(explicitTargetIdRaw) && explicitTargetIdRaw > 0 ? explicitTargetIdRaw : null;
+
+  const derived = deriveTargeting(data.type, data.link, (data as any).actorId);
+  const targetType = explicitTargetType ?? derived.targetType;
+  const targetId = explicitTargetType ? explicitTargetId : (explicitTargetId ?? derived.targetId);
+
+  // 2. Always create the in-app notification row.
+  //    Decision 18: a `type:"message"` row is still written on every DM. Inbox
+  //    unread and notification unread are separate counts and are never merged
+  //    or summed — this row is the notification-centre entry, not the inbox.
+  let notificationId: number | null = null;
+  try {
+    const created = await createNotificationRow({
+      ...data,
+      targetType: targetType ?? null,
+      targetId: targetId ?? null,
+    } as any);
+    notificationId = created?.id ?? null;
+  } catch { /* non-fatal */ }
+
+  // 3. Native push (Decision 15), fire-and-forget.
+  //    `dispatchPushAsync` returns void synchronously and swallows every
+  //    failure: no push — missing Expo credentials, an absent `push_tokens`
+  //    table before migration 0006, an Expo outage — may ever fail or delay the
+  //    request that produced the notification. The push preference gate and the
+  //    invalid-token cleanup live inside push-service.
+  dispatchPushAsync({
+    recipientId: data.recipientId,
+    type: data.type,
+    message: data.message,
+    link: data.link ?? null,
+    actorId: (data as any).actorId ?? null,
+    actorName: (data as any).actorName ?? null,
+    targetType: targetType ?? null,
+    targetId: targetId ?? null,
+    notificationId,
+  });
+
+  // 4. Send email if resend is configured + event is email-worthy.
+  //    Unchanged: this branch reads the EIGHT `notification_preferences` email
+  //    keys. The five push keys above are a separate model and are never
+  //    consulted here, nor is this model consulted for push (Decision 15).
   if (!resend) return;
   if (!EMAIL_NOTIFICATION_TYPES.has(data.type)) return;
 
@@ -229,6 +450,47 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many verification requests. Please wait 10 minutes." },
+  });
+
+  // PRD 1: per-ADDRESS verification limiter, layered on top of the per-IP
+  // verificationLimiter above. The IP limiter alone does not stop an attacker
+  // rotating IPs to bomb one person's inbox with Viewrr-branded email.
+  const sendVerificationEmailLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 5, // 5 verification emails per address per hour
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many verification emails sent to that address. Please wait an hour." },
+    keyGenerator: (req) => String((req.body?.email ?? "").toString().trim().toLowerCase() || req.ip),
+  });
+
+  // PRD 1 (contract §G): feed write limiters. Before this there was NO rate
+  // limit on posting or commenting at all — a single script could fill the feed.
+  // Keyed by user id (falling back to IP) using the same pattern as
+  // reportLimiter further down this file.
+  const postLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 20, // 20 posts/hour
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "You have posted a lot in the last hour. Please wait before posting again." },
+    keyGenerator: (req) => String((req as any).auth?.userId ?? req.ip),
+  });
+  const commentLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 60, // 60 comments/hour
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "You have commented a lot in the last hour. Please wait before commenting again." },
+    keyGenerator: (req) => String((req as any).auth?.userId ?? req.ip),
+  });
+  const likeLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 60, // 60 likes/minute — generous, but stops like-bombing as a ping
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Slow down a moment." },
+    keyGenerator: (req) => String((req as any).auth?.userId ?? req.ip),
   });
 
   // PRD-018 F2: Upload rate limiter
@@ -419,6 +681,213 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  // ─── PRD 1: Mobile registration (contract §D) ─────────────────────────────
+  //
+  // Deliberately a SEPARATE endpoint from POST /api/auth/register. The web
+  // endpoint above accepts a missing password (historic behaviour relied on by
+  // the web signup flow and asserted by test T19-SEC in
+  // server/tests/security.test.ts) and must not be tightened here. Mobile is a
+  // new surface with no legacy callers, so it gets the strict rules:
+  //   • password REQUIRED, minimum 10 characters
+  //   • email lowercased before storage, uniqueness checked case-insensitively
+  //   • Argon2id only — never the legacy sha256_v1 path
+  //   • roles limited to freelancer | client
+  //   • email verification REQUIRED (Decision 4: new accounts only; every
+  //     pre-migration account is grandfathered by migration 0006)
+  const MOBILE_REGISTER_MIN_PASSWORD = 10;
+
+  // Not a password policy — a floor. The top handful of passwords account for a
+  // large share of credential-stuffing hits, and blocking them costs nothing.
+  // Deliberately short and dependency-free (Decision 9: no new dependencies).
+  const COMMON_PASSWORD_DENYLIST = new Set([
+    "password", "password1", "password12", "password123", "password1234",
+    "passw0rd123", "1234567890", "12345678901", "123456789012",
+    "qwertyuiop", "qwerty12345", "letmein123", "welcome123", "iloveyou123",
+    "admin12345", "administrator", "viewrr1234", "viewrr12345", "viewrrviewrr",
+    "freelancer1", "changeme123", "secret1234", "trustno1234", "football123",
+    "monkey12345", "dragon12345", "baseball123", "sunshine123", "princess123",
+    "abc123456789", "aaaaaaaaaa", "1111111111", "0000000000",
+  ]);
+
+  const mobileRegisterSchema = z.object({
+    name: z.string().trim().min(2, "Name must be at least 2 characters").max(80),
+    email: z.string().trim().toLowerCase().email("Enter a valid email address").max(254),
+    password: z.string()
+      .min(MOBILE_REGISTER_MIN_PASSWORD, `Password must be at least ${MOBILE_REGISTER_MIN_PASSWORD} characters`)
+      .max(200, "Password is too long"),
+    role: z.enum(["freelancer", "client"]),
+    phone: z.string().trim().max(32).optional(),
+  });
+
+  app.post("/api/auth/mobile/register", registerLimiter, async (req, res) => {
+    try {
+      const parsed = mobileRegisterSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: parsed.error.issues[0]?.message ?? "Invalid registration details",
+          code: "VALIDATION_ERROR",
+          fieldErrors: parsed.error.flatten().fieldErrors,
+        });
+      }
+      const { name, email, password, role, phone } = parsed.data;
+
+      if (COMMON_PASSWORD_DENYLIST.has(password.toLowerCase())) {
+        return res.status(400).json({
+          error: "That password is too common. Please choose something harder to guess.",
+          code: "WEAK_PASSWORD",
+        });
+      }
+      // Cheap structural check: a password that is only the email local part is
+      // as guessable as a denylisted one.
+      if (password.toLowerCase().includes(email.split("@")[0].toLowerCase()) && email.split("@")[0].length >= 5) {
+        return res.status(400).json({
+          error: "Your password cannot contain your email address.",
+          code: "WEAK_PASSWORD",
+        });
+      }
+
+      // getUserByEmail now compares lowercased on both sides, so this catches
+      // historic mixed-case rows too.
+      const existing = await storage.getUserByEmail(email);
+      if (existing) {
+        return res.status(409).json({ error: "That email is already registered. Try signing in instead.", code: "EMAIL_IN_USE" });
+      }
+
+      const userData: any = {
+        name,
+        email, // already lowercased by the zod transform
+        role,
+        passwordHash: await hashPasswordArgon2id(password),
+        passwordAlgo: "argon2id",
+        emailVerified: false,
+      };
+      if (phone) userData.phone = phone;
+
+      let user;
+      try {
+        user = await storage.createUser(userData);
+      } catch (createErr: any) {
+        // Unique-constraint race between the check above and the insert.
+        if (/duplicate key|unique constraint/i.test(createErr?.message ?? "")) {
+          return res.status(409).json({ error: "That email is already registered. Try signing in instead.", code: "EMAIL_IN_USE" });
+        }
+        throw createErr;
+      }
+
+      let profile = null;
+      if (role === "freelancer") {
+        try {
+          profile = await storage.createProfile({
+            userId: user.id,
+            specialisms: "[]", skills: "[]", availability: "available",
+            yearsExperience: 0, portfolioItems: "[]", socialLinks: "{}",
+            rating: 0, reviewCount: 0, projectCount: 0, featured: 0, badges: "[]", isPro: 0,
+          });
+        } catch (profileErr: any) {
+          console.warn("[mobile/register] Could not auto-create profile:", profileErr?.message);
+        }
+      }
+
+      // Mobile session — Bearer token in the body once. NO cookie (contract §D).
+      const { rawToken } = await createMobileSession(user.id);
+
+      // Fire-and-forget the first verification email. A mail failure must not
+      // fail registration — the client can call resend-verification.
+      sendVerificationEmail(user.email).catch((e: any) =>
+        console.warn("[mobile/register] Verification email failed (non-fatal):", e?.message)
+      );
+
+      return res.status(201).json({
+        user: safeUserDto(user),
+        profile,
+        token: rawToken,
+        emailVerificationRequired: true,
+      });
+    } catch (e: any) {
+      console.error("[mobile/register] Failed:", e?.message);
+      return res.status(400).json({ error: "Could not create your account. Please try again." });
+    }
+  });
+
+  // PRD 1: resend the verification code for the AUTHENTICATED user only.
+  // Unlike /api/auth/send-verification this cannot be pointed at a third
+  // party's address, because the address is read from the session.
+  app.post("/api/auth/mobile/resend-verification", requireAuth, verificationLimiter, async (req, res) => {
+    try {
+      const user = await storage.getUser(req.auth!.userId);
+      if (!user?.email) return res.status(404).json({ error: "Account not found" });
+      if ((user as any).emailVerified) {
+        return res.json({ sent: true, alreadyVerified: true });
+      }
+      const sent = await sendVerificationEmail(user.email);
+      if (!sent.ok && !sent.dev) {
+        return res.status(503).json({ error: "Email service unavailable. Please try again shortly." });
+      }
+      return res.json({ sent: true, dev: sent.dev ? true : undefined });
+    } catch (e: any) {
+      console.error("[mobile/resend-verification] Failed:", e?.message);
+      return res.status(500).json({ error: "Could not send verification email" });
+    }
+  });
+
+  // PRD 1: confirm the emailed code. requireAuth, so the code can only ever
+  // verify the session holder's own address.
+  app.post("/api/auth/mobile/verify-email", requireAuth, verifyCodeLimiter, async (req, res) => {
+    try {
+      const parsed = z.object({ code: z.string().trim().min(4).max(12) }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Verification code required" });
+
+      const user = await storage.getUser(req.auth!.userId);
+      if (!user?.email) return res.status(404).json({ error: "Account not found" });
+      if ((user as any).emailVerified) return res.json({ verified: true, alreadyVerified: true });
+
+      const result = await verifyCode(user.email, "email_verification", parsed.data.code);
+      if (!result.ok) {
+        return res.status(400).json({ error: result.error ?? "Invalid or expired code", code: "INVALID_CODE" });
+      }
+
+      const nowIso = new Date().toISOString();
+      await db.update(schema.users)
+        .set({ emailVerified: true, emailVerifiedAt: new Date(nowIso) } as any)
+        .where(eq(schema.users.id, user.id));
+
+      return res.json({ verified: true, emailVerified: true, emailVerifiedAt: nowIso });
+    } catch (e: any) {
+      console.error("[mobile/verify-email] Failed:", e?.message);
+      return res.status(500).json({ error: "Could not verify your email" });
+    }
+  });
+
+  // PRD 1 / Decision 4: enforce email verification for NEW accounts ONLY.
+  //
+  // This middleware needs no date check. Migration 0006 backfills
+  // email_verified = true for every account that existed before the migration
+  // ran, so a false value can only mean "created after verification shipped and
+  // has not confirmed yet". Existing users can never be locked out by this.
+  //
+  // Applied to content-producing endpoints only — never to reading, never to
+  // auth, never to account deletion or data export (blocking a GDPR right
+  // behind an email click would be indefensible), and never to anything on an
+  // in-flight project.
+  async function requireVerifiedEmail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const user = await storage.getUser(req.auth!.userId);
+      if (!user) return res.status(401).json({ error: "Authentication required." });
+      if ((user as any).emailVerified === false) {
+        return res.status(403).json({
+          error: "Please confirm your email address before posting. Check your inbox for your code.",
+          code: "EMAIL_VERIFICATION_REQUIRED",
+        });
+      }
+      return next();
+    } catch (e: any) {
+      // Fail OPEN on infrastructure failure: a DB blip must not stop verified
+      // users from working. requireAuth has already established identity.
+      console.warn("[requireVerifiedEmail] check failed, allowing:", e?.message);
+      return next();
+    }
+  }
+
   // PRD-019: Revocable logout — D5 rules.
   app.post("/api/auth/logout", async (req, res) => {
     const bearerHeader = req.headers["authorization"];
@@ -477,55 +946,53 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── Email Verification ───────────────────────────────────────────────────
-  // PRD-018 H3: verificationLimiter applied
-  app.post("/api/auth/send-verification", verificationLimiter, async (req, res) => {
-    const { email } = req.body;
-    console.log(`[verify] Request received for: ${email}`);
-    if (!email) return res.status(400).json({ error: "Email required" });
+  //
+  // PRD 1 hardening. This endpoint is UNAUTHENTICATED because the web signup
+  // flow needs it before an account exists. As written before, that made it an
+  // open relay for Viewrr-branded email: any caller could post any address and
+  // Viewrr would send mail to it, and the route also logged the address on
+  // every request and echoed the provider error back to the client.
+  //
+  // Fixed here:
+  //   • the address is validated and normalised before use
+  //   • a per-address limiter sits alongside the existing per-IP limiter, so
+  //     rotating IPs no longer lets you bomb one inbox
+  //   • addresses that already belong to a VERIFIED account are refused — an
+  //     existing user cannot be spammed through the signup path (they have
+  //     /api/auth/mobile/resend-verification, which requires their session)
+  //   • the response is identical whether or not the address exists, so this is
+  //     not an account-enumeration oracle
+  //   • the address is no longer logged, and the provider error is no longer
+  //     returned to the caller
+  app.post("/api/auth/send-verification", verificationLimiter, sendVerificationEmailLimiter, async (req, res) => {
+    const parsed = z.object({
+      email: z.string().trim().toLowerCase().email().max(254),
+    }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Enter a valid email address" });
+    const email = parsed.data.email;
 
-    // PRD-020 WS-E: code stored in DB (hashed); raw code returned only to caller for emailing
-    const code = await createVerificationCode(email, "email_verification");
+    // Same response body in every branch below (except a genuine outage), so
+    // timing aside this reveals nothing about who has an account.
+    const GENERIC_OK = { ok: true } as const;
 
-    if (!resend) {
-      // PRD-018 H4: RESEND not configured.
-      // NEVER log or return the verification code in production.
-      // Development only: log to server console to allow manual testing.
-      if (process.env.NODE_ENV !== "production") {
-        console.log(`[verify][DEV ONLY] RESEND_API_KEY not set — code for ${email}: ${code}`);
-        return res.json({ ok: true, dev: true });
+    try {
+      const existing = await storage.getUserByEmail(email);
+      if (existing && (existing as any).emailVerified) {
+        // Already verified: send nothing. Returning ok:true keeps this from
+        // being an enumeration oracle.
+        return res.json(GENERIC_OK);
       }
-      // Production: fail closed — do not reveal whether Resend is misconfigured
+    } catch (lookupErr: any) {
+      console.warn("[verify] Account lookup failed, sending anyway:", lookupErr?.message);
+    }
+
+    const sent = await sendVerificationEmail(email);
+    if (sent.dev) return res.json({ ok: true, dev: true });
+    if (!sent.ok) {
+      // Fail closed without revealing whether the provider is misconfigured.
       return res.status(503).json({ error: "Email service unavailable. Please try again later." });
     }
-
-    console.log(`[verify] Sending email via Resend to: ${email}`);
-    try {
-      await resend.emails.send({
-        from: "Viewrr <noreply@viewrr.co.uk>",
-        to: email,
-        subject: "Your Viewrr verification code",
-        html: `
-          <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;">
-            <div style="margin-bottom:24px;">
-              <svg width="40" height="40" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="32" height="32" rx="8" fill="#FF5A1F"/>
-                <path d="M7 8l7 16h4l7-16h-4l-5 11.5L11 8H7z" fill="white"/>
-              </svg>
-            </div>
-            <h1 style="font-size:24px;font-weight:700;color:#111;margin:0 0 8px;">Your verification code</h1>
-            <p style="color:#555;margin:0 0 32px;">Enter this code in the Viewrr signup page. It expires in 10 minutes.</p>
-            <div style="background:#f5f5f5;border-radius:12px;padding:24px;text-align:center;margin-bottom:32px;">
-              <span style="font-size:48px;font-weight:800;letter-spacing:12px;color:#FF5A1F;">${code}</span>
-            </div>
-            <p style="color:#999;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>
-          </div>
-        `,
-      });
-      res.json({ ok: true });
-    } catch (e: any) {
-      console.error("[verify] Resend error:", e.message, e.statusCode, JSON.stringify(e));
-      res.status(500).json({ error: "Failed to send email", detail: e.message });
-    }
+    return res.json(GENERIC_OK);
   });
 
   // ─── SMS Verification ──────────────────────────────────────────────────────
@@ -963,9 +1430,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     // PRD-018 E5: override stale projectCount with DB-authoritative count
     const userIds = profiles.map((p: any) => p.profile.userId as number);
     const countMap = await storage.getCompletedProjectCountsBulk(userIds);
+    // PRD-1 Stage 1: featured profiles must strip internal accreditation fields
+    // too — reuse the same safePublicProfile helper as GET /api/profiles.
     res.json(profiles.map((p: any) => ({
       ...p,
-      profile: { ...p.profile, projectCount: countMap.get(p.profile.userId) ?? 0 },
+      profile: { ...safePublicProfile(p.profile), projectCount: countMap.get(p.profile.userId) ?? 0 },
     })));
   });
 
@@ -1013,6 +1482,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             type: "profile_view",
             message: `${viewer.name} viewed your profile`,
             link: `/profile/${rawId}`,
+            // Decision 14: the useful destination is the VIEWER's profile, not
+            // the recipient's own. The web `link` points at `rawId` (the
+            // profile that was viewed, i.e. the recipient) because that is what
+            // the web centre has always done and it must not change — so the
+            // structured target has to be explicit here rather than derived
+            // from the link.
+            targetType: "profile",
+            targetId: viewer.id,
           });
         }
       }
@@ -1244,12 +1721,56 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ─── Messages ─────────────────────────────────────────────────────────────
   // ─── Interest-scoped messages ─────────────────────────────────────────────
-  app.get("/api/interest-messages/:interestId", async (req, res) => {
+  // PRD-1 prerequisite: this route had NO auth and marked messages read from a
+  // client-supplied `?userId=`. It now requires a session and the caller must be
+  // a participant on the interest (brief client or freelancer). The mark-read
+  // side effect on GET is removed — reads no longer mutate state, and interest
+  // threads are excluded from the DM inbox anyway (Decision 17).
+  app.get("/api/interest-messages/:interestId", requireAuth, async (req, res) => {
     const interestId = Number(req.params.interestId);
-    const userId = Number(req.query.userId);
+    if (!Number.isFinite(interestId) || interestId <= 0) {
+      return res.status(400).json({ error: "Invalid interest id" });
+    }
+    const interest = await storage.getBriefInterest(interestId);
+    if (!interest) return res.status(404).json({ error: "Interest not found" });
+    const userId = req.auth!.userId;
+    if (interest.briefClientId !== userId && interest.freelancerId !== userId) {
+      return res.status(403).json({ error: "Not authorised" });
+    }
     const msgs = await storage.getMessagesByInterest(interestId);
-    if (userId) await storage.markInterestMessagesRead(interestId, userId);
+    res.set("Cache-Control", "private, no-store");
     res.json(msgs);
+  });
+
+  // GET /api/briefs/:id/interest-messages/:interestId (contract D, Decision 17)
+  //
+  // The Brief/Work-context home for negotiation threads, and the replacement
+  // for the flat `/api/interest-messages/:interestId` route above. The brief id
+  // is part of the path and is CHECKED against the interest, so an interest id
+  // cannot be read through an unrelated brief. Interest threads deliberately do
+  // NOT appear in the DM inbox or the DM unread count (Decision 17).
+  app.get("/api/briefs/:id/interest-messages/:interestId", requireAuth, async (req, res) => {
+    const briefId = Number(req.params.id);
+    const interestId = Number(req.params.interestId);
+    if (!Number.isFinite(briefId) || briefId <= 0 || !Number.isFinite(interestId) || interestId <= 0) {
+      return res.status(400).json({ error: "Invalid brief or interest id" });
+    }
+    try {
+      const interest = await storage.getBriefInterest(interestId);
+      if (!interest || interest.briefId !== briefId) {
+        return res.status(404).json({ error: "Interest not found" });
+      }
+      const userId = req.auth!.userId;
+      // Participant only: the brief's client or the interested freelancer.
+      if (interest.briefClientId !== userId && interest.freelancerId !== userId) {
+        return res.status(403).json({ error: "Not authorised" });
+      }
+      const msgs = await storage.getMessagesByInterest(interestId);
+      res.set("Cache-Control", "private, no-store");
+      res.json(msgs);
+    } catch (e: any) {
+      res.status(500).json({ error: "Could not load interest messages" });
+    }
   });
 
   // A0-M4
@@ -1274,6 +1795,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           message: `${actor.name} replied on "${briefTitle || "your interest"}"`,
           link: `/dashboard`,
           read: 0,
+          // A DM thread is addressed by the counterparty's user id, so from the
+          // recipient's point of view the sender IS the conversation id.
+          targetType: "conversation",
+          targetId: actor.id,
         });
       }
       res.json(msg);
@@ -1283,36 +1808,173 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── Direct messages (general) ────────────────────────────────────────────
-  // A0-M1
+  //
+  // PRD-1 wave 3 (Decisions 17, 18). The canonical surface is now:
+  //   GET  /api/conversations
+  //   GET  /api/conversations/:otherUserId/messages?after=&before=&limit=
+  //   POST /api/messages/read
+  //   GET  /api/messages/unread-count
+  // The two legacy `/api/messages/...` id-in-path routes are kept below as thin
+  // aliases so the shipped web product keeps working, but they are frozen: no
+  // new behaviour is added to them and the read side effect is GONE.
+
+  const DM_CONTENT_MAX = 4000;
+  // Content cap + rate limit on sends (previously unbounded on both axes).
+  const dmSendLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,                                  // 30 messages / minute / account
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "You're sending messages too quickly. Please slow down." },
+    keyGenerator: (req) => String((req as any).auth?.userId ?? req.ip),
+  });
+
+  /** Parse a positive integer query param, or undefined when absent/invalid. */
+  function optionalPositiveInt(raw: unknown): number | undefined {
+    if (raw === undefined || raw === null || raw === "") return undefined;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return Math.trunc(n);
+  }
+
+  // GET /api/messages/unread-count — DM unread total (contract D).
+  // Decision 18: this is NOT the notification-centre count and the two are
+  // never summed. Registered before the `/:userId/...` patterns for clarity.
+  app.get("/api/messages/unread-count", requireAuth, async (req, res) => {
+    try {
+      const count = await storage.getDmUnreadCount(req.auth!.userId);
+      res.set("Cache-Control", "private, no-store");
+      res.json({ count });
+    } catch (e: any) {
+      res.status(500).json({ error: "Could not load unread count" });
+    }
+  });
+
+  // POST /api/messages/read — the explicit, idempotent mark-read (contract D).
+  // Identity comes from req.auth, NOT from the path: that removes the whole
+  // `/:fromId/:toId` "which id is the reader?" ambiguity class.
+  app.post("/api/messages/read", requireAuth, async (req, res) => {
+    const otherUserId = optionalPositiveInt(req.body?.otherUserId);
+    if (!otherUserId) return res.status(400).json({ error: "otherUserId is required" });
+    if (otherUserId === req.auth!.userId) {
+      return res.status(400).json({ error: "otherUserId cannot be yourself" });
+    }
+    const upToMessageId = optionalPositiveInt(req.body?.upToMessageId);
+    try {
+      const markedRead = await storage.markDmMessagesRead(
+        req.auth!.userId, otherUserId, upToMessageId
+      );
+      res.json({ markedRead });
+    } catch (e: any) {
+      res.status(500).json({ error: "Could not mark messages read" });
+    }
+  });
+
+  // GET /api/conversations — the DM inbox (contract D).
+  // Interest / negotiation rows are excluded in SQL (Decision 17).
+  app.get("/api/conversations", requireAuth, async (req, res) => {
+    try {
+      const rows = await storage.getConversationSummaries(req.auth!.userId);
+      res.set("Cache-Control", "private, no-store");
+      res.json({
+        items: rows,
+        unreadTotal: rows.reduce((sum, r) => sum + (r.unread || 0), 0),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: "Could not load conversations" });
+    }
+  });
+
+  // GET /api/conversations/:otherUserId/messages — one page of a thread.
+  // Cursors are MESSAGE IDS: `messages.created_at` is a text column and is not
+  // a reliable order (contract section A).
+  app.get("/api/conversations/:otherUserId/messages", requireAuth, async (req, res) => {
+    const otherUserId = optionalPositiveInt(req.params.otherUserId);
+    if (!otherUserId) return res.status(400).json({ error: "Invalid conversation id" });
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.trunc(rawLimit), 100)
+      : 40;
+    try {
+      const page = await storage.getDmMessagePage(req.auth!.userId, otherUserId, {
+        after: optionalPositiveInt(req.query.after),
+        before: optionalPositiveInt(req.query.before),
+        limit,
+      });
+      res.set("Cache-Control", "private, no-store");
+      res.json({
+        // Contract names the text field `body`; the column is `content`.
+        items: page.items.map(m => ({
+          id: m.id,
+          fromId: m.fromId,
+          toId: m.toId,
+          body: m.content,
+          createdAt: m.createdAt,
+          read: m.read ?? 0,
+        })),
+        nextCursor: page.nextCursor,
+        hasMore: page.hasMore,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: "Could not load messages" });
+    }
+  });
+
+  // LEGACY ALIAS (A0-M1) — same data as GET /api/conversations, legacy shape.
   app.get("/api/messages/:userId/conversations", requireAuth, async (req, res) => {
     if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     const convs = await storage.getConversations(req.auth!.userId);
     res.json(convs);
   });
 
-  // A0-M2
+  // LEGACY ALIAS (A0-M2) — full thread, legacy row shape.
+  //
+  // PRD-1 wave 3: the `markMessagesRead(fromId, toId)` side effect that used to
+  // live here is REMOVED. It was wrong twice over: a GET mutated state, and the
+  // direction it marked depended on which path id the caller happened to put
+  // first, so a client could mark the OTHER party's messages read. Clearing
+  // unread is now an explicit POST /api/messages/read, and the web callers
+  // (Dashboard.tsx, QuickMessageModal.tsx) were updated in the same change set.
   app.get("/api/messages/:fromId/:toId", requireAuth, async (req, res) => {
     const fromId = Number(req.params.fromId);
     const toId = Number(req.params.toId);
     // Caller must be one of the two parties
     if (req.auth!.userId !== fromId && req.auth!.userId !== toId) return res.status(403).json({ error: "Forbidden." });
     const msgs = await storage.getMessagesBetween(fromId, toId);
-    await storage.markMessagesRead(fromId, toId);
+    res.set("Cache-Control", "private, no-store");
     res.json(msgs);
   });
 
-  // A0-M3
-  app.post("/api/messages", requireAuth, async (req, res) => {
+  // A0-M3 — send a DM. Body tightened: only toId/content/interestId are read,
+  // fromId is forced from the session, and content is length-capped.
+  app.post("/api/messages", requireAuth, dmSendLimiter, async (req, res) => {
     try {
-      const data = insertMessageSchema.parse(req.body);
-      // A0: caller must be the sender
-      if (req.auth!.userId !== Number(data.fromId)) return res.status(403).json({ error: "Forbidden." });
-      const msg = await storage.createMessage(data);
-      // Notify recipient of new message
-      const actor = await storage.getUser(data.fromId);
+      const fromId = req.auth!.userId;
+      const toId = optionalPositiveInt(req.body?.toId);
+      const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+      const interestId = optionalPositiveInt(req.body?.interestId) ?? null;
+      if (!toId) return res.status(400).json({ error: "toId is required" });
+      if (toId === fromId) return res.status(400).json({ error: "You cannot message yourself" });
+      if (!content) return res.status(400).json({ error: "Message content is required" });
+      if (content.length > DM_CONTENT_MAX) {
+        return res.status(400).json({ error: `Message is too long (max ${DM_CONTENT_MAX} characters).` });
+      }
+      // A0: caller must be the sender. `fromId` in the body is ignored, but a
+      // mismatched one is still rejected so a confused client fails loudly.
+      if (req.body?.fromId !== undefined && Number(req.body.fromId) !== fromId) {
+        return res.status(403).json({ error: "Forbidden." });
+      }
+      const recipient = await storage.getUser(toId);
+      if (!recipient) return res.status(404).json({ error: "Recipient not found" });
+
+      const msg = await storage.createMessage({ fromId, toId, content, interestId, read: 0 });
+      // Notify recipient of new message.
+      // Decision 18: this notification row STAYS. Inbox unread and the
+      // notification centre are different things and are never merged/summed.
+      const actor = await storage.getUser(fromId);
       if (actor) {
         await notify({
-          recipientId: data.toId,
+          recipientId: toId,
           actorId: actor.id,
           actorName: actor.name,
           actorAvatar: actor.avatar ?? null,
@@ -1320,6 +1982,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           message: `${actor.name} sent you a message`,
           link: `/dashboard`,
           read: 0,
+          // Decision 18: this row stays and is NOT merged with inbox unread.
+          // Decision 14: `/dashboard` carries no id, which is exactly why the
+          // structured target exists.
+          targetType: "conversation",
+          targetId: actor.id,
         });
       }
       res.json(msg);
@@ -1437,18 +2104,64 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ── Feed cache (2-min TTL, keyed by viewerUserId|offset|limit) ─────────────
+  // ── Feed cache (2-min TTL) ────────────────────────────────────────────────
+  // PRD-1 feed hardening:
+  //  * Only ANONYMOUS responses are cached. Authenticated responses are
+  //    viewer-specific (the `liked` flag) and are sent `private, no-store`,
+  //    so caching them server-side would only risk serving stale viewer state.
+  //  * The map is bounded to FEED_CACHE_MAX_ENTRIES with oldest-first eviction
+  //    so an attacker cannot grow it without limit by varying limit/offset.
+  const FEED_CACHE_MAX_ENTRIES = 200;
+  const FEED_CACHE_TTL_MS = 120_000;
   const feedCache = new Map<string, { data: any; etag: string; expiresAt: number }>();
   function bustFeedCache() { feedCache.clear(); }
-
-  // Feed
-  app.get("/api/feed", async (req, res) => {
-    const limit = Number(req.query.limit) || 10;
-    const offset = Number(req.query.offset) || 0;
-    const viewerUserId = req.query.viewerUserId ? Number(req.query.viewerUserId) : undefined;
-    const cacheKey = `${viewerUserId ?? "anon"}|${offset}|${limit}`;
-    const cached = feedCache.get(cacheKey);
+  function feedCacheSet(key: string, value: { data: any; etag: string; expiresAt: number }) {
+    // Drop expired entries first, then evict oldest insertions if still full.
     const now = Date.now();
+    const expired: string[] = [];
+    feedCache.forEach((v, k) => { if (v.expiresAt <= now) expired.push(k); });
+    expired.forEach(k => feedCache.delete(k));
+    while (feedCache.size >= FEED_CACHE_MAX_ENTRIES) {
+      const oldest = feedCache.keys().next();
+      if (oldest.done) break;
+      feedCache.delete(oldest.value);
+    }
+    feedCache.set(key, value);
+  }
+
+  // Feed pagination bounds (PRD-1 feed hardening)
+  const FEED_LIMIT_DEFAULT = 20;
+  const FEED_LIMIT_MAX = 50;
+  function clampFeedLimit(raw: unknown): number {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return FEED_LIMIT_DEFAULT;
+    return Math.min(Math.floor(n), FEED_LIMIT_MAX);
+  }
+
+  // Feed — publicly readable with OPTIONAL auth (Decision 1).
+  // The viewer is derived from the session only; the old ?viewerUserId= path is
+  // gone (it let anyone read another user's like state).
+  app.get("/api/feed", optionalAuth, async (req, res) => {
+    const limit = clampFeedLimit(req.query.limit);
+    const rawOffset = Number(req.query.offset);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+    const viewerUserId = req.auth?.userId;
+    const now = Date.now();
+
+    if (viewerUserId) {
+      // Authenticated: never cacheable, never shared.
+      const data = await storage.getFeedPosts(limit, offset, viewerUserId);
+      // PRD 1 (contract §F): symmetric invisibility. Filtered per-viewer here
+      // rather than in the query so the anonymous cached path stays shared and
+      // cacheable — a per-user filter must never leak into the anon cache.
+      const filtered = await filterBlockedAuthors(viewerUserId, data as any[], (row) => row?.user?.id ?? row?.post?.userId);
+      res.set("Cache-Control", "private, no-store");
+      return res.json(filtered);
+    }
+
+    // Anonymous: cacheable. The payload contains only PublicAuthor fields.
+    const cacheKey = `anon|${offset}|${limit}`;
+    const cached = feedCache.get(cacheKey);
 
     if (cached && cached.expiresAt > now) {
       // ETag support — if client already has this version, return 304
@@ -1462,21 +2175,61 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.json(cached.data);
     }
 
-    const data = await storage.getFeedPosts(limit, offset, viewerUserId);
+    const data = await storage.getFeedPosts(limit, offset, undefined);
     const etag = `"feed-${cacheKey}-${now}"`;
-    feedCache.set(cacheKey, { data, etag, expiresAt: now + 120_000 });
+    feedCacheSet(cacheKey, { data, etag, expiresAt: now + FEED_CACHE_TTL_MS });
     res.set("ETag", etag);
     res.set("Cache-Control", "public, max-age=120, stale-while-revalidate=60");
     res.json(data);
   });
 
   // PRD-018 A6: requireAuth + session-derived userId
-  app.post("/api/feed", requireAuth, async (req, res) => {
+  // PRD 1 (contract §G): moderation, length caps, mediaType enum, mediaUrl
+  // scheme/host validation, rate limit, and email verification for new accounts.
+  //
+  // Before this, POST /api/feed accepted any caption of any length, any
+  // mediaUrl including javascript: and data: URIs, any mediaType string, and
+  // had no rate limit at all — while /api/admin/feed/:id already told users
+  // their post "violated our community guidelines" that did not exist.
+  app.post("/api/feed", requireAuth, requireVerifiedEmail, postLimiter, async (req, res) => {
     try {
+      const caption = typeof req.body?.caption === "string" ? req.body.caption : "";
+      const mediaUrl = req.body?.mediaUrl ?? null;
+      const mediaType = req.body?.mediaType ?? null;
+      const tags = typeof req.body?.tags === "string" ? req.body.tags : "[]";
+
+      if (tags.length > TAGS_JSON_MAX) {
+        return res.status(400).json({ error: `Too many tags (limit ${TAGS_JSON_MAX} characters).` });
+      }
+      if (typeof mediaUrl === "string" && mediaUrl.length > MEDIA_URL_MAX) {
+        return res.status(400).json({ error: "That media URL is too long." });
+      }
+
+      // Tier 1 = hard reject with 422 CONTENT_REJECTED. Tier 2 = publish + flag.
+      const verdict = moderateContent({ kind: "post", body: caption, mediaUrl, mediaType });
+      if (verdict.outcome === "reject") {
+        console.warn(`[moderation] post rejected for user ${req.auth!.userId}: ${verdict.rule}`);
+        return res.status(422).json({
+          error: verdict.message,
+          code: verdict.code,
+          guidelinesUrl: GUIDELINES_URL,
+        });
+      }
+
       const data = insertPostSchema.parse({ ...req.body, userId: req.auth!.userId });
       const post = await storage.createPost(data);
       const pw = await storage.getPost(post.id);
       bustFeedCache();
+
+      // Never throws; a flag-write failure must not fail an accepted post.
+      await recordContentFlags({
+        subjectType: "post",
+        subjectId: post.id,
+        authorUserId: req.auth!.userId,
+        reasons: verdict.flags,
+        body: caption,
+      });
+
       res.json(pw);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -1516,7 +2269,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       actorName: "Viewrr",
       actorAvatar: null,
       type: "system",
-      message: "Your post was removed by Viewrr for violating our community guidelines.",
+      // The guidelines this refers to now exist: docs/COMMUNITY_GUIDELINES.md,
+      // published at GUIDELINES_URL. Before PRD 1 this message cited a document
+      // that had never been written.
+      message: `Your post was removed by Viewrr for breaching the Community Guidelines. Read them here: ${GUIDELINES_URL}`,
       link: "/feed",
       read: 0,
     });
@@ -1532,8 +2288,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PRD-018 A6: requireAuth + session-derived userId
-  app.post("/api/feed/:id/like", requireAuth, async (req, res) => {
+  app.post("/api/feed/:id/like", requireAuth, likeLimiter, async (req, res) => {
     const userId = req.auth!.userId;
+    // PRD 1 (contract §F): blocks apply to likes. Checked BEFORE the toggle so a
+    // blocked user cannot even register-then-unregister a like as a ping.
+    const likeTarget = await storage.getPost(Number(req.params.id));
+    if (likeTarget && likeTarget.post.userId !== userId) {
+      if (await blocksMessaging(userId, likeTarget.post.userId)) {
+        return res.status(403).json({ error: "You cannot interact with this post.", code: "BLOCKED" });
+      }
+    }
     const liked = await storage.toggleLike(Number(req.params.id), userId);
     const post = await storage.getPost(Number(req.params.id));
     // Notify post owner when someone likes (not when unliking, not self-like)
@@ -1549,21 +2313,67 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           message: `${actor.name} liked your post`,
           link: `/feed/${post.post.id}`,
           read: 0,
+          targetType: "post",
+          targetId: post.post.id,
         });
       }
     }
     res.json({ liked, likeCount: post?.post.likeCount ?? 0 });
   });
 
-  app.get("/api/feed/:id/comments", async (req, res) => {
-    res.json(await storage.getComments(Number(req.params.id)));
+  // Publicly readable with optional auth (Decision 1). Comment authors are
+  // PublicAuthor projections (storage.getComments).
+  app.get("/api/feed/:id/comments", optionalAuth, async (req, res) => {
+    res.set("Cache-Control", req.auth ? "private, no-store" : "public, max-age=30");
+    const comments = await storage.getComments(Number(req.params.id));
+    // PRD 1 (contract §F): hide comments by blocked users from the blocker and
+    // vice versa. Anonymous readers see the thread unfiltered.
+    if (!req.auth) return res.json(comments);
+    const visible = await filterBlockedAuthors(
+      req.auth.userId,
+      comments as any[],
+      (row) => row?.user?.id ?? row?.comment?.userId ?? row?.userId,
+    );
+    return res.json(visible);
   });
 
   // PRD-018 A6: requireAuth + session-derived userId
-  app.post("/api/feed/:id/comments", requireAuth, async (req, res) => {
+  // PRD 1 (contract §G): moderation + length cap + rate limit.
+  // PRD 1 (contract §F): a blocked user cannot comment on the blocker's post.
+  //   Exempt per Decision 3 when the two share an active engagement, so a block
+  //   never interferes with an in-flight project.
+  app.post("/api/feed/:id/comments", requireAuth, requireVerifiedEmail, commentLimiter, async (req, res) => {
     try {
+      const content = typeof req.body?.content === "string" ? req.body.content : "";
+
+      const verdict = moderateContent({ kind: "comment", body: content });
+      if (verdict.outcome === "reject") {
+        console.warn(`[moderation] comment rejected for user ${req.auth!.userId}: ${verdict.rule}`);
+        return res.status(422).json({
+          error: verdict.message,
+          code: verdict.code,
+          guidelinesUrl: GUIDELINES_URL,
+        });
+      }
+
+      const targetPost = await storage.getPost(Number(req.params.id));
+      if (targetPost && targetPost.post.userId !== req.auth!.userId) {
+        if (await blocksMessaging(req.auth!.userId, targetPost.post.userId)) {
+          // Same wording in both directions — do not reveal who blocked whom.
+          return res.status(403).json({ error: "You cannot comment on this post.", code: "BLOCKED" });
+        }
+      }
+
       const data = insertPostCommentSchema.parse({ ...req.body, userId: req.auth!.userId, postId: Number(req.params.id) });
       const comment = await storage.createComment(data);
+
+      await recordContentFlags({
+        subjectType: "comment",
+        subjectId: comment.comment.id,
+        authorUserId: req.auth!.userId,
+        reasons: verdict.flags,
+        body: content,
+      });
       // Notify post owner of new comment (not self-comment)
       const post = await storage.getPost(Number(req.params.id));
       if (post && post.post.userId !== data.userId) {
@@ -1578,6 +2388,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             message: `${actor.name} commented on your post`,
             link: `/feed/${data.postId}`,
             read: 0,
+            targetType: "post",
+            targetId: data.postId,
           });
         }
       }
@@ -1725,11 +2537,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── Projects / Your Work ────────────────────────────────────────────
-  app.get("/api/projects", async (req, res) => {
-    const { userId } = req.query;
-    if (!userId) return res.status(400).json({ error: "userId required" });
+  // PRD-1 read-path auth: identity comes from the session only. The old
+  // `?userId=` parameter is ignored — it allowed reading anyone's project list.
+  app.get("/api/projects", requireAuth, async (req, res) => {
+    const userId = req.auth!.userId;
     try {
-      const projects = await storage.getProjectsForUser(Number(userId));
+      const projects = await storage.getProjectsForUser(userId);
       res.json(projects);
     } catch (e: any) {
       console.error("[projects] Error fetching projects for user", userId, e.message);
@@ -1737,21 +2550,85 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.get("/api/projects/:id", async (req, res) => {
-    const pw = await storage.getProject(Number(req.params.id));
-    if (!pw) return res.status(404).json({ error: "Project not found" });
-    res.json(pw);
+  // PRD-1 read-path auth: requireAuth + party check (was fully unauthenticated).
+  app.get("/api/projects/:id", requireAuth, async (req, res) => {
+    try {
+      await assertProjectParty(Number(req.params.id), req.auth!.userId);
+      const pw = await storage.getProject(Number(req.params.id));
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      res.json(pw);
+    } catch (e: any) {
+      if (sendProjectAccessError(res, e)) return;
+      res.status(500).json({ error: "Could not load project" });
+    }
   });
 
   // PRD-018 A8: requireAuth + verify caller is a party on the project being created
+  //
+  // PRD-1 wave 3 write-path hardening. This route used to do a bare
+  // `insertProjectSchema.parse(req.body)`, which accepts EVERY insertable
+  // column. A caller who was a party could therefore create a project that was
+  // already `status:"completed"`, already `paymentStatus:"paid"` (which would
+  // have unlocked the Decision 10 deliverable gate from birth), carried an
+  // arbitrary `agreedAmountPence`, claimed `isRetainer`, or was born with
+  // `completedAt` / `completedBy` / `deletedAt` / `deletionReason` set.
+  //
+  // The payload is now an explicit WHITELIST. Everything with financial,
+  // lifecycle or access-control meaning is server-set:
+  //   status        -> "active"
+  //   paymentStatus -> "unpaid"
+  //   currentStage  -> 0
+  //   isRetainer    -> 0        (retainers are out of mobile V1, Decision 12;
+  //                             retainer projects are created by the
+  //                             invitation / retainer-builder flows)
+  //   client/freelancer display names -> read from the user rows, not the body
+  //   completedAt / completedBy / deletedAt / deletedBy / deletionReason,
+  //   agreedAmountPence, planning* , cycle fields -> not accepted at all
+  const createProjectSchema = insertProjectSchema.pick({
+    clientId: true,
+    freelancerId: true,
+    title: true,
+    description: true,
+    briefId: true,
+    interestId: true,
+    briefCategory: true,
+    agencyId: true,
+  });
+
   app.post("/api/projects", requireAuth, async (req, res) => {
     try {
-      const data = insertProjectSchema.parse(req.body);
+      const data = createProjectSchema.parse(req.body);
       // A8: caller must be either the clientId or freelancerId in the submitted data
       if (data.clientId !== req.auth!.userId && data.freelancerId !== req.auth!.userId) {
         return res.status(403).json({ error: "You must be the client or freelancer on the project" });
       }
-      const project = await storage.createProject(data);
+      if (data.clientId === data.freelancerId) {
+        return res.status(400).json({ error: "A project needs two distinct parties" });
+      }
+      const [clientUser, freelancerUser] = await Promise.all([
+        storage.getUser(data.clientId),
+        storage.getUser(data.freelancerId),
+      ]);
+      if (!clientUser || !freelancerUser) {
+        return res.status(400).json({ error: "Both parties must be existing users" });
+      }
+      const project = await storage.createProject({
+        clientId: data.clientId,
+        freelancerId: data.freelancerId,
+        title: data.title,
+        description: data.description ?? "",
+        briefId: data.briefId ?? null,
+        interestId: data.interestId ?? null,
+        briefCategory: data.briefCategory ?? null,
+        agencyId: data.agencyId ?? null,
+        // Server-set — never accepted from the request body.
+        status: "active",
+        paymentStatus: "unpaid",
+        currentStage: 0,
+        isRetainer: 0,
+        clientName: clientUser.name,
+        freelancerName: freelancerUser.name,
+      });
       const full = await storage.getProject(project.id);
       res.json(full);
     } catch (e: any) {
@@ -1782,6 +2659,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         message:     `${pw.client.name} has confirmed final payment for "${pw.project.title}" — your work is now fully released.`,
         link:        "/your-work",
         read:        0,
+        // `/your-work` dropped the project id entirely; this is the fix.
+        targetType:  "project",
+        targetId:    projectId,
       });
       res.json({ success: true });
     } catch (e: any) {
@@ -1822,6 +2702,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         message: `"${pw.project.title}" has moved to ${stageName}`,
         link: "/your-work",
         read: 0,
+        // `stage_advanced` is the most-emitted project event and its web link is
+        // a bare "/your-work" with no id — the single biggest win in Decision 14.
+        targetType: "project",
+        targetId: projectId,
       });
       res.json(await storage.getProject(updated.id));
     } catch (e: any) {
@@ -1889,6 +2773,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         message: `"${pw.project.title}" has been marked as complete`,
         link: "/your-work",
         read: 0,
+        targetType: "project",
+        targetId: projectId,
       }).catch(() => { /* notification failure is non-fatal */ });
 
     } catch (e: any) {
@@ -1972,17 +2858,53 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.get("/api/projects/:id/updates", async (req, res) => {
-    res.json(await storage.getProjectUpdates(Number(req.params.id)));
+  // PRD-1 read-path auth: requireAuth + party check (was unauthenticated).
+  app.get("/api/projects/:id/updates", requireAuth, async (req, res) => {
+    try {
+      await assertProjectParty(Number(req.params.id), req.auth!.userId);
+      res.json(await storage.getProjectUpdates(Number(req.params.id)));
+    } catch (e: any) {
+      if (sendProjectAccessError(res, e)) return;
+      res.status(500).json({ error: "Failed to load project updates" });
+    }
+  });
+
+  // GET /api/projects/:id/activity (contract D) — PRD-1 wave 3.
+  //
+  // `project_stage_events` had no reader anywhere in the codebase; every stage
+  // action wrote a row nobody could ever see. This merges those rows with
+  // `project_updates` into one newest-first timeline for the Activity screen.
+  //
+  // The actor is hydrated through the six-field PublicAuthor allow-list in
+  // storage.ts — never a raw user row, so no email/phone/hash can leak into a
+  // timeline. Guarded with requireAuth + assertProjectParty (no admin bypass).
+  app.get("/api/projects/:id/activity", requireAuth, async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      await assertProjectParty(projectId, req.auth!.userId);
+      const rawLimit = Number(req.query.limit);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.trunc(rawLimit), 200)
+        : 100;
+      const items = await storage.getProjectActivity(projectId, limit);
+      res.set("Cache-Control", "private, no-store");
+      res.json(items);
+    } catch (e: any) {
+      if (sendProjectAccessError(res, e)) return;
+      res.status(500).json({ error: "Failed to load project activity" });
+    }
   });
 
   // ─── Meetings ──────────────────────────────────────────────────────────────────
   // GET all meetings for a project
-  app.get("/api/projects/:id/meetings", async (req, res) => {
+  // PRD-1 read-path auth: requireAuth + party check (was unauthenticated).
+  app.get("/api/projects/:id/meetings", requireAuth, async (req, res) => {
     try {
+      await assertProjectParty(Number(req.params.id), req.auth!.userId);
       const meetings = await storage.getMeetingsForProject(Number(req.params.id));
       res.json(meetings);
     } catch (e) {
+      if (sendProjectAccessError(res, e)) return;
       res.status(500).json({ error: "Failed to fetch meetings" });
     }
   });
@@ -2079,10 +3001,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // Get invitations for user
-  app.get("/api/invitations", async (req, res) => {
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(400).json({ error: "userId required" });
+  // Get invitations for the authenticated user.
+  // PRD-1 read-path auth: identity from the session; `?userId=` is ignored.
+  app.get("/api/invitations", requireAuth, async (req, res) => {
+    const userId = req.auth!.userId;
     const invitations = await storage.getInvitationsForUser(userId);
     // Enrich with sender/recipient names
     const enriched = await Promise.all(invitations.map(async inv => {
@@ -2148,6 +3070,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       message: `${recipient?.name ?? "Someone"} accepted your project invitation: "${inv.title}"`,
       link: "/your-work",
       read: 0,
+      // `project` is only created on the accept path for a non-retainer
+      // invitation; a null id still lands the recipient on the Work tab via the
+      // mobile resolver's "structured type, no id" branch.
+      targetType: "project",
+      targetId: project?.id ?? null,
     });
     res.json({ invitation: inv, project });
   });
@@ -2178,15 +3105,37 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Retainer Cycle Routes ────────────────────────────────────────────────
 
   // GET cycles for a project
-  app.get("/api/projects/:id/retainer/cycles", async (req, res) => {
+  // PRD-1 read-path auth: requireAuth + party check (was unauthenticated).
+  app.get("/api/projects/:id/retainer/cycles", requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
+      await assertProjectParty(projectId, req.auth!.userId);
       const cycles = await storage.getRetainerCycles(projectId);
       res.json(cycles);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      if (sendProjectAccessError(res, e)) return;
+      res.status(500).json({ error: "Failed to load retainer cycles" });
     }
   });
+
+  // PRD-1 wave 3 — cross-project IDOR fix for the retainer cycle routes.
+  //
+  // These three routes took `cycleId` from the BODY and only checked the
+  // caller's role on `:id`. Because `updateRetainerCycle` looks a cycle up by
+  // its own primary key, a client on project A could sign off (or a freelancer
+  // submit) a cycle belonging to project B — someone else's contract — simply
+  // by pairing their own project id with a foreign cycle id.
+  //
+  // This helper ties the cycle to `:id` by loading the project's own cycles and
+  // refusing anything not in that set.
+  async function resolveCycleForProject(projectId: number, rawCycleId: unknown) {
+    const cycleId = Number(rawCycleId);
+    if (!Number.isFinite(cycleId) || cycleId <= 0) return { error: "cycleId required" as const };
+    const cycles = await storage.getRetainerCycles(projectId);
+    const cycle = cycles.find(c => c.id === cycleId);
+    if (!cycle) return { error: "Cycle does not belong to this project" as const };
+    return { cycle };
+  }
 
   // POST freelancer submits current cycle (active → awaiting_signoff)
   // PRD-018 A15: requireAuth + verify caller is the freelancer on the project
@@ -2199,7 +3148,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(403).json({ error: "Only the freelancer can submit a cycle" });
       }
       const { cycleId, note } = req.body;
-      const cycle = await storage.updateRetainerCycle(Number(cycleId), {
+      const resolved = await resolveCycleForProject(projectId, cycleId);
+      if ("error" in resolved) return res.status(400).json({ error: resolved.error });
+      const cycle = await storage.updateRetainerCycle(resolved.cycle.id, {
         status: "awaiting_signoff",
         freelancerNote: note || null,
       });
@@ -2222,7 +3173,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(403).json({ error: "Only the client can sign off a cycle" });
       }
       const { cycleId } = req.body;
-      const cycle = await storage.updateRetainerCycle(Number(cycleId), {
+      // PRD-1 wave 3: cycle must belong to :id (was a cross-project IDOR).
+      const resolved = await resolveCycleForProject(projectId, cycleId);
+      if ("error" in resolved) return res.status(400).json({ error: resolved.error });
+      const cycle = await storage.updateRetainerCycle(resolved.cycle.id, {
         status: "awaiting_payment",
         endDate: new Date().toISOString().slice(0, 10),
       });
@@ -2250,6 +3204,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!cycles.length || !cycles[0].public_id) {
         return res.status(404).json({ error: "Retainer cycle not found or missing public_id" });
       }
+      // PRD-1 wave 3: the cycle must belong to the project in the path. The
+      // ownership check below already resolved the project FROM the cycle, so
+      // this closes the remaining mismatch where `:id` was simply ignored.
+      if (Number(cycles[0].project_id) !== Number(req.params.id)) {
+        return res.status(400).json({ error: "Cycle does not belong to this project" });
+      }
       // A0: verify caller is the client on the project
       const cycleProject = await storage.getProject(Number(cycles[0].project_id));
       if (!cycleProject || cycleProject.project.clientId !== req.auth!.userId) {
@@ -2275,7 +3235,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(403).json({ error: "Not authorised" });
       }
       const { cycleId } = req.body;
-      await storage.updateRetainerCycle(Number(cycleId), { status: "paused" });
+      // PRD-1 wave 3: cycle must belong to :id (same IDOR class).
+      const resolved = await resolveCycleForProject(projectId, cycleId);
+      if ("error" in resolved) return res.status(400).json({ error: resolved.error });
+      await storage.updateRetainerCycle(resolved.cycle.id, { status: "paused" });
       await storage.updateProjectStatus(projectId, "paused");
       res.json({ success: true });
     } catch (e: any) {
@@ -2294,7 +3257,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(403).json({ error: "Not authorised" });
       }
       const { cycleId } = req.body;
-      await storage.updateRetainerCycle(Number(cycleId), { status: "active" });
+      // PRD-1 wave 3: cycle must belong to :id (same IDOR class).
+      const resolved = await resolveCycleForProject(projectId, cycleId);
+      if ("error" in resolved) return res.status(400).json({ error: resolved.error });
+      await storage.updateRetainerCycle(resolved.cycle.id, { status: "active" });
       await storage.updateProjectStatus(projectId, "active");
       res.json({ success: true });
     } catch (e: any) {
@@ -2305,11 +3271,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── PRD-014: Dynamic Project Stages ─────────────────────────────────────
 
   // GET /api/projects/:id/stages — list all custom stages
-  app.get("/api/projects/:id/stages", async (req, res) => {
+  // PRD-1 read-path auth: requireAuth + party check (contract section D).
+  app.get("/api/projects/:id/stages", requireAuth, async (req, res) => {
     try {
+      await assertProjectParty(Number(req.params.id), req.auth!.userId);
       const stages = await getProjectStages(Number(req.params.id));
       res.json(stages);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) {
+      if (sendProjectAccessError(res, e)) return;
+      res.status(500).json({ error: "Failed to load project stages" });
+    }
   });
 
   // GET /api/stage-templates — return available templates for the builder
@@ -2383,7 +3354,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         const isFreelancer = pw.project.freelancerId === callerId;
         const recipientId = isFreelancer ? pw.project.clientId : pw.project.freelancerId;
         await notify({ recipientId, actorId: callerId, actorName: isFreelancer ? (pw.freelancer?.name ?? "") : (pw.client?.name ?? ""), actorAvatar: null,
-          type: "stage_advanced", message: `The project plan for "${pw.project.title}" has been updated`, link: "/your-work", read: 0 });
+          type: "stage_advanced", message: `The project plan for "${pw.project.title}" has been updated`, link: "/your-work", read: 0,
+          targetType: "project", targetId: stage.projectId });
       }
       res.json(updated);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -2447,7 +3419,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           actorName: pw.freelancer?.name ?? "Freelancer", actorAvatar: pw.freelancer?.avatar ?? null,
           type: "stage_advanced",
           message: `${pw.freelancer?.name ?? "Your freelancer"} has shared the project plan for "${pw.project.title}" — review and approve to get started.`,
-          link: "/your-work", read: 0 });
+          link: "/your-work", read: 0,
+          targetType: "project", targetId: projectId });
         await logStageEvent(projectId, freelancerId, "plan_sent_to_client");
         res.json({ status: "awaiting_client" });
       } else {
@@ -2477,7 +3450,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         actorName: pw.client?.name ?? "Client", actorAvatar: null,
         type: "stage_advanced",
         message: `${pw.client?.name ?? "Your client"} approved the project plan for "${pw.project.title}" — you're ready to begin!`,
-        link: "/your-work", read: 0 });
+        link: "/your-work", read: 0,
+        targetType: "project", targetId: projectId });
       res.json({ status: "confirmed" });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -2498,7 +3472,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         actorName: pw.client?.name ?? "Client", actorAvatar: null,
         type: "stage_advanced",
         message: `${pw.client?.name ?? "Your client"} requested a change to the project plan for "${pw.project.title}".`,
-        link: "/your-work", read: 0 });
+        link: "/your-work", read: 0,
+        targetType: "project", targetId: projectId });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -2533,7 +3508,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         actorName: pw.freelancer?.name ?? "Freelancer", actorAvatar: pw.freelancer?.avatar ?? null,
         type: "stage_advanced",
         message: `"${stage.title}" is ready for your review on "${pw.project.title}".`,
-        link: "/your-work", read: 0 });
+        link: "/your-work", read: 0,
+        targetType: "project", targetId: stage.projectId });
       res.json(updated);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -2557,7 +3533,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         actorName: pw.client?.name ?? "Client", actorAvatar: null,
         type: "stage_advanced",
         message: `${pw.client?.name ?? "Your client"} approved "${stage.title}" on "${pw.project.title}".`,
-        link: "/your-work", read: 0 });
+        link: "/your-work", read: 0,
+        targetType: "project", targetId: stage.projectId });
       res.json(updated);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
@@ -2598,15 +3575,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         actorName: pw.client?.name ?? "Client", actorAvatar: null,
         type: "stage_advanced",
         message: `${pw.client?.name ?? "Your client"} requested changes on "${stage.title}".`,
-        link: "/your-work", read: 0 });
+        link: "/your-work", read: 0,
+        targetType: "project", targetId: stage.projectId });
       res.json(updated);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // GET /api/projects/:id/plan-summary — for plan review screen
-  app.get("/api/projects/:id/plan-summary", async (req, res) => {
+  // PRD-1 read-path auth: requireAuth + party check (was unauthenticated).
+  app.get("/api/projects/:id/plan-summary", requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
+      await assertProjectParty(projectId, req.auth!.userId);
       const pw = await storage.getProject(projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
       const stages = await getProjectStages(projectId);
@@ -2621,24 +3601,83 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         progress,
         stageCount: stages.length,
       });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) {
+      if (sendProjectAccessError(res, e)) return;
+      res.status(500).json({ error: "Failed to load plan summary" });
+    }
   });
 
   // ─── Deliverables ──────────────────────────────────────────────────────────
-  app.get("/api/projects/:id/deliverables", async (req, res) => {
-    const list = await storage.getDeliverables(Number(req.params.id));
-    res.json(list);
+  // PRD-1 Decision 10 — THE REAL PAYMENT GATE.
+  //
+  // Until now the only thing between an unpaid client and the freelancer's work
+  // was one CSS condition in client/src/components/DeliverablesSection.tsx (a
+  // watermark overlay). That is not security: the URL was in the JSON payload,
+  // so DevTools, curl, or the React Query cache handed over the asset
+  // regardless of payment.
+  //
+  // `deliverables` rows are third-party links (`url`, `embed_url`, both NOT
+  // NULL — contract section A). There is no object key and no per-row access
+  // column, so the enforceable gate is a PROJECTION gate: when locked, `url`
+  // and `embedUrl` are never serialised at all.
+  //
+  // GATE CONDITION (contract D):
+  //   locked = (viewer is the CLIENT party) AND (project.paymentStatus !== "paid")
+  // The freelancer party always receives URLs — it is their own work. Admins
+  // always receive URLs; note that `assertProjectParty` has no admin bypass, so
+  // an admin who is not a party is rejected before the gate is even evaluated
+  // and must use a requireAdminGuard route.
+  app.get("/api/projects/:id/deliverables", requireAuth, async (req, res) => {
+    try {
+      const { project, role } = await assertProjectParty(Number(req.params.id), req.auth!.userId);
+      const list = await storage.getDeliverables(Number(req.params.id));
+
+      const isAdmin = (req.auth as any)?.role === "admin" || (req.auth as any)?.isAdmin === true;
+      const locked = role === "client" && project.paymentStatus !== "paid" && !isAdmin;
+
+      res.set("Cache-Control", "private, no-store");
+      res.json(list.map(d => ({
+        id: d.id,
+        label: d.label,
+        platform: d.platform,
+        locked,
+        // ADDITIVE beyond the contract's minimum shape (mobile ignores extra
+        // fields): the web list needs `createdBy` for the freelancer's delete
+        // control and `createdAt` for its timestamp. Neither is sensitive — an
+        // actor id and a timestamp, both already visible to both parties — and
+        // neither can be used to reach the asset.
+        createdBy: d.createdBy,
+        createdAt: d.createdAt,
+        // OMITTED, not blanked, when locked. Nothing client-side can
+        // reconstruct them.
+        ...(locked
+          ? { lockReason: "awaiting_payment" as const }
+          : { url: d.url, embedUrl: d.embedUrl }),
+      })));
+    } catch (e: any) {
+      if (sendProjectAccessError(res, e)) return;
+      res.status(500).json({ error: "Failed to load deliverables" });
+    }
   });
 
   // PRD-018 A20: requireAuth + session-derived createdBy
+  // PRD-1 wave 3: added the missing PARTY CHECK — any authenticated user could
+  // previously attach a deliverable to ANY project id.
   app.post("/api/projects/:id/deliverables", requireAuth, async (req, res) => {
+    try {
+      await assertProjectParty(Number(req.params.id), req.auth!.userId);
+    } catch (e: any) {
+      if (sendProjectAccessError(res, e)) return;
+      return res.status(500).json({ error: "Failed to add deliverable" });
+    }
     const { url, label, platform, embedUrl } = req.body;
     if (!url || !label || !platform || !embedUrl) {
       return res.status(400).json({ error: "Missing fields" });
     }
     const d = await storage.addDeliverable({
       projectId: Number(req.params.id),
-      url, label, platform, embedUrl,
+      url: String(url), label: String(label),
+      platform: String(platform), embedUrl: String(embedUrl),
       createdBy: req.auth!.userId,
     });
     res.json(d);
@@ -2654,11 +3693,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Time Entries ───────────────────────────────────────────────────────
 
   // GET /api/projects/:id/time-entries — list all entries for a project
-  app.get("/api/projects/:id/time-entries", async (req, res) => {
+  // PRD-1 read-path auth: requireAuth + party check (was unauthenticated).
+  app.get("/api/projects/:id/time-entries", requireAuth, async (req, res) => {
     try {
+      await assertProjectParty(Number(req.params.id), req.auth!.userId);
       const entries = await storage.getTimeEntriesByProject(Number(req.params.id));
       res.json(entries);
     } catch (e) {
+      if (sendProjectAccessError(res, e)) return;
       res.status(500).json({ error: "Failed to load time entries" });
     }
   });
@@ -2750,9 +3792,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(brief);
   });
 
+  // PRD-1 wave 3: `clientId` (and the denormalised client display fields) are
+  // now taken from the SESSION, not the body. Previously any authenticated user
+  // could post a brief in another user's name — the brief would appear in that
+  // client's dashboard and every interest notification would be routed to them.
   app.post("/api/briefs", requireAuth, briefLimiter, async (req, res) => {
     try {
-      const data = insertBriefSchema.parse(req.body);
+      const me = await storage.getUser(req.auth!.userId);
+      if (!me) return res.status(401).json({ error: "Not authenticated" });
+      const data = insertBriefSchema.parse({
+        ...req.body,
+        clientId: me.id,
+        clientName: me.name,
+        clientAvatar: me.avatar ?? null,
+        // Lifecycle counters are server-owned.
+        status: "open",
+        isActive: true,
+      });
       const brief = await storage.createBrief(data);
       res.json(brief);
     } catch (e: any) {
@@ -2762,9 +3818,35 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ─── Brief Interests ───────────────────────────────────────────────────────
   // Freelancer expresses interest in a brief
+  // PRD-1 wave 3: `freelancerId` comes from the SESSION, and the brief-side
+  // fields (`briefClientId`, `briefTitle`, `briefClientName`) are read from the
+  // brief row rather than trusted from the body. Before this, a caller could
+  // apply as somebody else and — worse — set `briefClientId` freely, which is
+  // the field `notify()` uses as the recipient, making this route an arbitrary
+  // notification sender.
   app.post("/api/interests", requireAuth, interestLimiter, async (req, res) => {
     try {
-      const data = insertBriefInterestSchema.parse(req.body);
+      const me = await storage.getUser(req.auth!.userId);
+      if (!me) return res.status(401).json({ error: "Not authenticated" });
+      const briefId = Number(req.body?.briefId);
+      const brief = Number.isFinite(briefId) ? await storage.getBrief(briefId) : undefined;
+      if (!brief) return res.status(404).json({ error: "Brief not found" });
+      if (brief.clientId === me.id) {
+        return res.status(400).json({ error: "You cannot express interest in your own brief" });
+      }
+      const data = insertBriefInterestSchema.parse({
+        ...req.body,
+        briefId: brief.id,
+        briefTitle: brief.title,
+        briefClientId: brief.clientId,
+        briefClientName: brief.clientName,
+        freelancerId: me.id,
+        freelancerName: me.name,
+        freelancerAvatar: me.avatar ?? null,
+        status: "pending",
+        counterOfferPence: null,
+        respondedAt: null,
+      });
       const interest = await storage.createBriefInterest(data);
       // Notify the client that a freelancer expressed interest in their brief
       await notify({
@@ -2776,6 +3858,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         message: `${data.freelancerName} expressed interest in your brief "${data.briefTitle}"`,
         link: `/dashboard`,
         read: 0,
+        // Decision 17: interest threads live in Brief context, never the DM
+        // inbox — so the target is the brief.
+        targetType: "brief",
+        targetId: data.briefId ?? null,
       });
       res.json(interest);
     } catch (e: any) {
@@ -2820,6 +3906,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         type: "interest",
         message: `${clientName ?? interest.briefClientName} made a counter-offer of £${(counterOfferPence / 100).toFixed(2)} on "${interest.briefTitle}"`,
         link: "/dashboard", read: 0,
+        targetType: "brief", targetId: interest.briefId ?? null,
       });
       res.json({ ok: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -2839,7 +3926,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!existing) {
         let briefDesc = "", briefCategory = "";
         try { const brief = await storage.getBrief(interest.briefId); if (brief) { briefDesc = brief.description ?? ""; briefCategory = brief.category ?? ""; } } catch {}
-        await storage.createProject({
+        // PRD 1 wave 4: the created project is now captured so the notification
+        // can carry its id (Decision 14). The call itself is unchanged.
+        const createdProject: { id?: number } | undefined = await storage.createProject({
           clientId: interest.briefClientId, freelancerId: interest.freelancerId,
           title: interest.briefTitle, description: briefDesc, status: "active", currentStage: 0,
           briefId: interest.briefId ?? undefined, interestId: interest.id,
@@ -2854,6 +3943,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           type: "interest_accepted",
           message: `${interest.freelancerName} accepted your counter-offer on "${interest.briefTitle}" — project is live!`,
           link: "/your-work", read: 0,
+          // The notification says "project is live", so the project is the right
+          // destination when we have its id; the brief is the honest fallback.
+          ...(createdProject?.id
+            ? { targetType: "project" as const, targetId: createdProject.id }
+            : { targetType: "brief" as const, targetId: interest.briefId ?? null }),
         });
       }
       res.json({ ok: true });
@@ -2938,6 +4032,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           message:     `${clientName ?? interest.briefClientName} accepted your interest in "${interest.briefTitle}" — project is now live!`,
           link:        `/dashboard`,
           read:        0,
+          targetType:  "brief",
+          targetId:    interest.briefId ?? null,
         });
       } else if (interest && status === "declined" && clientName) {
         const client = await storage.getUser(interest.briefClientId);
@@ -2950,6 +4046,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           message:     `${clientName} declined your interest in "${interest.briefTitle}"`,
           link:        `/dashboard`,
           read:        0,
+          targetType:  "brief",
+          targetId:    interest.briefId ?? null,
         });
       }
       res.json({ ok: true });
@@ -2964,7 +4062,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.get("/api/notifications/:userId", requireAuth, async (req, res) => {
     if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
-      const notifs = await storage.getNotifications(req.auth!.userId);
+      // PRD-1 wave 3: paging. This route previously returned EVERY notification
+      // row a user had ever received on every poll. limit defaults to 30 and is
+      // clamped to 100 in storage; ordering is by id desc (`created_at` is a
+      // text column — contract section A — and is not a reliable sort key).
+      const limit = optionalPositiveInt(req.query.limit) ?? 30;
+      const offset = optionalPositiveInt(req.query.offset) ?? 0;
+      const notifs = await storage.getNotifications(req.auth!.userId, limit, offset);
+      res.set("Cache-Control", "private, no-store");
       res.json(notifs);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2985,9 +4090,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // Mark a single notification as read
   // PRD-018 A22: requireAuth — only authenticated users can mark notifications read
+  //
+  // PRD-1 wave 3 OWNERSHIP FIX: requireAuth alone only proved the caller was
+  // *someone*. `markNotificationRead(id)` updated by primary key with no
+  // recipient predicate, so any logged-in user could walk the id space and mark
+  // other people's notifications read — silently suppressing another user's
+  // unread badge. The recipient is now part of the WHERE clause and a row that
+  // is not yours is indistinguishable from one that does not exist (404).
   app.patch("/api/notifications/:id/read", requireAuth, async (req, res) => {
     try {
-      await storage.markNotificationRead(Number(req.params.id));
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: "Invalid notification id" });
+      const ok = await storage.markNotificationRead(id, req.auth!.userId);
+      if (!ok) return res.status(404).json({ error: "Notification not found" });
       res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -3103,6 +4218,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           message: `${sender.name} sent you a connection request`,
           link: "/dashboard",
           read: 0,
+          targetType: "profile",
+          targetId: senderId,
         });
       }
       res.json(connReq);
@@ -3146,6 +4263,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             message: `${responder.name} accepted your connection request`,
             link: "/dashboard",
             read: 0,
+            targetType: "profile",
+            targetId: responderId,
           });
         }
       }
@@ -4520,6 +5639,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           message: `Your invoice for "${projectTitle || pw.project.title || 'your project'}" is ready to view`,
           link: `/invoice/${projectId}`,
           read: 0,
+          targetType: "project",
+          targetId: projectId,
         });
       } catch {}
       res.json(invoice);
@@ -4922,10 +6043,152 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.patch("/api/notifications/preferences/:userId", requireAuth, async (req, res) => {
     if (req.auth!.userId !== Number(req.params.userId)) return res.status(403).json({ error: "Forbidden." });
     try {
-      const prefs = await (storage as any).upsertNotifPrefs(req.auth!.userId, req.body);
+      // PRD 1 security fix: MASS ASSIGNMENT.
+      // req.body used to be spread straight into a Drizzle .set()/.values() in
+      // storage.upsertNotifPrefs, so a caller could write ANY column on
+      // notification_preferences — including `id` and `user_id`, which let them
+      // re-point their preferences row at another user's id. The whitelist now
+      // lives in storage.sanitiseNotifPrefs and is applied here as well so the
+      // guarantee is visible at the route.
+      const prefs = await (storage as any).upsertNotifPrefs(
+        req.auth!.userId,
+        sanitiseNotifPrefs(req.body),
+      );
       res.json(prefs);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ═══ PRD 1 wave 4 — native push (Decision 15, contract §D) ═════════════════
+  //
+  // Four endpoints, matched EXACTLY to the shipped mobile client in
+  // `mobile/src/api/push.ts` (which is frozen and was not modified):
+  //
+  //   POST   /api/me/push-tokens        { token, platform, deviceId?, appVersion? }
+  //   DELETE /api/me/push-tokens        { token }   ← body, not path
+  //   GET    /api/me/push-preferences   → the five push keys
+  //   PATCH  /api/me/push-preferences   → the five push keys
+  //
+  // The identity always comes from `req.auth.userId`. There is no `:userId`
+  // path parameter anywhere in this block, so there is no ownership check to
+  // get wrong — unlike the email-preference routes above, which need an
+  // explicit 403 because they are addressed by id.
+  //
+  // THESE ARE NOT THE EMAIL PREFERENCES. `notification_preferences` (eight
+  // `email*` keys) gates email; `push_preferences` (five `push*` keys) gates
+  // device push. This block never touches the email model, and a user who
+  // turned off marketing email has not turned off a message push.
+  //
+  // Degraded mode: `push_tokens` / `push_preferences` are created by migration
+  // 0006, which has not been applied. Every handler below returns a valid
+  // response when the tables are absent (push-service reports `degraded`) —
+  // none of them 500s the caller, because M5's provider surfaces a failure here
+  // as a permanent "push could not be set up" error the user cannot act on.
+
+  app.post("/api/me/push-tokens", requireAuth, async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const token = String(body.token ?? "").trim();
+      const platform = String(body.platform ?? "").trim().toLowerCase();
+
+      if (!token) return res.status(400).json({ error: "token is required." });
+      if (token.length > 512) return res.status(400).json({ error: "token is not a push token." });
+      if (platform !== "ios" && platform !== "android") {
+        return res.status(400).json({ error: 'platform must be "ios" or "android".' });
+      }
+
+      const { record, degraded, prunedForeign } = await registerPushTokenRow(req.auth!.userId, {
+        token,
+        platform,
+        deviceId: body.deviceId == null ? null : String(body.deviceId),
+        appVersion: body.appVersion == null ? null : String(body.appVersion),
+      });
+
+      // `registered` is the field the mobile client reads. The record is
+      // returned alongside it so the caller can confirm what was stored
+      // (platform/device/app version), which is what the brief asks for; the
+      // client ignores the extra fields.
+      res.json({
+        registered: true,
+        token: record.token,
+        platform: record.platform,
+        deviceId: record.deviceId,
+        appVersion: record.appVersion,
+        // Visible so a device reassignment is observable rather than silent.
+        prunedOtherAccounts: prunedForeign,
+        ...(degraded ? { persisted: false } : {}),
+      });
+    } catch (e: any) {
+      if (String(e?.message) === "INVALID_PUSH_TOKEN_INPUT") {
+        return res.status(400).json({ error: "Invalid push token payload." });
+      }
+      console.warn("[push] register failed:", e?.message);
+      // Still not a 500: a failed registration must not look like an outage to
+      // the client, and the token can be re-registered on the next foreground.
+      res.status(503).json({ registered: false, error: "Push registration is unavailable." });
+    }
+  });
+
+  // DELETE with a body on purpose (contract §D): an Expo token
+  // ("ExponentPushToken[…]") is not safe as a path segment. Scoped to
+  // `req.auth.userId`, so a caller can only delete its OWN rows — possession of
+  // a token string is never authority over someone else's device.
+  app.delete("/api/me/push-tokens", requireAuth, async (req, res) => {
+    try {
+      const token = String(((req.body ?? {}) as any).token ?? "").trim();
+      if (!token) return res.status(400).json({ error: "token is required in the body." });
+
+      const { deleted } = await deletePushTokenForUser(req.auth!.userId, token);
+      // Idempotent: deleting an already-absent token is `ok`, not 404. A 404
+      // here would also confirm whether a token exists, which is not the
+      // caller's business.
+      res.json({ ok: true, deleted });
+    } catch (e: any) {
+      console.warn("[push] deregister failed:", e?.message);
+      res.status(503).json({ ok: false, error: "Push deregistration is unavailable." });
+    }
+  });
+
+  // Creates the defaults row on first read (four on, `pushSocial` off).
+  app.get("/api/me/push-preferences", requireAuth, async (req, res) => {
+    try {
+      const { prefs } = await getOrCreatePushPreferences(req.auth!.userId);
+      res.set("Cache-Control", "private, no-store");
+      res.json(prefs);
+    } catch (e: any) {
+      console.warn("[push] preference read failed:", e?.message);
+      res.status(500).json({ error: "Unable to load push preferences." });
+    }
+  });
+
+  app.patch("/api/me/push-preferences", requireAuth, async (req, res) => {
+    try {
+      // MASS ASSIGNMENT: explicit five-key whitelist, the same hole B2 closed on
+      // the email endpoint above. `sanitisePushPrefs` accepts ONLY the five
+      // `push*` booleans — never `id`, never `userId` (which would let a caller
+      // re-point their row at another user), and never an email key.
+      const clean = sanitisePushPrefs(req.body);
+      const unknownKeys = Object.keys((req.body ?? {}) as Record<string, unknown>).filter(
+        (k) => !(PUSH_PREFERENCE_KEYS as readonly string[]).includes(k),
+      );
+      if (unknownKeys.length) {
+        // Rejected loudly rather than ignored: a client sending `emailMessages`
+        // here has confused the two models, and silently returning 200 would
+        // hide that.
+        return res.status(400).json({
+          error: "Unknown push preference key(s).",
+          unknownKeys,
+          allowed: PUSH_PREFERENCE_KEYS,
+        });
+      }
+
+      const { prefs } = await updatePushPreferences(req.auth!.userId, clean);
+      res.set("Cache-Control", "private, no-store");
+      res.json(prefs);
+    } catch (e: any) {
+      console.warn("[push] preference write failed:", e?.message);
+      res.status(500).json({ error: "Unable to save push preferences." });
     }
   });
 
@@ -5831,30 +7094,88 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ─── PRD-021 WS-B: Account deletion request ────────────────────────────────
-  // POST /api/me/request-deletion — check blockers, create deletion request
+  // ─── PRD 1 (Decision 6): Account deletion ──────────────────────────────────
+  //
+  // GET /api/me/deletion-status — contract §D. Read-only, never 409s, and shows
+  // the user the real retention schedule rather than a reassuring summary.
+  app.get("/api/me/deletion-status", requireAuth, async (req: any, res: any) => {
+    try {
+      const status = await getDeletionStatus(req.auth!.userId);
+      res.set("Cache-Control", "private, no-store");
+      return res.json(status);
+    } catch (e: any) {
+      console.error("[deletion-status] Failed:", e?.message);
+      return res.status(500).json({ error: "Could not load your deletion status. Please try again." });
+    }
+  });
+
+  // POST /api/me/request-deletion
+  //
+  // DECISION 6 — this no longer returns 409. The old behaviour refused the
+  // request outright and indefinitely whenever any blocker existed, with no
+  // path to erasure: an active project or an unpaid invoice meant "no, forever".
+  // That is not a lawful answer to an erasure request. Now:
+  //   • no blockers   -> request recorded as 'pending', user may confirm now
+  //   • blockers      -> request recorded as 'scheduled' with a real date, and
+  //                      the blockers are returned so the user can clear them
+  //                      sooner. Never a refusal.
+  //
+  // The copy is also fixed. It previously said "within 30 days" here while
+  // confirm-deletion below anonymises instantly — two contradictory promises
+  // about the same operation.
   app.post("/api/me/request-deletion", requireAuth, async (req: any, res: any) => {
     try {
-
       const userId = req.auth!.userId;
-      const blocker = await checkDeletionBlockers(userId);
-      if (blocker.blocked) {
-        return res.status(409).json({
-          ok: false,
-          blocked: true,
-          code: blocker.code,
-          message: blocker.reason,
-        });
-      }
+      const assessment = await checkDeletionBlockers(userId);
       const sql = neon(process.env.DATABASE_URL!);
       const now = new Date().toISOString();
-      await sql`
-        INSERT INTO account_deletion_requests (user_id, status, requested_at)
-        VALUES (${userId}, 'pending', ${now})
-      `;
-      res.json({ ok: true, message: "Deletion request submitted. Your account will be anonymised within 30 days." });
+
+      const state = assessment.state === "scheduled" ? "scheduled" : "pending";
+      const scheduledFor = assessment.scheduledFor;
+      const deferredReason = assessment.blockers.length
+        ? assessment.blockers.map((b) => b.code).join(",")
+        : null;
+
+      // `state`, `scheduled_for` and `deferred_reason` arrive with migration
+      // 0006. Fall back to the pre-migration column set so this endpoint keeps
+      // working if the migration has not been applied yet.
+      try {
+        await sql`
+          INSERT INTO account_deletion_requests
+            (user_id, status, requested_at, state, scheduled_for, deferred_reason)
+          VALUES
+            (${userId}, ${state}, ${now}, ${state}, ${scheduledFor}, ${deferredReason})
+        `;
+      } catch (insertErr: any) {
+        console.warn("[request-deletion] Falling back to pre-0006 columns:", insertErr?.message);
+        await sql`
+          INSERT INTO account_deletion_requests (user_id, status, requested_at, blocker_reason)
+          VALUES (${userId}, ${state}, ${now}, ${deferredReason})
+        `;
+      }
+
+      if (state === "scheduled") {
+        return res.json({
+          ok: true,
+          state: "scheduled",
+          scheduledFor,
+          blockers: assessment.blockers.map((b) => ({
+            code: b.code, label: b.label, detail: b.detail, clearsAutomatically: b.clearsAutomatically,
+          })),
+          message: `Your deletion request is recorded. We cannot erase your account immediately because of ${assessment.blockers.length} outstanding item${assessment.blockers.length === 1 ? "" : "s"} listed below. It is scheduled for ${new Date(scheduledFor!).toLocaleDateString("en-GB")}, and will happen sooner if those clear first. Your request will not be forgotten or refused.`,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        state: "pending",
+        scheduledFor: null,
+        blockers: [],
+        message: "Your deletion request is recorded. Nothing is blocking it — confirm with your password and your account is anonymised straight away. Some financial and legal records are kept for up to 6 years; see the retention schedule for exactly what and why.",
+      });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.error("[request-deletion] Failed:", e?.message);
+      res.status(500).json({ error: "Could not record your deletion request. Please try again." });
     }
   });
 
@@ -5878,27 +7199,72 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { valid } = await verifyPassword(password, user.passwordHash);
       if (!valid) return res.status(403).json({ error: "Incorrect password" });
 
-      // Final blocker check
-      const blocker = await checkDeletionBlockers(userId);
-      if (blocker.blocked) {
-        return res.status(409).json({ ok: false, blocked: true, code: blocker.code, message: blocker.reason });
+      // Final blocker check. Decision 6: still NOT a refusal — immediate
+      // erasure is deferred, and the request is recorded as scheduled so it
+      // completes automatically once the blockers clear. Status is 202
+      // (Accepted, not yet acted on), never 409.
+      const assessment = await checkDeletionBlockers(userId);
+      const sql = neon(process.env.DATABASE_URL!);
+      if (assessment.state === "scheduled") {
+        try {
+          await sql`
+            UPDATE account_deletion_requests
+            SET state = 'scheduled',
+                status = 'scheduled',
+                scheduled_for = ${assessment.scheduledFor},
+                deferred_reason = ${assessment.blockers.map((b) => b.code).join(",")}
+            WHERE user_id = ${userId} AND COALESCE(state, status) IN ('pending', 'scheduled', 'processing')
+          `;
+        } catch (updErr: any) {
+          console.warn("[confirm-deletion] Could not record deferral (pre-0006?):", updErr?.message);
+        }
+        return res.status(202).json({
+          ok: true,
+          state: "scheduled",
+          scheduledFor: assessment.scheduledFor,
+          blockers: assessment.blockers.map((b) => ({
+            code: b.code, label: b.label, detail: b.detail, clearsAutomatically: b.clearsAutomatically,
+          })),
+          message: "We have accepted your deletion. It cannot complete right now because of the outstanding items below, so it is scheduled — you do not need to ask again.",
+        });
       }
 
-      // Mark in-progress, then anonymise
-      const sql = neon(process.env.DATABASE_URL!);
+      // Mark in-progress, then anonymise.
       await sql`
         UPDATE account_deletion_requests
         SET status = 'processing'
-        WHERE user_id = ${userId} AND status = 'pending'
+        WHERE user_id = ${userId} AND status IN ('pending', 'scheduled')
       `;
 
-      await anonymiseUserAccount(userId);
+      // NOTE: this is the call that has been FAILING IN PRODUCTION. It wrote
+      // NULL to users.password_algo, which is text NOT NULL, so every
+      // confirm-deletion threw a not-null violation and no account could be
+      // deleted. privacy-service now writes a sentinel instead. The function is
+      // idempotent, so a retry after a partial failure is safe.
+      const report = await anonymiseUserAccount(userId);
+      if (report.skippedSteps.length) {
+        console.warn(`[confirm-deletion] user ${userId}: skipped steps`, report.skippedSteps);
+      }
 
       // Clear session cookie
       clearSessionCookie(res);
-      res.json({ ok: true, message: "Account anonymised. We are sorry to see you go." });
+      res.json({
+        ok: true,
+        state: "anonymised",
+        message: "Your account has been anonymised. Financial and legal records we are required to keep (invoices, payments, terms acceptances) are retained for up to 6 years and no longer identify you. We are sorry to see you go.",
+      });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      // A partial anonymisation must be loud, not silent — the user believes
+      // their data is gone. anonymiseUserAccount sets e.partial and e.report.
+      if (e?.partial) {
+        console.error(`[confirm-deletion] PARTIAL anonymisation for user ${req.auth!.userId}:`, e.report?.failedSteps);
+        return res.status(500).json({
+          error: "Your account was partly anonymised but some records could not be updated. Our team has been alerted and will complete it. Please contact support if you do not hear back.",
+          code: "PARTIAL_ANONYMISATION",
+        });
+      }
+      console.error("[confirm-deletion] Failed:", e?.message);
+      res.status(500).json({ error: "Deletion failed. Nothing has been changed. Please try again or contact support." });
     }
   });
 
@@ -5956,8 +7322,42 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const status = (req.query.status as string) ?? "open";
       const limit = Math.min(Number(req.query.limit ?? 50), 100);
       const offset = Number(req.query.offset ?? 0);
+      // PRD 1: hydrate the REPORTED SUBJECT.
+      // The queue previously showed only the reporter and a bare
+      // (subject_type, subject_id) pair, so the founder had to run SQL by hand
+      // to find out what had actually been reported — which meant reports went
+      // unactioned. subject_type is 'user' | 'post' | 'comment' | 'project'
+      // (server/services/trust-service.ts), resolved here per type.
       const reports = await sql`
-        SELECT ur.*, u.name AS reporter_name, u.email AS reporter_email
+        SELECT ur.*,
+               u.name  AS reporter_name,
+               u.email AS reporter_email,
+               CASE ur.subject_type
+                 WHEN 'user'    THEN (SELECT su.name    FROM users su         WHERE su.id = ur.subject_id)
+                 WHEN 'post'    THEN (SELECT au.name    FROM posts p JOIN users au ON au.id = p.user_id WHERE p.id = ur.subject_id)
+                 WHEN 'comment' THEN (SELECT au.name    FROM post_comments c JOIN users au ON au.id = c.user_id WHERE c.id = ur.subject_id)
+                 WHEN 'project' THEN (SELECT pr.title   FROM projects pr      WHERE pr.id = ur.subject_id)
+                 ELSE NULL
+               END AS subject_label,
+               CASE ur.subject_type
+                 WHEN 'user'    THEN ur.subject_id
+                 WHEN 'post'    THEN (SELECT p.user_id FROM posts p         WHERE p.id = ur.subject_id)
+                 WHEN 'comment' THEN (SELECT c.user_id FROM post_comments c WHERE c.id = ur.subject_id)
+                 ELSE NULL
+               END AS subject_user_id,
+               CASE ur.subject_type
+                 WHEN 'post'    THEN (SELECT p.caption FROM posts p         WHERE p.id = ur.subject_id)
+                 WHEN 'comment' THEN (SELECT c.content FROM post_comments c WHERE c.id = ur.subject_id)
+                 ELSE NULL
+               END AS subject_body,
+               CASE ur.subject_type
+                 WHEN 'user'    THEN (SELECT su.account_status FROM users su WHERE su.id = ur.subject_id)
+                 ELSE NULL
+               END AS subject_account_status,
+               (SELECT COUNT(*)::int FROM user_reports prior
+                  WHERE prior.subject_type = ur.subject_type
+                    AND prior.subject_id   = ur.subject_id
+                    AND prior.id <> ur.id) AS prior_reports_against_subject
         FROM user_reports ur
         LEFT JOIN users u ON u.id = ur.reporter_user_id
         WHERE ur.status = ${status}
@@ -6041,13 +7441,113 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // GET /api/me/blocks — list who I have blocked
+  //
+  // PRD 1: hydrated. This returned bare ids, so the mobile and web block lists
+  // had nothing to render and no second request could fetch the names (the
+  // profile endpoints correctly hide blocked users). `blockedIds` is still
+  // returned for backwards compatibility with existing clients.
   app.get("/api/me/blocks", requireAuth, async (req: any, res: any) => {
     try {
-
       const blockedIds = await getBlockList(req.auth!.userId);
-      res.json({ blockedIds });
+      if (!blockedIds.length) return res.json({ blocks: [], blockedIds: [] });
+
+      const sql = neon(process.env.DATABASE_URL!);
+      const rows = await sql`
+        SELECT ub.blocked_user_id AS user_id,
+               ub.created_at      AS blocked_at,
+               u.name, u.avatar, u.headline, u.account_status
+        FROM user_blocks ub
+        LEFT JOIN users u ON u.id = ub.blocked_user_id
+        WHERE ub.blocker_user_id = ${req.auth!.userId}
+        ORDER BY ub.created_at DESC
+      `;
+      const blocks = rows.map((r: any) => ({
+        userId: Number(r.user_id),
+        name: r.name ?? "Deleted user",
+        avatar: r.avatar ?? null,
+        headline: r.headline ?? null,
+        blockedAt: r.blocked_at,
+      }));
+      res.json({ blocks, blockedIds });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.error("[me/blocks] Failed:", e?.message);
+      res.status(500).json({ error: "Could not load your blocked list." });
+    }
+  });
+
+  // ─── PRD 1 (Decision 8, contract §G): content flag review queue ───────────
+  //
+  // Tier-2 moderation is worthless without somewhere to review it. These two
+  // endpoints are the founder/admin queue. There is deliberately NO external
+  // moderation provider and no new paid dependency (Decision 9) — the SLA in
+  // docs/COMMUNITY_GUIDELINES.md is written around one person working this
+  // queue by hand.
+  app.get("/api/admin/content-flags", requireAdminGuard, async (req: any, res: any) => {
+    try {
+      const state = typeof req.query.state === "string" ? req.query.state : "pending";
+      if (!["pending", "cleared", "removed"].includes(state)) {
+        return res.status(400).json({ error: "state must be pending, cleared or removed" });
+      }
+      const result = await listContentFlags({
+        state,
+        limit: Number(req.query.limit ?? 50),
+        offset: Number(req.query.offset ?? 0),
+      });
+      res.set("Cache-Control", "private, no-store");
+      res.json({ ...result, state });
+    } catch (e: any) {
+      console.error("[admin/content-flags] Failed:", e?.message);
+      res.status(500).json({ error: "Could not load the moderation queue." });
+    }
+  });
+
+  // PATCH /api/admin/content-flags/:id — resolve one flag.
+  //   action 'cleared' -> content stays up, flag closed
+  //   action 'removed' -> flag closed AND the post/comment is deleted, with the
+  //                       author notified (the same copy the admin feed
+  //                       deletion path uses, which now points at guidelines
+  //                       that actually exist).
+  app.patch("/api/admin/content-flags/:id", requireAdminGuard, async (req: any, res: any) => {
+    try {
+      const admin = req.auth!.adminUser!;
+      const action = req.body?.action;
+      if (action !== "cleared" && action !== "removed") {
+        return res.status(400).json({ error: "action must be 'cleared' or 'removed'" });
+      }
+      const note = typeof req.body?.note === "string" ? req.body.note.slice(0, 1000) : undefined;
+
+      const resolved = await resolveContentFlag({
+        flagId: Number(req.params.id),
+        adminUserId: admin.id,
+        action,
+        note,
+      });
+      if (!resolved) return res.status(404).json({ error: "Flag not found or already resolved" });
+
+      if (action === "removed") {
+        const sql = neon(process.env.DATABASE_URL!);
+        if (resolved.subjectType === "post") {
+          await storage.adminDeletePost(resolved.subjectId, admin.id);
+          bustFeedCache();
+        } else if (resolved.subjectType === "comment") {
+          await sql`DELETE FROM post_comments WHERE id = ${resolved.subjectId}`;
+        }
+        await notify({
+          recipientId: resolved.authorUserId,
+          actorId: admin.id,
+          actorName: "Viewrr",
+          actorAvatar: null,
+          type: "system",
+          message: `Your ${resolved.subjectType} was removed for breaching the Viewrr Community Guidelines. Read them here: ${GUIDELINES_URL}`,
+          link: "/feed",
+          read: 0,
+        });
+      }
+
+      res.json({ ok: true, action, subject: resolved });
+    } catch (e: any) {
+      console.error("[admin/content-flags/resolve] Failed:", e?.message);
+      res.status(500).json({ error: "Could not resolve that flag." });
     }
   });
 

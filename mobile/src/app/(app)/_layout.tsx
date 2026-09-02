@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { TAB_CONTENT_HEIGHT, TabIcon } from "@/components/TabIcon";
 import { HIDDEN_TABS, TAB_SLOTS } from "@/navigation/tabs";
 import { NotificationsProvider } from "@/notifications/NotificationsProvider";
+import { PushProvider } from "@/push";
 import { useSession } from "@/session/SessionProvider";
 import { useTheme } from "@/theme";
 
@@ -21,6 +22,12 @@ import { useTheme } from "@/theme";
  * stack, the notification centre and the account routes are registered here
  * with `href: null` — they exist in the tree and are reachable by navigation
  * and deep link, they just draw no tab button.
+ *
+ * Push (Decision 15) is mounted here, inside NotificationsProvider, for two
+ * reasons. First, placement: this subtree only ever renders for a signed-in
+ * user, so the OS permission prompt can never appear on cold start before
+ * sign-in. Second, ordering: PushProvider reads the unread-count context, so a
+ * received push refreshes the real server count instead of guessing at a badge.
  *
  * Bar geometry, and why it is computed rather than hardcoded
  * ---------------------------------------------------------
@@ -67,42 +74,44 @@ export default function AppLayout() {
 
   return (
     <NotificationsProvider>
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          sceneStyle: { backgroundColor: colors.background },
-          tabBarActiveTintColor: colors.primary,
-          tabBarInactiveTintColor: colors.mutedForeground,
-          tabBarStyle: [
-            styles.tabBar,
-            {
-              backgroundColor: colors.card,
-              borderTopColor: colors.border,
-              height: TAB_CONTENT_HEIGHT + TAB_BAR_TOP_PAD + bottomPad,
-              paddingBottom: bottomPad,
-            },
-          ],
-          tabBarShowLabel: false,
-          tabBarItemStyle: styles.tabItem,
-        }}
-      >
-        {TAB_SLOTS.map((slot) => (
-          <Tabs.Screen
-            key={slot.name}
-            name={slot.name}
-            options={{
-              title: slot.label,
-              tabBarIcon: ({ focused }) => (
-                <TabIcon name={slot.icon} label={slot.label} focused={focused} />
-              ),
-            }}
-          />
-        ))}
+      <PushProvider>
+        <Tabs
+          screenOptions={{
+            headerShown: false,
+            sceneStyle: { backgroundColor: colors.background },
+            tabBarActiveTintColor: colors.primary,
+            tabBarInactiveTintColor: colors.mutedForeground,
+            tabBarStyle: [
+              styles.tabBar,
+              {
+                backgroundColor: colors.card,
+                borderTopColor: colors.border,
+                height: TAB_CONTENT_HEIGHT + TAB_BAR_TOP_PAD + bottomPad,
+                paddingBottom: bottomPad,
+              },
+            ],
+            tabBarShowLabel: false,
+            tabBarItemStyle: styles.tabItem,
+          }}
+        >
+          {TAB_SLOTS.map((slot) => (
+            <Tabs.Screen
+              key={slot.name}
+              name={slot.name}
+              options={{
+                title: slot.label,
+                tabBarIcon: ({ focused }) => (
+                  <TabIcon name={slot.icon} label={slot.label} focused={focused} />
+                ),
+              }}
+            />
+          ))}
 
-        {HIDDEN_TABS.map((name) => (
-          <Tabs.Screen key={name} name={name} options={{ href: null }} />
-        ))}
-      </Tabs>
+          {HIDDEN_TABS.map((name) => (
+            <Tabs.Screen key={name} name={name} options={{ href: null }} />
+          ))}
+        </Tabs>
+      </PushProvider>
     </NotificationsProvider>
   );
 }

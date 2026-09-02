@@ -3,7 +3,7 @@
  * Opened by NotificationBell when a user clicks a "message" notification.
  * Shows the full conversation thread + reply box in a floating modal.
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { X, Send } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -40,11 +40,19 @@ export default function QuickMessageModal({
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Fetch the thread (poll every 5 s while open)
+  //
+  // PRD-1 Decision 17: reading a thread no longer marks it read. The GET side
+  // effect at routes.ts was removed (it fired for any caller and the id order
+  // in `/:fromId/:toId` was ambiguous), so this modal now marks read
+  // explicitly via `POST /api/messages/read` — on open and whenever a poll
+  // brings a new inbound message — and invalidates the conversations query so
+  // the inbox badge clears. Without this the notification-bell flow would
+  // leave threads permanently unread.
   const { data: messages = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/messages", userId, otherId],
     queryFn: async () => {
       try {
-        const res = await fetch(`/api/messages/${otherId}/${userId}`);
+        const res = await apiRequest("GET", `/api/messages/${otherId}/${userId}`);
         if (!res.ok) return [];
         return res.json();
       } catch { return []; }
@@ -52,6 +60,38 @@ export default function QuickMessageModal({
     enabled: open,
     refetchInterval: open ? 5000 : false,
   });
+
+  const lastMarkedRef = useRef<number>(0);
+  const markRead = useCallback(async () => {
+    try {
+      await apiRequest("POST", "/api/messages/read", { otherUserId: otherId });
+      queryClient.invalidateQueries({ queryKey: ["/api/messages/conversations", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/messages/unread-count", userId] });
+    } catch {
+      // Non-fatal — the badge self-corrects on the next successful call.
+    }
+  }, [otherId, userId]);
+
+  // On open.
+  useEffect(() => {
+    if (!open) return;
+    lastMarkedRef.current = 0;
+    void markRead();
+  }, [open, otherId, markRead]);
+
+  // On a poll that brings a new inbound message (guarded so the 5s poll does
+  // not issue a write every tick).
+  useEffect(() => {
+    if (!open) return;
+    const newestInbound = messages.reduce(
+      (max: number, m: any) => (Number(m?.toId) === userId && Number(m?.id) > max ? Number(m.id) : max),
+      0,
+    );
+    if (newestInbound > lastMarkedRef.current) {
+      lastMarkedRef.current = newestInbound;
+      void markRead();
+    }
+  }, [open, messages, userId, markRead]);
 
   // Auto-scroll to bottom when messages arrive
   useEffect(() => {

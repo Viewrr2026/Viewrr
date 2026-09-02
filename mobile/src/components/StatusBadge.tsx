@@ -30,11 +30,35 @@ const TONES: Record<string, Tone> = {
   // projects.paymentStatus
   paid: "available",
   unpaid: "busy",
+  // project_stages.status (PRD-014 dynamic stages)
+  upcoming: "neutral",
+  in_progress: "brand",
+  awaiting_client: "busy",
+  changes_requested: "unavailable",
+  approved: "available",
+  // projects.planningStatus (PRD-014)
+  legacy: "neutral",
+  planning_required: "busy",
+  plan_draft: "busy",
+  client_changes: "unavailable",
+  confirmed: "available",
+  // deliverables lockReason (Decision 10) and retainer surfacing (Decision 12)
+  awaiting_payment: "busy",
+  locked: "busy",
+  retainer: "brand",
 };
 
 const LABELS: Record<string, string> = {
   counter_offered: "Counter offered",
   in_progress: "In progress",
+  awaiting_client: "Awaiting client review",
+  changes_requested: "Changes requested",
+  awaiting_payment: "Awaiting payment",
+  planning_required: "Plan needed",
+  plan_draft: "Plan in draft",
+  client_changes: "Plan changes requested",
+  confirmed: "Plan agreed",
+  legacy: "Original timeline",
 };
 
 function humanise(value: string): string {

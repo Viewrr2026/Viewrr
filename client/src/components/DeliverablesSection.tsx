@@ -73,15 +73,23 @@ function detectPlatform(url: string): PlatformInfo {
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+// PRD-1 Decision 10: `GET /api/projects/:id/deliverables` now returns a GATED
+// DTO. When the viewer is the client and the project is not paid, the server
+// does not send `url` / `embedUrl` at all — so both are OPTIONAL here and every
+// consumer must cope with their absence. The watermark overlay below is now
+// only a visual cue; it is no longer what protects the asset.
 interface Deliverable {
   id: number;
-  projectId: number;
-  url: string;
   label: string;
   platform: string;
-  embedUrl: string;
-  createdBy: number;
-  createdAt: string;
+  locked?: boolean;
+  url?: string;
+  embedUrl?: string;
+  lockReason?: "awaiting_payment";
+  // Present only on the row echoed back by POST; never relied on for rendering.
+  projectId?: number;
+  createdBy?: number;
+  createdAt?: string;
 }
 
 // ── Watermark overlay ─────────────────────────────────────────────────────────
@@ -191,7 +199,12 @@ function EmbedModal({
   username?: string;
   onClose: () => void;
 }) {
-  const info = detectPlatform(deliverable.url);
+  // The URL may be absent entirely (locked server-side). `detectPlatform`
+  // expects a string, so fall back to the stored platform label.
+  const info = deliverable.url
+    ? detectPlatform(deliverable.url)
+    : { name: deliverable.platform || "Link", color: "#FF5A1F", embedUrl: null, logo: "\u{1F512}" };
+  const isLocked = deliverable.locked === true || !deliverable.url;
 
   return (
     <div
@@ -206,16 +219,22 @@ function EmbedModal({
             <p className="font-semibold text-white text-sm">{deliverable.label}</p>
             <p className="text-xs text-white/50">{info.name}</p>
           </div>
-          {watermarked && (
+          {isLocked ? (
+            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: "rgba(255,90,31,0.2)", color: "#FF5A1F", border: "1px solid rgba(255,90,31,0.4)" }}>
+              <Lock size={9} /> Locked until payment
+            </span>
+          ) : watermarked ? (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: "rgba(255,90,31,0.2)", color: "#FF5A1F", border: "1px solid rgba(255,90,31,0.4)" }}>
               <Lock size={9} /> Watermarked
             </span>
-          )}
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
-          <a href={deliverable.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors px-3 py-1.5 rounded-lg hover:bg-white/10">
-            <ExternalLink size={13} /> Open original
-          </a>
+          {deliverable.url && (
+            <a href={deliverable.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors px-3 py-1.5 rounded-lg hover:bg-white/10">
+              <ExternalLink size={13} /> Open original
+            </a>
+          )}
           <button onClick={onClose} className="text-white/60 hover:text-white hover:bg-white/10 rounded-lg p-1.5 transition-colors">
             <X size={18} />
           </button>
@@ -233,14 +252,25 @@ function EmbedModal({
             title={deliverable.label}
             style={{ border: "none" }}
           />
+        ) : isLocked ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-white/60 text-center px-8">
+            <Lock size={40} />
+            <p className="text-sm font-semibold text-white">This deliverable is locked until payment</p>
+            <p className="text-xs text-white/50 max-w-sm">
+              Viewrr releases the file link once the project is paid. The link is not
+              sent to the browser before then.
+            </p>
+          </div>
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-white/50">
             <LinkIcon size={40} />
             <p className="text-sm">This link can't be previewed directly.</p>
-            <a href={deliverable.url} target="_blank" rel="noopener noreferrer" className="text-[#FF5A1F] underline text-sm">Open in new tab</a>
+            {deliverable.url && (
+              <a href={deliverable.url} target="_blank" rel="noopener noreferrer" className="text-[#FF5A1F] underline text-sm">Open in new tab</a>
+            )}
           </div>
         )}
-        {watermarked && <WatermarkLayer username={username} />}
+        {watermarked && !isLocked && <WatermarkLayer username={username} />}
       </div>
     </div>
   );
@@ -793,20 +823,30 @@ export default function DeliverablesSection({
   const [invoiceNotes, setInvoiceNotes] = useState('');
   const [vatPercent, setVatPercent] = useState(0);
 
-  // Watermark is active when project is awaiting payment and not yet paid
+  // PRD-1 Decision 10: this flag is now COSMETIC ONLY. The watermark overlay it
+  // drives is a visual cue — the actual protection is that the server does not
+  // send `url` / `embedUrl` to an unpaid client at all. Never treat this as the
+  // access decision.
   const isWatermarked = projectStatus === "awaiting_payment" && paymentStatus !== "paid";
   const isClient = !isFreelancer;
 
   const { data: deliverables = [] } = useQuery<Deliverable[]>({
     queryKey: ["/api/projects", projectId, "deliverables"],
     queryFn: async () => {
-      const res = await fetch(`/api/projects/${projectId}/deliverables`);
+      // Must go through apiRequest: the route is requireAuth-guarded and
+      // apiRequest is what attaches API_BASE and `credentials: "include"`. A
+      // bare same-origin fetch 401s on a split-origin deploy.
+      const res = await apiRequest("GET", `/api/projects/${projectId}/deliverables`);
       if (!res.ok) return [];
       return res.json();
     },
     staleTime: 0,
     refetchOnMount: true,
   });
+
+  // Server-decided lock state, used for the payment prompt so the prompt cannot
+  // drift from what the server actually withheld.
+  const hasLockedFiles = deliverables.some(d => d.locked === true || !d.url);
 
   const { data: existingInvoice } = useQuery<{ invoice: any; template: any } | null>({
     queryKey: ['/api/projects', projectId, 'invoice'],
@@ -822,10 +862,14 @@ export default function DeliverablesSection({
     mutationFn: async () => {
       const info = detectPlatform(urlInput.trim());
       const finalLabel = labelInput === "Other" ? customLabel.trim() : labelInput;
-      const res = await fetch(`/api/projects/${projectId}/deliverables`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: urlInput.trim(), label: finalLabel, platform: info.name, embedUrl: info.embedUrl ?? urlInput.trim(), createdBy: userId }),
+      // POST is now requireAuth + project-party guarded, so it must carry the
+      // session (apiRequest sets API_BASE + credentials). `createdBy` is
+      // ignored server-side — it comes from the session.
+      const res = await apiRequest("POST", `/api/projects/${projectId}/deliverables`, {
+        url: urlInput.trim(),
+        label: finalLabel,
+        platform: info.name,
+        embedUrl: info.embedUrl ?? urlInput.trim(),
       });
       if (!res.ok) throw new Error("Failed");
     },
@@ -842,11 +886,7 @@ export default function DeliverablesSection({
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
-      await fetch(`/api/deliverables/${id}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId }),
-      });
+      await apiRequest("DELETE", `/api/deliverables/${id}`, { userId });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "deliverables"] }),
   });
@@ -884,7 +924,7 @@ export default function DeliverablesSection({
         </div>
 
         {/* ── Client: awaiting payment banner ───────────────────────────────── */}
-        {isClient && isWatermarked && deliverables.length > 0 && (
+        {isClient && (isWatermarked || hasLockedFiles) && deliverables.length > 0 && (
           <div className="space-y-2">
             <div
               className="rounded-2xl p-4 flex items-center gap-3 border"
@@ -1022,7 +1062,12 @@ export default function DeliverablesSection({
         ) : (
           <div className="space-y-2">
             {deliverables.map(d => {
-              const info = detectPlatform(d.url);
+              // PRD-1 Decision 10: `url` is absent when the server locked the
+              // row, so platform detection falls back to the stored label.
+              const info = d.url
+                ? detectPlatform(d.url)
+                : { name: d.platform || "Link", color: "#FF5A1F", embedUrl: null, logo: "\u{1F512}" };
+              const rowLocked = d.locked === true || !d.url;
               return (
                 <div key={d.id} className="flex items-center gap-3 bg-card border border-border rounded-xl px-4 py-3 group">
                   <div className="w-9 h-9 rounded-lg flex items-center justify-center text-lg flex-shrink-0" style={{ background: `${info.color}18` }}>
@@ -1031,12 +1076,16 @@ export default function DeliverablesSection({
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold truncate">{d.label}</p>
                     <div className="flex items-center gap-2">
-                      <p className="text-xs text-muted-foreground">{info.name} · {timeAgo(d.createdAt)}</p>
-                      {isWatermarked && (
+                      <p className="text-xs text-muted-foreground">{info.name}{d.createdAt ? ` · ${timeAgo(d.createdAt)}` : ""}</p>
+                      {rowLocked ? (
+                        <span className="flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: "#FF5A1F" }}>
+                          <Lock size={8} /> Locked until payment
+                        </span>
+                      ) : isWatermarked ? (
                         <span className="flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: "#FF5A1F" }}>
                           <Lock size={8} /> Watermarked
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">

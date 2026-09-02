@@ -16,7 +16,9 @@ import { createPost } from "@/api/feed";
 import { ApiError } from "@/api/errors";
 import type { FeedItem } from "@/api/types";
 import { Button } from "@/components/Button";
+import { SignInPrompt } from "@/components/SignInPrompt";
 import { isHttpUrl, parseVideoUrl } from "@/lib/media";
+import { useSession } from "@/session/SessionProvider";
 import { gutter, hitSlop, radii, spacing, typography, useTheme } from "@/theme";
 
 /**
@@ -31,6 +33,11 @@ import { gutter, hitSlop, radii, spacing, typography, useTheme } from "@/theme";
  *
  * → Reported as a product gap, not solved here: native media capture/upload for
  *   feed posts needs a backend upload path first.
+ *
+ * Gating (PRD 1, Decision 1): `POST /api/feed` requires auth, so a signed-out
+ * viewer who taps "share an update" gets SignInPrompt in place of the composer
+ * rather than a form that cannot submit. The editor is not rendered at all
+ * without a session, so there is no draft to strand and no post to fake.
  */
 
 const MAX_CAPTION = 2000;
@@ -46,6 +53,7 @@ export function Composer({
   onPosted: (item: FeedItem) => void;
 }) {
   const { colors } = useTheme();
+  const { status } = useSession();
 
   const [caption, setCaption] = useState("");
   const [link, setLink] = useState("");
@@ -107,6 +115,11 @@ export function Composer({
       setPosting(false);
     }
   }, [canPost, caption, onClose, onPosted, reset, tags, trimmedLink, video]);
+
+  // No session: the gate replaces the editor entirely.
+  if (status !== "signed-in") {
+    return <SignInPrompt visible={visible} action="post an update" onClose={onClose} />;
+  }
 
   return (
     <Modal

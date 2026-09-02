@@ -123,11 +123,12 @@ export default function Welcome() {
         <Button
           label="Create an account"
           variant="outline"
-          disabled
-          accessibilityHint="Account creation arrives after Alpha 0.1 — sign up on viewrr.co.uk for now"
+          onPress={() => router.push("/(auth)/sign-up")}
+          accessibilityHint="Creates a new Viewrr account on this device"
         />
         <Text style={[styles.legal, { color: colors.mutedForeground }]}>
-          Signing in confirms you accept Viewrr's Terms and Privacy Policy.
+          Signing in or creating an account confirms you accept Viewrr's Terms and Privacy
+          Policy.
         </Text>
       </View>
     </Screen>

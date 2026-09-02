@@ -9,7 +9,15 @@ import {
   type ReactNode,
 } from "react";
 
-import { fetchMe, logout as logoutRequest, mobileLogin, type MeResponse } from "@/api/auth";
+import {
+  fetchMe,
+  logout as logoutRequest,
+  mobileLogin,
+  mobileRegister,
+  type LoginResponse,
+  type MeResponse,
+  type RegisterInput,
+} from "@/api/auth";
 import { setUnauthorizedHandler } from "@/api/client";
 import { canPersistCredential, clearToken, getToken, setToken } from "@/session/tokenStore";
 
@@ -32,6 +40,12 @@ import { canPersistCredential, clearToken, getToken, setToken } from "@/session/
  *
  * The raw token is never placed in state, props, logs or error copy. It exists
  * only inside tokenStore and the Authorization header.
+ *
+ * PRD 1 (Decision 4) ADDS `register()` and nothing else: token storage, Bearer
+ * handling, SecureStore behaviour, logout semantics and the authenticated
+ * routing guards are untouched. `register()` reuses the exact same credential
+ * tail as `signIn` (see `adoptCredential`), so there is one code path that ever
+ * persists a token.
  */
 
 export type SessionUser = {
@@ -53,6 +67,20 @@ type SessionValue = {
   restoreOutcome: RestoreOutcome | null;
   /** Throws ApiError on failure; callers map it with describeAuthFailure. */
   signIn: (email: string, password: string) => Promise<void>;
+  /**
+   * Create an account and adopt the returned credential. Throws ApiError on
+   * failure; callers map it with describeRegistrationFailure.
+   */
+  register: (input: RegisterInput) => Promise<void>;
+  /**
+   * True only between a registration that reported `emailVerificationRequired`
+   * and a successful verification in the same app run. Never set on cold start,
+   * so a grandfathered existing account (Decision 4) can never be shown the
+   * verification screen.
+   */
+  emailVerificationRequired: boolean;
+  /** Called by the verification screen once the server confirms the code. */
+  markEmailVerified: () => void;
   signOut: () => Promise<void>;
   /** True while a sign-out round-trip is in flight. */
   signingOut: boolean;
@@ -85,6 +113,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [restoreOutcome, setRestoreOutcome] = useState<RestoreOutcome | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [emailVerificationRequired, setEmailVerificationRequired] = useState(false);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -164,17 +193,49 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => controller.abort();
   }, [forceSignedOut]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const result = await mobileLogin(email.trim(), password);
-    if (!result?.token || !result.user) {
-      // Contract violation rather than a credential problem.
-      throw new Error("Sign-in response was incomplete.");
-    }
-    await setToken(result.token);
-    if (!mounted.current) return;
-    setUser(toSessionUser(result.user));
-    setRestoreOutcome("restored");
-    setStatus("signed-in");
+  /**
+   * The one credential tail. Persists the token, then flips session state.
+   * Shared by sign-in and registration so there is a single place a token is
+   * ever written and a single definition of "signed in".
+   */
+  const adoptCredential = useCallback(
+    async (result: LoginResponse | null | undefined, context: string) => {
+      if (!result?.token || !result.user) {
+        // Contract violation rather than a credential problem.
+        throw new Error(`${context} response was incomplete.`);
+      }
+      await setToken(result.token);
+      if (!mounted.current) return;
+      setUser(toSessionUser(result.user));
+      setRestoreOutcome("restored");
+      setStatus("signed-in");
+    },
+    [],
+  );
+
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const result = await mobileLogin(email.trim(), password);
+      // A sign-in is an existing account: verification is never re-demanded here.
+      setEmailVerificationRequired(false);
+      await adoptCredential(result, "Sign-in");
+    },
+    [adoptCredential],
+  );
+
+  const register = useCallback(
+    async (input: RegisterInput) => {
+      const result = await mobileRegister(input);
+      // Read the flag before adopting, so the auth stack sees the pending state
+      // in the same render pass that turns the session signed-in.
+      setEmailVerificationRequired(result?.emailVerificationRequired === true);
+      await adoptCredential(result, "Registration");
+    },
+    [adoptCredential],
+  );
+
+  const markEmailVerified = useCallback(() => {
+    setEmailVerificationRequired(false);
   }, []);
 
   const signOut = useCallback(async () => {
@@ -192,13 +253,34 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setRestoreOutcome(null);
         setStatus("signed-out");
         setSigningOut(false);
+        setEmailVerificationRequired(false);
       }
     }
   }, []);
 
   const value = useMemo<SessionValue>(
-    () => ({ status, user, restoreOutcome, signIn, signOut, signingOut }),
-    [status, user, restoreOutcome, signIn, signOut, signingOut],
+    () => ({
+      status,
+      user,
+      restoreOutcome,
+      signIn,
+      register,
+      emailVerificationRequired,
+      markEmailVerified,
+      signOut,
+      signingOut,
+    }),
+    [
+      status,
+      user,
+      restoreOutcome,
+      signIn,
+      register,
+      emailVerificationRequired,
+      markEmailVerified,
+      signOut,
+      signingOut,
+    ],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

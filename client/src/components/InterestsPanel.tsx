@@ -70,7 +70,10 @@ function InterestMessageThread({
     queryKey: ["/api/interest-messages", interestId],
     queryFn: async () => {
       try {
-        const res = await fetch(`/api/interest-messages/${interestId}?userId=${userId}`);
+        // PRD-1: the endpoint is authenticated and participant-checked; the
+        // caller identity comes from the session cookie, not a query param.
+        // It no longer marks the thread read as a side effect of reading it.
+        const res = await fetch(`/api/interest-messages/${interestId}`, { credentials: "same-origin" });
         if (!res.ok) return [];
         return res.json();
       } catch { return []; }

@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { FileText, ShieldCheck, Trash2 } from "lucide-react-native";
+import { Download, FileText, LifeBuoy, ShieldCheck, Trash2, UserX } from "lucide-react-native";
 import { Linking, StyleSheet, View } from "react-native";
 
 import { AppHeader } from "@/components/AppHeader";
@@ -7,6 +7,7 @@ import { Card, CardBody, CardLabel } from "@/components/Card";
 import { ListRow } from "@/components/ListRow";
 import { Screen } from "@/components/Screen";
 import { LEGAL_URLS } from "@/config/env";
+import { SUPPORT_EMAIL, supportMailto } from "@/config/support";
 import { radii, spacing, useTheme } from "@/theme";
 
 /**
@@ -17,6 +18,10 @@ import { radii, spacing, useTheme } from "@/theme";
  * deferred. The policy documents open in the browser because they are the same
  * published documents the website serves — duplicating them in the binary would
  * only let them go stale.
+ *
+ * The support row is here as well as in Settings: Apple 1.2 expects a way to
+ * reach a human from wherever a user is worrying about their data, and this is
+ * the screen they land on when they are.
  */
 
 const POLICY_URL = LEGAL_URLS.privacy;
@@ -41,11 +46,33 @@ export default function Privacy() {
           <CardLabel>Your data</CardLabel>
           <CardBody>
             Viewrr stores your profile, your work and your messages so the marketplace can
-            function. You can request a copy or delete your account at any time.
+            function. You can download a copy or delete your account at any time, and you can ask
+            the team about any of it at {SUPPORT_EMAIL}.
           </CardBody>
         </Card>
 
         <View>
+          <ListRow
+            title="Download my data"
+            subtitle="A copy of everything Viewrr holds about you"
+            leading={glyph(Download)}
+            onPress={() => router.push("/(app)/account/export")}
+          />
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <ListRow
+            title="Blocked accounts"
+            subtitle="See who you've blocked, and unblock them"
+            leading={glyph(UserX)}
+            onPress={() => router.push("/(app)/account/blocked")}
+          />
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <ListRow
+            title="Contact support"
+            subtitle={`Email the Viewrr team at ${SUPPORT_EMAIL}`}
+            leading={glyph(LifeBuoy)}
+            onPress={() => void Linking.openURL(supportMailto("Privacy question"))}
+          />
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
           <ListRow
             title="Privacy policy"
             subtitle="How Viewrr handles your data"

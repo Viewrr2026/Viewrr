@@ -2,17 +2,23 @@ import { useRouter } from "expo-router";
 import {
   Bell,
   Building2,
+  Download,
+  LifeBuoy,
+  MoreHorizontal,
   Moon,
   Pencil,
   Settings,
   ShieldCheck,
   Sun,
+  Trash2,
+  UserX,
 } from "lucide-react-native";
-import { useCallback } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useCallback, useState } from "react";
+import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { api } from "@/api/client";
 import type { PublicUser, UserProfile } from "@/api/types";
+import { ActionSheet } from "@/components/ActionSheet";
 import { AppHeader } from "@/components/AppHeader";
 import { Avatar } from "@/components/Avatar";
 import { Button } from "@/components/Button";
@@ -21,6 +27,7 @@ import { DataState } from "@/components/DataState";
 import { ListRow } from "@/components/ListRow";
 import { Pill } from "@/components/Pill";
 import { Screen } from "@/components/Screen";
+import { SUPPORT_EMAIL, supportMailto } from "@/config/support";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { profileProgress } from "@/lib/format";
 import { useSession } from "@/session/SessionProvider";
@@ -29,11 +36,19 @@ import { radii, spacing, typography, useTheme } from "@/theme";
 /**
  * Profile: who the user is on Viewrr, plus the account controls.
  *
- * Editing, settings, notification preferences and privacy each have a real
- * route registered here so the tree is complete; the forms behind them land
- * with the profile release. Nothing on this screen offers a purchase, a plan
- * upgrade or a link out to web checkout — iOS accounts see their Pro status
- * only where it already applies to them.
+ * Editing, settings, notification preferences and privacy are all real screens
+ * behind these rows. Nothing on this screen offers a purchase, a plan upgrade
+ * or a link out to web checkout — iOS accounts see their Pro status only where
+ * it already applies to them.
+ *
+ * The header overflow carries the account and trust actions in one place, the
+ * way iOS users expect to find them. Note what is deliberately absent: there is
+ * no "report" or "block" action here, because this is the signed-in user's own
+ * profile and there is no other party to report. Those live where a second
+ * party exists — the blocked-accounts rows (unblock / report) and, as a
+ * follow-up outside this agent's ownership, the public profile route
+ * `discover/[profileId].tsx`, which should mount the same ActionSheet plus
+ * ReportDialog pair against that profile's user id.
  */
 
 type ProfileSnapshot = {
@@ -47,6 +62,7 @@ export default function ProfileHome() {
   const router = useRouter();
 
   const userId = user?.id ?? null;
+  const [overflow, setOverflow] = useState(false);
 
   const load = useCallback(
     async (signal: AbortSignal): Promise<ProfileSnapshot> => {
@@ -80,7 +96,83 @@ export default function ProfileHome() {
       refreshing={refreshing}
       onRefresh={resource.phase === "ready" ? refresh : undefined}
     >
-      <AppHeader title="Profile" brand />
+      <AppHeader
+        title="Profile"
+        brand
+        action={
+          <Pressable
+            onPress={() => setOverflow(true)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Account options"
+            accessibilityHint="Opens editing, settings, blocked accounts, support and deletion"
+            style={[styles.headerButton, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+          >
+            <MoreHorizontal size={20} color={colors.foreground} strokeWidth={2.4} />
+          </Pressable>
+        }
+      />
+
+      <ActionSheet
+        visible={overflow}
+        title="Account"
+        message="Your profile, your data and your account controls."
+        onClose={() => setOverflow(false)}
+        actions={[
+          {
+            label: "Edit profile",
+            icon: Pencil,
+            onPress: () => {
+              setOverflow(false);
+              router.push("/(app)/profile/edit");
+            },
+          },
+          {
+            label: "Notification preferences",
+            icon: Bell,
+            description: "Email and push, managed separately",
+            onPress: () => {
+              setOverflow(false);
+              router.push("/(app)/profile/notification-preferences");
+            },
+          },
+          {
+            label: "Blocked accounts",
+            icon: UserX,
+            description: "Unblock or report someone you've blocked",
+            onPress: () => {
+              setOverflow(false);
+              router.push("/(app)/account/blocked");
+            },
+          },
+          {
+            label: "Download my data",
+            icon: Download,
+            onPress: () => {
+              setOverflow(false);
+              router.push("/(app)/account/export");
+            },
+          },
+          {
+            label: "Contact support",
+            icon: LifeBuoy,
+            description: SUPPORT_EMAIL,
+            onPress: () => {
+              setOverflow(false);
+              void Linking.openURL(supportMailto("Support request"));
+            },
+          },
+          {
+            label: "Delete my account",
+            icon: Trash2,
+            tone: "destructive",
+            onPress: () => {
+              setOverflow(false);
+              router.push("/(app)/account/deletion");
+            },
+          },
+        ]}
+      />
 
       <DataState resource={resource} onRetry={reload} skeleton="dashboard">
         {({ account, profile }) => {
@@ -309,6 +401,14 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: StyleSheet.hairlineWidth,
+  },
+  headerButton: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.full,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   glyph: {
     width: 36,

@@ -168,6 +168,34 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // PRD-019 native auth: the Bearer token is held in the iOS Keychain /
     // Android Keystore via expo-secure-store. Never AsyncStorage.
     "expo-secure-store",
+    [
+      // Native push (Decision 15). The plugin only configures the native
+      // notification presentation; permission is requested at runtime, from a
+      // deliberate user action, in src/push/PushProvider.
+      //
+      // `icon` and `color` drive the Android status-bar/small icon. The colour
+      // is the same brand orange as theme tokens `brand.orange` and the
+      // adaptive icon background. iOS uses the app icon and needs no asset
+      // here.
+      //
+      // Delivery on iOS additionally requires an APNs key on the Expo project
+      // (Apple Developer credentials) — nothing in this file can substitute for
+      // it, and it is not created by any build run here.
+      "expo-notifications",
+      {
+        icon: "./assets/images/android-icon-monochrome.png",
+        color: "#FF5A1F",
+        // iOS APNs environment written into the entitlements. A store or
+        // TestFlight build must not ship the development environment, and a
+        // local dev-client build must not ship the production one.
+        mode: IS_DEV ? "development" : "production",
+        // Viewrr sends alert notifications only. No silent/content-available
+        // wake-ups, so the `remote-notification` background mode stays off —
+        // claiming a background mode the app does not use is an App Review
+        // rejection risk.
+        enableBackgroundRemoteNotifications: false,
+      },
+    ],
   ],
   experiments: {
     typedRoutes: true,

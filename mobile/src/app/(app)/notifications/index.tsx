@@ -13,7 +13,7 @@ import { ListRow } from "@/components/ListRow";
 import { Screen } from "@/components/Screen";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { relativeTime } from "@/lib/time";
-import { resolveNotificationLink } from "@/navigation/linkResolver";
+import { resolveNotificationTarget, targetingFromNotification } from "@/navigation/linkResolver";
 import { useNotifications } from "@/notifications/NotificationsProvider";
 import { useSession } from "@/session/SessionProvider";
 import { hitSlop, radii, spacing, typography, useTheme } from "@/theme";
@@ -77,7 +77,13 @@ export default function NotificationCentre() {
   const openNotification = useCallback(
     (notification: Notification) => {
       markOne(notification);
-      const target = resolveNotificationLink(notification.link, notification.type, user?.role);
+      // targetingFromNotification reads the additive targetType/targetId fields
+      // (Decision 14) straight off the row when the server has written them and
+      // falls back to type + web link when it has not, so a row from before
+      // migration 0006 still resolves.
+      const target = resolveNotificationTarget(
+        targetingFromNotification(notification, user?.role),
+      );
       router.push(target);
     },
     [markOne, router, user?.role],

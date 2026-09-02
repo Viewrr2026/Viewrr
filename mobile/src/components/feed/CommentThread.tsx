@@ -14,7 +14,9 @@ import { addComment, loadComments } from "@/api/feed";
 import { ApiError } from "@/api/errors";
 import type { CommentItem } from "@/api/types";
 import { Avatar } from "@/components/Avatar";
+import { SignInPrompt } from "@/components/SignInPrompt";
 import { relativeTime } from "@/lib/time";
+import { useSession } from "@/session/SessionProvider";
 import { control, hitSlop, radii, spacing, typography, useTheme } from "@/theme";
 
 /**
@@ -28,6 +30,13 @@ import { control, hitSlop, radii, spacing, typography, useTheme } from "@/theme"
  *
  * The composer posts `{ content }` only; the author and post id are both
  * derived server-side (`routes.ts:1565`).
+ *
+ * Gating (PRD 1, Decision 1): the GET is optional-auth, so a signed-out reader
+ * sees the thread in full. Posting requires a credential, so with no session
+ * the composer is replaced by a single gate row that opens SignInPrompt. The
+ * input is not merely disabled — there is no draft to lose and no way to type a
+ * comment that would then fail to send, and nothing is ever appended to the
+ * list optimistically.
  */
 export function CommentThread({
   postId,
@@ -37,7 +46,10 @@ export function CommentThread({
   onCommentAdded: () => void;
 }) {
   const { colors } = useTheme();
+  const { status } = useSession();
+  const signedIn = status === "signed-in";
 
+  const [gateOpen, setGateOpen] = useState(false);
   const [items, setItems] = useState<CommentItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -74,6 +86,12 @@ export function CommentThread({
   const send = useCallback(async () => {
     const content = draft.trim();
     if (!content || sending) return;
+    if (!signedIn) {
+      // Defensive: the composer is not rendered without a session, so this can
+      // only be reached if the session ends mid-draft. Prompt, never post.
+      setGateOpen(true);
+      return;
+    }
 
     setSending(true);
     setError(null);
@@ -88,7 +106,7 @@ export function CommentThread({
     } finally {
       if (mounted.current) setSending(false);
     }
-  }, [draft, onCommentAdded, postId, sending]);
+  }, [draft, onCommentAdded, postId, sending, signedIn]);
 
   const canSend = draft.trim().length > 0 && !sending;
 
@@ -123,50 +141,73 @@ export function CommentThread({
 
       {error ? <Text style={[styles.error, { color: colors.destructive }]}>{error}</Text> : null}
 
-      <View style={styles.composer}>
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="Add a comment"
-          placeholderTextColor={colors.mutedForeground}
-          multiline
-          accessibilityLabel="Add a comment"
-          style={[
-            styles.input,
-            Platform.OS === "web" ? ({ outlineStyle: "none" } as object) : null,
-            {
-              backgroundColor: colors.background,
-              borderColor: colors.input,
-              color: colors.foreground,
-            },
-          ]}
-        />
+      {!signedIn ? (
         <Pressable
-          onPress={() => void send()}
-          disabled={!canSend}
-          hitSlop={hitSlop}
+          onPress={() => setGateOpen(true)}
           accessibilityRole="button"
-          accessibilityLabel="Post comment"
-          accessibilityState={{ disabled: !canSend }}
+          accessibilityLabel="Sign in to comment"
           style={({ pressed }) => [
-            styles.send,
-            {
-              backgroundColor: canSend ? colors.primary : colors.muted,
-              opacity: pressed && canSend ? 0.9 : 1,
-            },
+            styles.gate,
+            { backgroundColor: colors.background, borderColor: colors.input },
+            pressed && styles.gatePressed,
           ]}
         >
-          {sending ? (
-            <ActivityIndicator size="small" color={colors.primaryForeground} />
-          ) : (
-            <SendHorizontal
-              size={17}
-              color={canSend ? colors.primaryForeground : colors.mutedForeground}
-              strokeWidth={2.2}
-            />
-          )}
+          <Text style={[styles.gateLabel, { color: colors.mutedForeground }]}>
+            Sign in to join the conversation
+          </Text>
         </Pressable>
-      </View>
+      ) : (
+        <View style={styles.composer}>
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            placeholder="Add a comment"
+            placeholderTextColor={colors.mutedForeground}
+            multiline
+            accessibilityLabel="Add a comment"
+            style={[
+              styles.input,
+              Platform.OS === "web" ? ({ outlineStyle: "none" } as object) : null,
+              {
+                backgroundColor: colors.background,
+                borderColor: colors.input,
+                color: colors.foreground,
+              },
+            ]}
+          />
+          <Pressable
+            onPress={() => void send()}
+            disabled={!canSend}
+            hitSlop={hitSlop}
+            accessibilityRole="button"
+            accessibilityLabel="Post comment"
+            accessibilityState={{ disabled: !canSend }}
+            style={({ pressed }) => [
+              styles.send,
+              {
+                backgroundColor: canSend ? colors.primary : colors.muted,
+                opacity: pressed && canSend ? 0.9 : 1,
+              },
+            ]}
+          >
+            {sending ? (
+              <ActivityIndicator size="small" color={colors.primaryForeground} />
+            ) : (
+              <SendHorizontal
+                size={17}
+                color={canSend ? colors.primaryForeground : colors.mutedForeground}
+                strokeWidth={2.2}
+              />
+            )}
+          </Pressable>
+        </View>
+      )}
+
+      <SignInPrompt
+        visible={gateOpen}
+        action="comment"
+        onClose={() => setGateOpen(false)}
+      />
     </View>
   );
 }
@@ -224,6 +265,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing[3],
     paddingTop: spacing[2],
     paddingBottom: spacing[2],
+    ...typography.small,
+  },
+  gate: {
+    minHeight: control.minTouchTarget,
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing[3],
+  },
+  gatePressed: {
+    opacity: 0.8,
+  },
+  gateLabel: {
     ...typography.small,
   },
   send: {

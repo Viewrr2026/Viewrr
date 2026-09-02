@@ -138,6 +138,17 @@ export default function SignIn() {
             onPress={() => void submit()}
             accessibilityHint="Signs in to your Viewrr account"
           />
+          <Pressable
+            onPress={() => router.replace("/(auth)/sign-up")}
+            hitSlop={hitSlop}
+            accessibilityRole="link"
+            accessibilityLabel="New to Viewrr? Create an account"
+            style={({ pressed }) => [styles.switchRow, pressed && styles.pressed]}
+          >
+            <Text style={[styles.switchText, { color: colors.mutedForeground }]}>
+              New to Viewrr? <Text style={{ color: colors.primary }}>Create an account</Text>
+            </Text>
+          </Pressable>
         </View>
       </KeyboardAvoidingView>
     </Screen>
@@ -184,5 +195,16 @@ const styles = StyleSheet.create({
     marginTop: "auto",
     paddingBottom: spacing[4],
     gap: spacing[3],
+  },
+  switchRow: {
+    alignSelf: "center",
+    paddingVertical: spacing[1],
+  },
+  switchText: {
+    ...typography.small,
+    textAlign: "center",
+  },
+  pressed: {
+    opacity: 0.8,
   },
 });

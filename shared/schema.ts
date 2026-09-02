@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, serial, boolean, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, real, serial, boolean, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -29,6 +29,11 @@ export const users = pgTable("users", {
   suspendedAt: text("suspended_at"),
   suspendedReason: text("suspended_reason"),
   suspendedBy: integer("suspended_by"),
+  // ─ PRD 1 / migration 0006: email verification (Decision 4) ─
+  // Enforced for NEW accounts only. Migration 0006 grandfathers every account
+  // created before the migration date to email_verified = true.
+  emailVerified: boolean("email_verified").notNull().default(false),
+  emailVerifiedAt: timestamp("email_verified_at"),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
@@ -98,10 +103,16 @@ export const messages = pgTable("messages", {
   fromId: integer("from_id").notNull(),
   toId: integer("to_id").notNull(),
   content: text("content").notNull(),
-  read: integer("read").default(0),
+  read: integer("read").default(0),   // live DB: integer NULL — treat as 0/1, not boolean (§A)
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
   interestId: integer("interest_id"),  // null = general DM; set = scoped to a brief interest
-});
+  // ─ PRD 1 / migration 0006 ─
+  readAt: timestamp("read_at"),
+}, (t) => ({
+  // migration 0006: paging + unread indexes (live DB had only messages_pkey)
+  fromToIdIdx: index("messages_from_to_id_idx").on(t.fromId, t.toId, t.id),
+  toReadIdx:   index("messages_to_read_idx").on(t.toId, t.read),
+}));
 
 export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true });
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
@@ -294,9 +305,13 @@ export const notifications = pgTable("notifications", {
   actorAvatar: text("actor_avatar"),
   type: text("type").notNull(), // "like" | "comment" | "message" | "interest" | "interest_accepted" | "interest_declined" | "profile_view" | "connection"
   message: text("message").notNull(),
-  link: text("link"),          // optional route to navigate to
+  link: text("link"),          // optional route to navigate to — NEVER remove, web routes off it
   read: integer("read").notNull().default(0),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  // ─ PRD 1 / migration 0006: additive structured targeting (Decision 14) ─
+  // targetType: 'project' | 'brief' | 'conversation' | 'post' | 'profile' | null
+  targetType: text("target_type"),
+  targetId: integer("target_id"),
 });
 
 export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true, createdAt: true });
@@ -961,6 +976,13 @@ export const accountDeletionRequests = pgTable("account_deletion_requests", {
   blockerReason: text("blocker_reason"),
   processedBy: integer("processed_by"),
   anonymisedAt: text("anonymised_at"),
+  // ─ PRD 1 / migration 0006: scheduled deferral (Decision 6) ─
+  // Deletion is NEVER indefinitely refused. When a legal/financial/contractual
+  // obligation blocks immediate erasure, the request is SCHEDULED instead.
+  scheduledFor: timestamp("scheduled_for"),
+  deferredReason: text("deferred_reason"),
+  // 'pending' | 'scheduled' | 'processing' | 'anonymised' | 'cancelled'
+  state: text("state").notNull().default("pending"),
 });
 export type AccountDeletionRequest = typeof accountDeletionRequests.$inferSelect;
 
@@ -988,5 +1010,87 @@ export const userBlocks = pgTable("user_blocks", {
   blockerUserId: integer("blocker_user_id").notNull(),
   blockedUserId: integer("blocked_user_id").notNull(),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
-});
+}, (t) => ({
+  // DECLARATION ONLY — this index ALREADY EXISTS in production as
+  // `user_blocks_blocker_user_id_blocked_user_id_key` (contract §A).
+  // Migration 0006 deliberately does NOT create it. Declared here so Drizzle
+  // matches reality and so the ON CONFLICT in trust-service.blockUser is
+  // provably backed by a real unique constraint.
+  blockerBlockedKey: uniqueIndex("user_blocks_blocker_user_id_blocked_user_id_key")
+    .on(t.blockerUserId, t.blockedUserId),
+}));
 export type UserBlock = typeof userBlocks.$inferSelect;
+
+// ─── PRD 1 / migration 0006: Push tokens (Decision 15) ───────────────────────
+export const pushTokens = pgTable("push_tokens", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  token: text("token").notNull(),
+  platform: text("platform").notNull(),        // 'ios' | 'android'
+  deviceId: text("device_id"),
+  appVersion: text("app_version"),
+  lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => ({
+  userTokenKey: uniqueIndex("push_tokens_user_id_token_key").on(t.userId, t.token),
+  userIdIdx: index("push_tokens_user_id_idx").on(t.userId),
+}));
+export type PushToken = typeof pushTokens.$inferSelect;
+export type InsertPushToken = typeof pushTokens.$inferInsert;
+
+// ─── PRD 1 / migration 0006: Push preferences (Decision 15) ──────────────────
+// DISTINCT from the 8 email keys in notification_preferences. Do NOT pretend the
+// email keys control push.
+export const pushPreferences = pgTable("push_preferences", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().unique(),
+  pushMessages: boolean("push_messages").notNull().default(true),
+  pushProjectUpdates: boolean("push_project_updates").notNull().default(true),
+  pushInterests: boolean("push_interests").notNull().default(true),
+  pushPayments: boolean("push_payments").notNull().default(true),
+  pushSocial: boolean("push_social").notNull().default(false),
+});
+export type PushPreferences = typeof pushPreferences.$inferSelect;
+export type InsertPushPreferences = typeof pushPreferences.$inferInsert;
+
+export const PUSH_PREFERENCE_KEYS = [
+  "pushMessages", "pushProjectUpdates", "pushInterests", "pushPayments", "pushSocial",
+] as const;
+
+// ─── PRD 1 / migration 0006: Content flags (Decision 8, tier 2) ──────────────
+// Tier 2 moderation: ambiguous content publishes normally and lands here for
+// founder/admin review. Tier 1 (hard reject) never creates a row — it 422s.
+export const contentFlags = pgTable("content_flags", {
+  id: serial("id").primaryKey(),
+  subjectType: text("subject_type").notNull(),   // 'post' | 'comment'
+  subjectId: integer("subject_id").notNull(),
+  authorUserId: integer("author_user_id").notNull(),
+  reason: text("reason").notNull(),              // matched rule key
+  excerpt: text("excerpt"),
+  state: text("state").notNull().default("pending"), // pending | cleared | removed
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  reviewedBy: integer("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at"),
+}, (t) => ({
+  stateCreatedIdx: index("content_flags_state_created_at_idx").on(t.state, t.createdAt),
+}));
+export type ContentFlag = typeof contentFlags.$inferSelect;
+export type InsertContentFlag = typeof contentFlags.$inferInsert;
+
+// ─── PRD 1 / migration 0006: Moderation audit log ────────────────────────────
+// Moderation actions used to be written into `payment_audit_log` with a NULL
+// payment_id, polluting the financial audit trail. They live here now.
+export const moderationAuditLog = pgTable("moderation_audit_log", {
+  id: serial("id").primaryKey(),
+  actorType: text("actor_type").notNull(),   // 'admin' | 'system'
+  actorId: integer("actor_id"),
+  action: text("action").notNull(),
+  subjectType: text("subject_type").notNull(), // 'user' | 'post' | 'comment' | 'content_flag'
+  subjectId: integer("subject_id"),
+  reason: text("reason"),
+  detail: text("detail"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => ({
+  subjectIdx: index("moderation_audit_log_subject_idx").on(t.subjectType, t.subjectId),
+}));
+export type ModerationAuditEntry = typeof moderationAuditLog.$inferSelect;

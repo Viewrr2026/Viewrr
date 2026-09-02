@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { displayRole } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -60,12 +60,19 @@ function NotLoggedIn() {
 
 function MessageThread({ userId, otherId, otherName, otherAvatar }: { userId: number; otherId: number; otherName: string; otherAvatar?: string }) {
   const [text, setText] = useState("");
-  
+
+  // PRD-1 Decision 17: `GET /api/messages/:fromId/:toId` NO LONGER marks the
+  // thread read as a side effect of reading it. That side effect was removed
+  // server-side (it fired on any GET, from any caller, and the id order in the
+  // path was ambiguous). Marking read is now an explicit, identity-scoped
+  // `POST /api/messages/read` — so this component has to do it itself, on open
+  // and whenever a poll brings new inbound messages, and then invalidate the
+  // conversations query so the unread badge updates.
   const { data: messages = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/messages", userId, otherId],
     queryFn: async () => {
       try {
-        const res = await fetch(`/api/messages/${otherId}/${userId}`);
+        const res = await apiRequest("GET", `/api/messages/${otherId}/${userId}`);
         if (!res.ok) return [];
         return res.json();
       } catch {
@@ -74,6 +81,37 @@ function MessageThread({ userId, otherId, otherName, otherAvatar }: { userId: nu
     },
     refetchInterval: 5000,
   });
+
+  // Highest inbound message id we have already reported as read.
+  const lastMarkedRef = useRef<number>(0);
+  const markRead = useCallback(async () => {
+    try {
+      await apiRequest("POST", "/api/messages/read", { otherUserId: otherId });
+      queryClient.invalidateQueries({ queryKey: ["/api/messages/conversations", userId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/messages/unread-count", userId] });
+    } catch {
+      // Non-fatal: the badge will correct itself on the next successful call.
+    }
+  }, [otherId, userId]);
+
+  // On thread open.
+  useEffect(() => {
+    lastMarkedRef.current = 0;
+    void markRead();
+  }, [otherId, markRead]);
+
+  // And whenever a poll brings a NEW inbound message (guarded so we do not fire
+  // a write on every 5s poll).
+  useEffect(() => {
+    const newestInbound = messages.reduce(
+      (max: number, m: any) => (Number(m?.toId) === userId && Number(m?.id) > max ? Number(m.id) : max),
+      0,
+    );
+    if (newestInbound > lastMarkedRef.current) {
+      lastMarkedRef.current = newestInbound;
+      void markRead();
+    }
+  }, [messages, userId, markRead]);
 
   const sendMutation = useMutation({
     mutationFn: async (content: string) => {
@@ -551,11 +589,18 @@ export default function Dashboard() {
     enabled: !!user,
   });
 
+  // PRD-1: the legacy `/api/messages/:userId/conversations` route is kept as a
+  // thin alias over the new `GET /api/conversations`, so the shape here is
+  // unchanged. It is requireAuth-guarded, hence apiRequest rather than a bare
+  // fetch. Unread counts on these rows are now computed in SQL and are cleared
+  // by MessageThread's explicit POST /api/messages/read, not by reading a
+  // thread. Per Decision 18 this count is DM-only and is never summed with the
+  // notification unread count.
   const { data: conversations = [] } = useQuery<any[]>({
     queryKey: ["/api/messages/conversations", user?.id],
     queryFn: async () => {
       try {
-        const res = await fetch(`/api/messages/${user!.id}/conversations`);
+        const res = await apiRequest("GET", `/api/messages/${user!.id}/conversations`);
         if (!res.ok) return [];
         return res.json();
       } catch {
