@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import { Link } from "wouter";
 import { ArrowRight, Sparkles, Star, Shield, Zap, Users, CheckCircle, Video, Camera, Megaphone, Scissors } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -72,22 +72,43 @@ export default function Landing() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [posterVisible, setPosterVisible] = useState(true);
 
+  // Ref callback: sets `muted` as a DOM attribute before the browser makes its
+  // autoplay-eligibility decision. React 18 does not reflect the `muted` JSX
+  // prop to the DOM attribute, so Safari blocks autoplay without this.
+  const videoCallbackRef = useCallback((el: HTMLVideoElement | null) => {
+    (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = el;
+    if (!el) return;
+    el.setAttribute("muted", "");
+    el.muted = true;
+    el.removeAttribute("controls");
+    el.controls = false;
+  }, []);
+
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    v.muted = true;
-    v.removeAttribute("controls");
-    v.controls = false;
 
-    // Hide the poster once the video has enough data to play smoothly.
-    // We listen to multiple events so whichever fires first wins.
+    // Hide poster once video starts playing.
     const hidePoster = () => setPosterVisible(false);
-    v.addEventListener("playing", hidePoster);
-    v.addEventListener("canplaythrough", hidePoster);
-    v.play().catch(() => {});
+    v.addEventListener("playing",       hidePoster);
+    v.addEventListener("canplaythrough",hidePoster);
+
+    // prefers-reduced-motion: pause the decorative video silently, no UI.
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (mq.matches) {
+      v.pause();
+    } else {
+      v.play().catch(() => {});
+    }
+    const onMotionChange = (e: MediaQueryListEvent) => {
+      if (e.matches) { v.pause(); } else { v.play().catch(() => {}); }
+    };
+    mq.addEventListener("change", onMotionChange);
+
     return () => {
-      v.removeEventListener("playing", hidePoster);
-      v.removeEventListener("canplaythrough", hidePoster);
+      v.removeEventListener("playing",       hidePoster);
+      v.removeEventListener("canplaythrough",hidePoster);
+      mq.removeEventListener("change",       onMotionChange);
     };
   }, []);
 
@@ -116,7 +137,7 @@ export default function Landing() {
           }}
         >
           <video
-            ref={videoRef}
+            ref={videoCallbackRef}
             src="/videos/hero_showreel_web.mp4"
             autoPlay
             muted

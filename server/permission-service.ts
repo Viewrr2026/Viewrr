@@ -2,10 +2,14 @@
  * PRD-008 — Granular Finance Permission Service
  * Replaces broad isAdmin checks with explicit role-based permission checks.
  * All checks are server-side; UI visibility never replaces server auth.
+ *
+ * PRD-019 R1: requireFinancePermission now uses requireAuth (canonical DB-backed
+ * session + HMAC drain fallback) instead of the legacy HMAC-only verifySessionToken.
+ * This is compatible with both DB-backed sessions and the HMAC drain period.
  */
 
 import { neon } from "@neondatabase/serverless";
-import { SESSION_COOKIE_NAME, verifySessionToken, clearSessionCookie } from "./session";
+import { requireAuth } from "./auth-middleware";
 
 function getDb() {
   return neon(process.env.DATABASE_URL!);
@@ -117,27 +121,32 @@ export async function hasPermission(
 
 /**
  * Express middleware: assert the requesting user has a finance permission.
- * P0-04: Identity is derived from the HMAC-verified session cookie (vr_sess).
+ * PRD-019 R1: Identity is now derived from requireAuth (canonical DB-backed session
+ * or HMAC drain fallback). This replaces the previous HMAC-only verifySessionToken
+ * path, making finance routes compatible with DB-backed sessions post-PRD-019.
  * req.body.userId and req.query.userId are IGNORED — cannot be spoofed.
- * An attacker who knows a finance userId but has no valid cookie gets 401.
- * Phase 1: add DB token revocation for forced-logout.
  */
 export function requireFinancePermission(permission: FinancePermission) {
   return async (req: any, res: any, next: any) => {
+    // Step 1: requireAuth sets req.auth.userId from DB-backed session or HMAC drain.
+    // We call it inline as an async handler and await resolution before continuing.
+    await new Promise<void>((resolve, reject) => {
+      requireAuth(req, res, (err?: any) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    }).catch(() => {
+      // requireAuth already sent the 401 response; do nothing.
+      return;
+    });
+
+    // If requireAuth already responded (401), req.auth will not be set — stop.
+    if (!req.auth?.userId) return;
+
     try {
-      // Step 1: Verify session cookie — reject if missing, expired, or forged.
-      const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
-      if (!rawCookie) return res.status(401).json({ error: "Authentication required." });
-
-      const session = verifySessionToken(rawCookie);
-      if (!session) {
-        clearSessionCookie(res);
-        return res.status(401).json({ error: "Session expired or invalid. Please sign in again." });
-      }
-
       // Step 2: DB lookup — role/isAdmin determined from DB, not from request.
       const db = getDb();
-      const rows = await db`SELECT id, role, is_admin FROM users WHERE id = ${session.userId} LIMIT 1`;
+      const rows = await db`SELECT id, role, is_admin FROM users WHERE id = ${req.auth.userId} LIMIT 1`;
       if (!rows.length) return res.status(401).json({ error: "User not found" });
 
       const u = rows[0];

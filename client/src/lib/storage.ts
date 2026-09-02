@@ -27,7 +27,5 @@ export function getConnectionUserIds(): number[] {
   return [];
 }
 
-export function connectionCount(id: number): number {
-  // Stable demo seed — real count served from API
-  return 40 + (id * 17 % 460);
-}
+// PRD-018 D1: connectionCount() removed entirely.
+// All connection counts must use GET /api/connections?userId=X from the server.

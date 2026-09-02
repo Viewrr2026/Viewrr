@@ -10,7 +10,7 @@ import {
   PRO_FEE_BPS, STANDARD_FEE_BPS, PRO_FEE_PCT, STANDARD_FEE_PCT, FOUNDING_PRO_MAX,
 } from "./pro-service";
 import * as schema from "../shared/schema";
-import { eq, isNull } from "drizzle-orm";
+import { eq, isNull, inArray, and } from "drizzle-orm";
 import {
   createPayment,
   initiateRefund,
@@ -21,6 +21,8 @@ import {
   syncConnectAccount,
   reconcilePayment,
   auditLog,
+  processStripeEvent,
+  recoverStaleStripeEvents,
   VIEWRR_FEE_PERCENT as PAYMENT_FEE_PERCENT,
 } from "./payment-service";
 import { getDashboardData } from "./services/dashboard.service";
@@ -40,10 +42,28 @@ import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import {
-  SESSION_COOKIE_NAME, SESSION_TTL_MS,
-  getSessionSecret, issueSessionToken, verifySessionToken,
+  SESSION_COOKIE_NAME,
   setSessionCookie, clearSessionCookie,
 } from "./session";
+import {
+  requireAuth, requireAdminGuard, requireBrowserOrigin,
+} from "./auth-middleware";
+import {
+  createWebSession, createMobileSession,
+  findSessionByToken, isSessionValid, revokeSession, revokeAllUserSessions,
+} from "./auth-sessions";
+import {
+  verifyPassword, migratePasswordIfLegacy, hashPasswordArgon2id,
+} from "./password-service";
+import {
+  STORAGE_CONFIGURED, generateObjectKey, createPresignedUploadUrl,
+  createPresignedDownloadUrl, verifyObjectExists,
+  MAX_UPLOAD_BYTES, isAllowedMime,
+  type ResourceType,
+} from "./object-storage";
+import { createVerificationCode, verifyCode, type VerificationPurpose } from "./verification-service";
+import { compileUserExport, checkDeletionBlockers, anonymiseUserAccount } from "./services/privacy-service";
+import { createReport, resolveReport, suspendUser, unsuspendUser, blockUser, unblockUser, getBlockList } from "./services/trust-service";
 
 import multer from "multer";
 import path from "path";
@@ -59,11 +79,8 @@ const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
 const VIEWRR_FEE_PERCENT = 11; // 11% platform fee
 const APP_BASE_URL = process.env.APP_BASE_URL ?? "https://www.viewrr.co.uk";
 
-// Simple password hashing using SHA-256 + salt (no bcrypt needed for this use case)
-// NOTE(PRD-016A Phase 1): Replace with Argon2id before mobile launch.
-function hashPassword(password: string): string {
-  return crypto.createHash("sha256").update(password + "viewrr_salt_2026").digest("hex");
-}
+// PRD-019: hashPassword removed — Argon2id used via password-service.ts.
+// Legacy SHA-256 verification is handled inside password-service.verifyPassword().
 
 // ─── P0-02: Safe user DTO ────────────────────────────────────────────────────
 // NEVER return the raw DB user row to any client. passwordHash must never appear
@@ -71,70 +88,28 @@ function hashPassword(password: string): string {
 function safeUserDto(user: any): Record<string, any> {
   if (!user) return user;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { passwordHash, password_hash, ...safe } = user as any;
+  const { passwordHash, password_hash, passwordAlgo, password_algo, ...safe } = user as any;
   return safe;
 }
 
-// ─── P0-04: Admin Guard — session-cookie authenticated (Phase 0) ─────────────
-// Caller identity is derived ENTIRELY from the HMAC-verified session cookie.
-// req.body.userId and req.query.userId are IGNORED for admin authorisation.
-// Attack surface: attacker knowing userId=22 gets 401 (no valid cookie).
-// Ordinary logged-in user gets 403 (cookie valid, but isAdmin=false in DB).
-// SESSION_SECRET-signed tokens provide caller authentication — no separate guard secret needed.
-// Phase 1 adds DB token revocation for forced logout.
-async function requireAdminGuard(req: Request, res: Response, next: NextFunction): Promise<void> {
-  // Step 1: Must present a valid, unexpired HMAC session cookie.
-  const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
-  if (!rawCookie) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-  let secret: string;
-  try { secret = getSessionSecret(); } catch {
-    res.status(503).json({ error: "Admin routes unavailable — server misconfigured." });
-    return;
-  }
-  const session = verifySessionToken(rawCookie);
-  if (!session) {
-    clearSessionCookie(res); // clear stale/forged cookie
-    res.status(401).json({ error: "Session expired or invalid. Please sign in again." });
-    return;
-  }
-  // Step 2: DB lookup by userId from VERIFIED token — client cannot forge this.
-  const user = await storage.getUser(session.userId).catch(() => undefined);
-  if (!user) { res.status(401).json({ error: "Authentication required." }); return; }
-  if (!user.isAdmin) { res.status(403).json({ error: "Forbidden." }); return; }
-  req.auth = { userId: session.userId, adminUser: user };
-  next();
+// PRD-018 E1: Strip internal accreditation fields from public profile responses
+function safePublicProfile(profile: any): Record<string, any> {
+  if (!profile) return profile;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { accreditationNotes, accreditationApprovedBy, accreditationApprovedByName, ...safe } = profile as any;
+  return safe;
 }
 
-// ─── A0: Caller-Identity Guard ────────────────────────────────────────────────
-// Reuses Phase 0 HMAC session cookie (vr_sess) exclusively.
-// Sets req.auth!.userId from the VERIFIED token — body/query identity values
-// for the CALLER are IGNORED for authentication on all A0-guarded routes.
-// Phase 1 (Batch A) replaces this with a DB-backed verifySessionV2 + revocation.
-async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const rawCookie = req.cookies?.[SESSION_COOKIE_NAME];
-  if (!rawCookie) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-  const session = verifySessionToken(rawCookie);
-  if (!session) {
-    clearSessionCookie(res);
-    res.status(401).json({ error: "Session expired or invalid. Please sign in again." });
-    return;
-  }
-  req.auth = { userId: session.userId };
-  next();
-}
+// PRD-019: requireAuth and requireAdminGuard are now imported from auth-middleware.ts.
+// The local copies above have been removed. All existing usages in this file
+// continue to work via the imports added at the top of the file.
 
 import { Resend } from "resend";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-// In-memory store for verification codes (email -> { code, expires })
-const verificationCodes = new Map<string, { code: string; expires: number }>();
+// PRD-020 WS-E: Verification codes are now DB-backed (see verification-service.ts).
+// The in-memory Map has been replaced; codes survive server restarts.
 import { insertUserSchema, insertReviewSchema, insertMessageSchema, insertPostSchema, insertPostCommentSchema, insertProjectSchema, insertProjectUpdateSchema, insertBriefSchema, insertBriefInterestSchema, insertAgencySchema, insertAgencyMemberSchema } from "@shared/schema";
 
 // Helper: fire-and-forget notification (never throws)
@@ -225,10 +200,12 @@ async function notify(data: Parameters<typeof storage.createNotification>[0]) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
-  // P0-04: Parse cookies so HMAC session tokens are accessible via req.cookies
+  // P0-04: Parse cookies so session tokens are accessible via req.cookies
   app.use(cookieParser());
+  // PRD-019: Origin validation defence-in-depth (CSRF mitigation for cookie-auth unsafe methods)
+  app.use(requireBrowserOrigin);
   // ─── Version / health ─────────────────────────────────────────────────────
-  // ─── P0-07: Rate limiting (Phase 0 emergency) ─────────────────────────────
+  // ─── P0-07: Rate limiting ──────────────────────────────────────────────────
   const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10,
@@ -245,9 +222,69 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     message: { error: "Too many password reset requests. Please wait an hour before trying again." },
   });
 
+  // PRD-018 H3: Verification code rate limiter
+  const verificationLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000, // 10 minutes
+    max: 5, // max 5 verification code requests per 10 min per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many verification requests. Please wait 10 minutes." },
+  });
+
+  // PRD-018 F2: Upload rate limiter
+  const uploadLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 30, // 30 upload calls per hour per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many uploads. Please wait before uploading more files." },
+  });
+
+  // PRD-018 E3: Profile view rate limiter
+  const profileViewLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 20, // max 20 profile view records per minute per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many profile views recorded. Please slow down." },
+  });
+
+  // PRD-018 G4: Brief and interest rate limiters
+  const briefLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 10,
+    message: { error: "Too many briefs submitted. Please wait." },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  const interestLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 20,
+    message: { error: "Too many interest submissions. Please wait." },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  // PRD-019 C13: Rate limiter for verify-code (brute-force protection)
+  const verifyCodeLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000, // 10 minutes
+    max: 10, // max 10 attempts per 10 min per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many verification attempts. Please try again later." },
+  });
+  // PRD-019: Rate limiter for registration (account creation spam prevention)
+  const registerLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many accounts created from this address. Please wait." },
+  });
+
   app.get("/api/version", (_req, res) => res.json({ version: "2026-05-11-agency", features: ["agency", "accountSubtype"] }));
 
-  // ─── Auth (simple demo auth by email) ─────────────────────────────────────
+  // ─── Auth ─────────────────────────────────────────────────────────────────
+  // PRD-019: Web login — issues DB-backed opaque cookie, never raw token in body.
   // P0-01: Null-password path closed | P0-02: safeUserDto | P0-07: loginLimiter
   app.post("/api/auth/login", loginLimiter, async (req, res) => {
     const { email, password } = req.body;
@@ -255,7 +292,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const user = await storage.getUserByEmail(email);
     if (!user) return res.status(401).json({ error: "Invalid email or password." });
 
-    // P0-01: Accounts with no password hash must never authenticate silently.
     if (!user.passwordHash) {
       return res.status(401).json({
         error: "This account does not have a password set. Please use 'Forgot password' to create one.",
@@ -263,8 +299,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       });
     }
     if (!password) return res.status(401).json({ error: "Password required." });
-    const hash = hashPassword(password);
-    if (hash !== user.passwordHash) return res.status(401).json({ error: "Invalid email or password." });
+
+    // PRD-019: Verify password (legacy SHA-256 or Argon2id)
+    const { valid, wasLegacy } = await verifyPassword(password, user.passwordHash);
+    if (!valid) return res.status(401).json({ error: "Invalid email or password." });
+
+    // PRD-019: Opportunistic Argon2id migration (fire-and-forget; never blocks login)
+    if (wasLegacy) {
+      migratePasswordIfLegacy(user.id, password).catch((e: any) =>
+        console.warn("[login] Password migration failed (non-fatal):", e?.message)
+      );
+    }
 
     let profile = user.role === "freelancer" ? await storage.getProfileByUserId(user.id) : null;
     if (user.role === "freelancer" && !profile) {
@@ -280,28 +325,62 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         console.warn("[login] Could not auto-create missing profile:", e.message);
       }
     }
-    // P0-02: Strip passwordHash before response. Never return raw DB row.
-    // P0-04: Issue HttpOnly HMAC session cookie — caller identity is now server-authoritative.
-    setSessionCookie(res, user.id);
+    // PRD-019: Issue DB-backed opaque cookie. Raw token NEVER returned in JSON.
+    const { rawToken } = await createWebSession(user.id);
+    res.cookie(SESSION_COOKIE_NAME, rawToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 8 * 60 * 60 * 1000,
+      path: "/",
+    });
     res.json({ user: safeUserDto(user), profile });
   });
 
-  app.post("/api/auth/register", async (req, res) => {
+  // PRD-019: Mobile login — separate endpoint; returns raw Bearer token in body once.
+  app.post("/api/auth/mobile/login", loginLimiter, async (req, res) => {
+    const { email, password } = req.body;
+    if (!email) return res.status(400).json({ error: "Email required" });
+    const user = await storage.getUserByEmail(email);
+    if (!user) return res.status(401).json({ error: "Invalid email or password." });
+    if (!user.passwordHash) {
+      return res.status(401).json({
+        error: "This account does not have a password set. Please use 'Forgot password' to create one.",
+        code: "NO_PASSWORD_SET",
+      });
+    }
+    if (!password) return res.status(401).json({ error: "Password required." });
+
+    const { valid, wasLegacy } = await verifyPassword(password, user.passwordHash);
+    if (!valid) return res.status(401).json({ error: "Invalid email or password." });
+
+    if (wasLegacy) {
+      migratePasswordIfLegacy(user.id, password).catch((e: any) =>
+        console.warn("[mobile/login] Password migration failed (non-fatal):", e?.message)
+      );
+    }
+    // PRD-019: Mobile session — Bearer token in body; NO cookie.
+    const { rawToken } = await createMobileSession(user.id);
+    res.json({ user: safeUserDto(user), token: rawToken });
+  });
+
+  // PRD-019: Registration — Argon2id for new hashes; DB-backed session; registerLimiter.
+  app.post("/api/auth/register", registerLimiter, async (req, res) => {
     try {
       const { name, email, role, phone, password } = req.body;
       if (!name || !email || !role) return res.status(400).json({ error: "Name, email and role are required" });
-      // P0-PRIV: Only permitted public roles. Prevents role=admin/payments_manager injection.
       const ALLOWED_ROLES = ["freelancer", "client"];
       if (!ALLOWED_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role" });
       const existing = await storage.getUserByEmail(email);
       if (existing) return res.status(409).json({ error: "Email already registered" });
-      // P0-PRIV: Never set isAdmin from request — always defaults to false in DB.
-      const userData: any = { name, email, role };
+      const userData: any = { name, email, role, passwordAlgo: "sha256_v1" };
       if (phone) userData.phone = phone;
-      if (password) userData.passwordHash = hashPassword(password);
+      if (password) {
+        userData.passwordHash = await hashPasswordArgon2id(password);
+        userData.passwordAlgo = "argon2id";
+      }
       const user = await storage.createUser(userData);
 
-      // Auto-create a profile row for freelancers so their dashboard loads correctly
       let profile = null;
       if (role === "freelancer") {
         try {
@@ -321,37 +400,102 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             isPro: 0,
           });
         } catch (profileErr: any) {
-          // Non-fatal — user is still created
           console.warn("[register] Could not auto-create profile:", profileErr.message);
         }
       }
 
-      // P0-04: Issue session cookie on registration
-      setSessionCookie(res, user.id);
-      res.json({ user: safeUserDto(user), profile }); // P0-02
+      // PRD-019: DB-backed session cookie on registration
+      const { rawToken } = await createWebSession(user.id);
+      res.cookie(SESSION_COOKIE_NAME, rawToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "strict",
+        maxAge: 8 * 60 * 60 * 1000,
+        path: "/",
+      });
+      res.json({ user: safeUserDto(user), profile });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  // ─── P0-04: Logout ────────────────────────────────────────────────────────
-  app.post("/api/auth/logout", (req, res) => {
+  // PRD-019: Revocable logout — D5 rules.
+  app.post("/api/auth/logout", async (req, res) => {
+    const bearerHeader = req.headers["authorization"];
+    const cookieValue  = req.cookies?.[SESSION_COOKIE_NAME];
+    const hasBearerHeader = (bearerHeader ?? "").startsWith("Bearer ");
+
+    const bearerSession = hasBearerHeader
+      ? await findSessionByToken(bearerHeader!.slice(7))
+      : null;
+    const cookieSession = cookieValue
+      ? await findSessionByToken(cookieValue)
+      : null;
+
+    if (bearerSession && cookieSession) {
+      if (bearerSession.userId !== cookieSession.userId) {
+        return res.status(401).json({ error: "Conflicting authentication credentials.", code: "AUTH_CONFLICT" });
+      }
+      await revokeSession(bearerSession.sessionId, "logout");
+      await revokeSession(cookieSession.sessionId, "logout");
+      clearSessionCookie(res);
+      return res.json({ ok: true });
+    }
+    if (bearerSession) {
+      if (isSessionValid(bearerSession)) await revokeSession(bearerSession.sessionId, "logout");
+      return res.json({ ok: true });
+    }
+    if (cookieSession) {
+      if (isSessionValid(cookieSession)) await revokeSession(cookieSession.sessionId, "logout");
+      clearSessionCookie(res);
+      return res.json({ ok: true });
+    }
+    // Legacy HMAC drain: clear cookie; server-side revocation impossible for HMAC tokens
     clearSessionCookie(res);
-    res.json({ ok: true });
+    return res.json({ ok: true });
+  });
+
+  // PRD-019: /api/auth/me
+  app.get("/api/auth/me", requireAuth, async (req, res) => {
+    const user = await storage.getUser(req.auth!.userId);
+    if (!user) {
+      clearSessionCookie(res);
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    return res.json({
+      authenticated: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        avatar: user.avatar ?? null,
+        isAdmin: user.isAdmin,
+        sessionType: req.auth!.clientType ?? "web",
+      },
+    });
   });
 
   // ─── Email Verification ───────────────────────────────────────────────────
-  app.post("/api/auth/send-verification", async (req, res) => {
+  // PRD-018 H3: verificationLimiter applied
+  app.post("/api/auth/send-verification", verificationLimiter, async (req, res) => {
     const { email } = req.body;
     console.log(`[verify] Request received for: ${email}`);
     if (!email) return res.status(400).json({ error: "Email required" });
 
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    verificationCodes.set(email.toLowerCase(), { code, expires: Date.now() + 10 * 60 * 1000 }); // 10 min expiry
+    // PRD-020 WS-E: code stored in DB (hashed); raw code returned only to caller for emailing
+    const code = await createVerificationCode(email, "email_verification");
 
     if (!resend) {
-      console.log(`[verify] RESEND_API_KEY not set — code for ${email}: ${code}`);
-      return res.json({ ok: true, dev: true, code });
+      // PRD-018 H4: RESEND not configured.
+      // NEVER log or return the verification code in production.
+      // Development only: log to server console to allow manual testing.
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[verify][DEV ONLY] RESEND_API_KEY not set — code for ${email}: ${code}`);
+        return res.json({ ok: true, dev: true });
+      }
+      // Production: fail closed — do not reveal whether Resend is misconfigured
+      return res.status(503).json({ error: "Email service unavailable. Please try again later." });
     }
 
     console.log(`[verify] Sending email via Resend to: ${email}`);
@@ -402,12 +546,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const { phone, email } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number required" });
 
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    verificationCodes.set(phone.replace(/\s+/g, ""), { code, expires: Date.now() + 10 * 60 * 1000 });
+    // PRD-020 WS-E: code stored in DB (hashed); raw code returned only to caller for emailing
+    const code = await createVerificationCode(phone.replace(/\s+/g, ""), "sms_verification");
 
     if (!resend || !email) {
-      console.log(`[verify-sms] Code for ${phone}: ${code}`);
-      return res.json({ ok: true, dev: true });
+      // PRD-018 H4: RESEND not configured or no email address.
+      // Development only: log code to server console.
+      // Production: fail closed — never log or return the code.
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[verify-sms][DEV ONLY] RESEND_API_KEY not set or no email — code for ${phone}: ${code}`);
+        return res.json({ ok: true, dev: true });
+      }
+      return res.status(503).json({ error: "SMS verification service unavailable. Please try again later." });
     }
     try {
       await resend.emails.send({
@@ -438,22 +588,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.post("/api/auth/verify-code", async (req, res) => {
+  // PRD-019 C13: verifyCodeLimiter applied (10/10min/IP — brute-force protection)
+  // PRD-020 WS-E: Now DB-backed via verification-service (hashed codes, attempt counting)
+  app.post("/api/auth/verify-code", verifyCodeLimiter, async (req, res) => {
     const { email, phone, code } = req.body;
     const key = phone ? phone.replace(/\s+/g, "") : email?.toLowerCase();
     if (!key || !code) return res.status(400).json({ error: "Email or phone and code required" });
 
-    const stored = verificationCodes.get(key);
-    if (!stored) return res.status(400).json({ error: "No code found — please request a new one" });
-    if (Date.now() > stored.expires) {
-      verificationCodes.delete(key);
-      return res.status(400).json({ error: "Code expired — please request a new one" });
-    }
-    if (stored.code !== String(code).trim()) {
-      return res.status(400).json({ error: "Incorrect code" });
-    }
-
-    verificationCodes.delete(key);
+    const purpose: VerificationPurpose = phone ? "sms_verification" : "email_verification";
+    const result = await verifyCode(key, purpose, String(code).trim());
+    if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ ok: true });
   });
 
@@ -497,7 +641,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           `,
         });
       } else {
-        console.log("[forgot-password] RESEND not configured. Reset URL for " + user.email + ": " + resetUrl);
+        // PRD-018 H5: RESEND not configured.
+        // NEVER log the raw reset URL or token — it would grant password-reset access to anyone with log access.
+        // Development only: surface a dev notice (no token).
+        // Production: fail closed.
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[forgot-password][DEV ONLY] RESEND_API_KEY not set. Reset email NOT sent for " + user.email + ". Token has been stored in DB and will expire in 15 minutes.");
+        } else {
+          console.error("[forgot-password] RESEND_API_KEY not configured in production. Reset email could not be sent.");
+          // Return error in production so user knows the email was not delivered
+          return res.status(503).json({ error: "Email service unavailable. Please contact support@viewrr.co.uk to reset your password." });
+        }
       }
       res.json(GENERIC_OK);
     } catch (e: any) {
@@ -514,14 +668,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const tokenHash = crypto.createHash("sha256").update(String(token)).digest("hex");
       // P0-05: Atomic transaction — token consumption and password update committed together.
-      // SELECT...FOR UPDATE row lock: concurrent attempts race; only the first wins.
-      const result = await storage.atomicConsumeTokenAndResetPassword(tokenHash, hashPassword(newPassword));
+      // PRD-019: Password reset uses Argon2id; revokes all active DB sessions for that user.
+      const newHash = await hashPasswordArgon2id(newPassword);
+      const result = await storage.atomicConsumeTokenAndResetPassword(tokenHash, newHash);
       if (!result.ok) {
         const msg = result.reason === "used"
           ? "This reset link has already been used. Please request a new one."
           : "Invalid or expired reset link. Please request a new one.";
         return res.status(400).json({ error: msg });
       }
+      // PRD-019: Revoke all active DB-backed sessions after password reset.
+      const successResult = result as { ok: true; userId: number };
+      await revokeAllUserSessions(successResult.userId, "password_reset");
       res.json({ ok: true, message: "Password updated successfully. You can now sign in." });
     } catch (e: any) {
       console.error("[reset-password] Error:", e.message);
@@ -530,7 +688,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── File uploads ──────────────────────────────────────────────────────
-  // Max 50 MB per file, images and videos only
+  // PRD-018 F3: Max 20 MB per file (reduced from 50 MB), images and videos only
   const upload = multer({
     storage: multer.diskStorage({
       destination: (_req, _file, cb) => {
@@ -543,7 +701,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
       },
     }),
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+    limits: { fileSize: 20 * 1024 * 1024 }, // PRD-018 F3: 20 MB (reduced from 50 MB)
     fileFilter: (_req, file, cb) => {
       if (file.mimetype.startsWith("image/") || file.mimetype.startsWith("video/")) {
         cb(null, true);
@@ -554,19 +712,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Portfolio upload — accepts up to 12 files, returns their server paths/URLs
+  // PRD-018 A1: requireAuth; F2: uploadLimiter; F4: path field removed from response
   app.post("/api/upload/portfolio",
+    requireAuth,
+    uploadLimiter,
     upload.array("files", 12),
     (req: any, res: any) => {
       try {
         const files: Express.Multer.File[] = req.files as Express.Multer.File[];
         if (!files || files.length === 0) return res.status(400).json({ error: "No files received" });
+        // PRD-018 F4: do NOT expose server path in response
         const result = files.map(f => ({
           filename: f.filename,
           originalName: f.originalname,
           mimetype: f.mimetype,
           size: f.size,
-          // On Render, /tmp is ephemeral — stored temporarily during the session
-          path: f.path,
         }));
         res.json({ ok: true, files: result, count: result.length });
       } catch (e: any) {
@@ -578,26 +738,241 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Error handler specifically for multer (file too large, wrong type, etc.)
   app.use("/api/upload", (err: any, _req: any, res: any, next: any) => {
     if (err?.code === "LIMIT_FILE_SIZE") {
-      return res.status(413).json({ error: "File too large. Maximum size is 50 MB per file." });
+      return res.status(413).json({ error: "File too large. Maximum size is 20 MB per file." });
     }
     if (err?.message) return res.status(400).json({ error: err.message });
     next(err);
+  });
+
+  // ─── WS-D: Durable object storage upload flow ─────────────────────────────────────
+  // POST /api/upload/request  — get presigned PUT URL + create pending upload_objects record
+  // POST /api/upload/confirm/:objectKey — confirm upload, set status=ready
+  // GET  /api/upload/download/:id — get presigned GET URL (auth required, ownership check)
+
+  app.post("/api/upload/request", requireAuth, uploadLimiter, async (req: any, res: any) => {
+    try {
+      if (!STORAGE_CONFIGURED) {
+        return res.status(503).json({ error: "Object storage not configured" });
+      }
+
+      const { resourceType, mimeType, fileSizeBytes, originalFilename } = req.body;
+      const userId: number = req.auth!.userId;
+
+      // Validate resourceType
+      const validResourceTypes: ResourceType[] = ["portfolio", "profile", "project", "deliverable", "message"];
+      if (!validResourceTypes.includes(resourceType)) {
+        return res.status(400).json({ error: `Invalid resourceType. Must be one of: ${validResourceTypes.join(", ")}` });
+      }
+
+      // Validate mimeType
+      if (!mimeType || !isAllowedMime(resourceType as ResourceType, mimeType)) {
+        return res.status(400).json({ error: `MIME type '${mimeType}' not allowed for resourceType '${resourceType}'` });
+      }
+
+      // Validate fileSizeBytes
+      const maxBytes = MAX_UPLOAD_BYTES[resourceType as ResourceType];
+      if (!fileSizeBytes || fileSizeBytes <= 0) {
+        return res.status(400).json({ error: "fileSizeBytes must be a positive integer" });
+      }
+      if (fileSizeBytes > maxBytes) {
+        return res.status(400).json({
+          error: `File too large for resourceType '${resourceType}'. Maximum is ${Math.round(maxBytes / 1024 / 1024)} MB`,
+        });
+      }
+
+      // Extract extension from MIME type or original filename
+      let ext: string | undefined;
+      if (originalFilename) {
+        const dotIdx = originalFilename.lastIndexOf(".");
+        if (dotIdx !== -1) ext = originalFilename.slice(dotIdx + 1);
+      }
+      if (!ext) {
+        // Derive from MIME type
+        const mimeExt: Record<string, string> = {
+          "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+          "image/gif": "gif", "image/avif": "avif",
+          "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov",
+          "video/x-msvideo": "avi", "application/pdf": "pdf", "application/zip": "zip",
+        };
+        ext = mimeExt[mimeType];
+      }
+
+      // Generate server-controlled object key (FR-22)
+      const objectKey = generateObjectKey(resourceType as ResourceType, userId, ext);
+
+      // Presigned PUT URL (5 min expiry)
+      const uploadIntentExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      const uploadUrl = await createPresignedUploadUrl({
+        objectKey,
+        mimeType,
+        maxSizeBytes: fileSizeBytes,
+        expiresInSeconds: 300,
+      });
+
+      // Insert pending upload_objects record
+      const sql = neon(process.env.DATABASE_URL!);
+      const rows = await sql`
+        INSERT INTO upload_objects
+          (owner_user_id, object_key, resource_type, mime_type, original_filename,
+           status, upload_intent_expires_at, created_at)
+        VALUES
+          (${userId}, ${objectKey}, ${resourceType}, ${mimeType},
+           ${originalFilename ?? null}, 'pending', ${uploadIntentExpiresAt}, ${new Date().toISOString()})
+        RETURNING id
+      `;
+
+      return res.json({ uploadUrl, objectKey, uploadId: rows[0].id });
+    } catch (e: any) {
+      console.error("[upload/request] Error:", e.message);
+      return res.status(500).json({ error: "Failed to create upload intent", detail: e.message });
+    }
+  });
+
+  app.post("/api/upload/confirm/*objectKey", requireAuth, async (req: any, res: any) => {
+    try {
+      if (!STORAGE_CONFIGURED) {
+        return res.status(503).json({ error: "Object storage not configured" });
+      }
+
+      const raw = req.params.objectKey;
+      const objectKey = Array.isArray(raw) ? raw.join("/") : raw;
+      const userId: number = req.auth!.userId;
+
+      // Look up upload_objects record, verify ownership
+      const sql = neon(process.env.DATABASE_URL!);
+      const rows = await sql`
+        SELECT id, owner_user_id, status
+        FROM upload_objects
+        WHERE object_key = ${objectKey}
+        LIMIT 1
+      `;
+
+      if (!rows.length) return res.status(404).json({ error: "Upload record not found" });
+      const record = rows[0];
+      if (record.owner_user_id !== userId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      if (record.status === "ready") {
+        return res.json({ ok: true, objectId: record.id, alreadyConfirmed: true });
+      }
+
+      // FR-24: Verify object actually exists in R2
+      const existence = await verifyObjectExists(objectKey);
+      if (!existence.exists) {
+        return res.status(404).json({ error: "Object not found in storage — upload may not have completed" });
+      }
+
+      const now = new Date().toISOString();
+      await sql`
+        UPDATE upload_objects
+        SET status = 'ready',
+            confirmed_at = ${now},
+            size_bytes = ${existence.size ?? null}
+        WHERE id = ${record.id}
+      `;
+
+      return res.json({ ok: true, objectId: record.id });
+    } catch (e: any) {
+      console.error("[upload/confirm] Error:", e.message);
+      return res.status(500).json({ error: "Failed to confirm upload", detail: e.message });
+    }
+  });
+
+  app.get("/api/upload/download/:id", requireAuth, async (req: any, res: any) => {
+    try {
+      if (!STORAGE_CONFIGURED) {
+        return res.status(503).json({ error: "Object storage not configured" });
+      }
+
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid upload id" });
+
+      const userId: number = req.auth!.userId;
+      const sql = neon(process.env.DATABASE_URL!);
+
+      const rows = await sql`
+        SELECT id, owner_user_id, object_key, resource_type, resource_id, status
+        FROM upload_objects
+        WHERE id = ${id}
+        LIMIT 1
+      `;
+
+      if (!rows.length) return res.status(404).json({ error: "Upload not found" });
+      const record = rows[0];
+
+      if (record.status !== "ready") {
+        return res.status(404).json({ error: "Upload not ready" });
+      }
+
+      // Check ownership OR project membership for project/deliverable resources
+      let hasAccess = record.owner_user_id === userId;
+
+      if (!hasAccess && record.resource_id && ["project", "deliverable"].includes(record.resource_type)) {
+        // Check if user is a participant in the project
+        const projectId = record.resource_type === "deliverable"
+          ? await (async () => {
+              // deliverable's project_id lives on the resource — use upload resource_id as project_id hint
+              const proj = await sql`
+                SELECT id FROM projects
+                WHERE id = ${record.resource_id}
+                  AND (freelancer_id = ${userId} OR client_id = ${userId})
+                LIMIT 1
+              `;
+              return proj.length ? record.resource_id : null;
+            })()
+          : record.resource_id;
+
+        if (projectId) {
+          const projRows = await sql`
+            SELECT id FROM projects
+            WHERE id = ${projectId}
+              AND (freelancer_id = ${userId} OR client_id = ${userId})
+            LIMIT 1
+          `;
+          if (projRows.length) hasAccess = true;
+        }
+      }
+
+      if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+
+      // FR-25: 15-min presigned download URL
+      const downloadUrl = await createPresignedDownloadUrl(record.object_key, 900);
+      return res.json({ downloadUrl });
+    } catch (e: any) {
+      console.error("[upload/download] Error:", e.message);
+      return res.status(500).json({ error: "Failed to generate download URL", detail: e.message });
+    }
   });
 
     // ─── Profiles ──────────────────────────────────────────────────────────────
   app.get("/api/profiles", async (req, res) => {
     const { specialism, availability, search } = req.query as Record<string, string>;
     const profiles = await storage.getProfiles({ specialism, availability, search });
-    res.json(profiles);
+    // PRD-018 E5: override stale projectCount with DB-authoritative completed-project count
+    const userIds = profiles.map((p: any) => p.profile.userId as number);
+    const countMap = await storage.getCompletedProjectCountsBulk(userIds);
+    // PRD-018 E2: strip accreditation fields from public list
+    res.json(profiles.map((p: any) => ({
+      ...p,
+      profile: { ...safePublicProfile(p.profile), projectCount: countMap.get(p.profile.userId) ?? 0 },
+    })));
   });
 
   app.get("/api/profiles/featured", async (req, res) => {
-    res.json(await storage.getFeaturedProfiles());
+    const profiles = await storage.getFeaturedProfiles();
+    // PRD-018 E5: override stale projectCount with DB-authoritative count
+    const userIds = profiles.map((p: any) => p.profile.userId as number);
+    const countMap = await storage.getCompletedProjectCountsBulk(userIds);
+    res.json(profiles.map((p: any) => ({
+      ...p,
+      profile: { ...p.profile, projectCount: countMap.get(p.profile.userId) ?? 0 },
+    })));
   });
 
   // ─── Profile Views ───────────────────────────────────────────────────────
   // Called by ProfilePage on load — records one view per viewer per 24h
-  app.post("/api/profile-views/:id", async (req, res) => {
+  // PRD-018 E3: rate limited to prevent view inflation; unauthenticated (public profiles)
+  app.post("/api/profile-views/:id", profileViewLimiter, async (req, res) => {
     try {
       const rawId = Number(req.params.id);
       const viewerId: number | null = req.body.viewerId ?? null;
@@ -673,7 +1048,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.get("/api/profile-by-user/:userId", async (req, res) => {
     try {
       const profile = await storage.getOrCreateProfileForUser(Number(req.params.userId));
-      res.json(profile);
+      // PRD-018 E1: strip internal accreditation fields
+      res.json(profile ? safePublicProfile(profile) : profile);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -720,7 +1096,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       });
     }
     const reviews = await storage.getReviewsByProfile(pw.profile.id);
-    res.json({ ...pw, reviews });
+    // PRD-018 E5 (projectCount): override stale profiles.project_count with a DB-authoritative
+    // count of projects WHERE freelancer_id = profile.userId AND status = 'completed'.
+    // This column was always 0 (never incremented by routes). Now it reflects real completions.
+    const completedProjectCount = await storage.getCompletedProjectCount(pw.profile.userId);
+    const safeProfile = { ...safePublicProfile(pw.profile), projectCount: completedProjectCount };
+    // PRD-018 E1: strip internal accreditation fields (safePublicProfile already applied above)
+    res.json({ ...pw, profile: safeProfile, reviews });
   });
 
   // A0-U2
@@ -754,34 +1136,106 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── Reviews ──────────────────────────────────────────────────────────────
-  app.post("/api/reviews", async (req, res) => {
+  // PRD-018 C1: Full review authorization
+  // Viewrr operates a confirmed RECIPROCAL review system:
+  //   - Client reviews the freelancer on a completed project
+  //   - Freelancer reviews the client on a completed project
+  // "role" in the request body = the REVIEWER's role ("client" or "freelancer")
+  app.post("/api/reviews", requireAuth, async (req, res) => {
     try {
-      const data = insertReviewSchema.parse(req.body);
-      // Prevent duplicate reviews for the same project by the same reviewer
-      if (data.projectId) {
-        const existing = await storage.getReviewsByProfile(data.profileId);
-        const dupe = existing.find(r => r.projectId === data.projectId && r.clientId === data.clientId);
-        if (dupe) return res.status(409).json({ error: "Review already submitted for this project" });
+      const callerId = req.auth!.userId;
+
+      // C1-1: projectId is mandatory for all reviews
+      const projectId = Number(req.body.projectId);
+      if (!projectId || isNaN(projectId)) {
+        return res.status(400).json({ error: "projectId is required" });
       }
-      const review = await storage.createReview(data);
-      // Mark review given on the project
-      if (data.projectId && req.body.role) {
-        await storage.markReviewGiven(data.projectId, req.body.role as "client" | "freelancer");
+
+      // C1-2: rating must be an integer 1–5
+      const rating = Number(req.body.rating);
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+        return res.status(400).json({ error: "rating must be an integer between 1 and 5" });
       }
+
+      // C1-3: comment required (min 10 chars)
+      const comment = typeof req.body.comment === "string" ? req.body.comment.trim() : "";
+      if (comment.length < 10) {
+        return res.status(400).json({ error: "comment must be at least 10 characters" });
+      }
+
+      // C1-4: role must be "client" or "freelancer" (reviewer's role)
+      const role = req.body.role as "client" | "freelancer";
+      if (role !== "client" && role !== "freelancer") {
+        return res.status(400).json({ error: "role must be 'client' or 'freelancer'" });
+      }
+
+      // C1-5: load the project from DB — server-authoritative
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+
+      // C1-6: project must be in a completed (review-eligible) state
+      if (pw.project.status !== "completed") {
+        return res.status(403).json({ error: "Reviews are only accepted on completed projects" });
+      }
+
+      // C1-7: caller must be the party matching their declared role
+      if (role === "client" && pw.project.clientId !== callerId) {
+        return res.status(403).json({ error: "Only the project client can submit a client review" });
+      }
+      if (role === "freelancer" && pw.project.freelancerId !== callerId) {
+        return res.status(403).json({ error: "Only the assigned freelancer can submit a freelancer review" });
+      }
+
+      // C1-8: server-derive the reviewee (target profile)
+      // Client reviews the freelancer; freelancer reviews the client.
+      const revieweeUserId = role === "client" ? pw.project.freelancerId! : pw.project.clientId;
+      if (!revieweeUserId) {
+        return res.status(400).json({ error: "Project is missing a required participant" });
+      }
+      // Ensure target profile exists (auto-creates stub for client profiles)
+      const revieweeProfile = await storage.getOrCreateProfileForUser(revieweeUserId);
+      const targetProfileId = revieweeProfile.id;
+
+      // C1-9: reviewer identity is fully server-derived
+      const actor = await storage.getUser(callerId);
+      if (!actor) return res.status(404).json({ error: "Authenticated user not found" });
+
+      // C1-10: duplicate-review prevention (application-level)
+      // Checks reviewer (clientId) + project combination, regardless of profileId.
+      const existingOnProfile = await storage.getReviewsByProfile(targetProfileId);
+      const dupe = existingOnProfile.find(r => r.projectId === projectId && r.clientId === callerId);
+      if (dupe) return res.status(409).json({ error: "You have already submitted a review for this project" });
+
+      // C1-11: verifiedProjectReview is always server-set; body value is ignored
+      const reviewData = {
+        profileId: targetProfileId,
+        clientId: callerId,
+        clientName: actor.name,
+        clientAvatar: actor.avatar ?? null,
+        rating,
+        comment,
+        projectType: typeof req.body.projectType === "string" ? req.body.projectType : null,
+        projectId,
+        verifiedProjectReview: 1, // always 1 — project is completed and relationship verified above
+      };
+
+      const review = await storage.createReview(reviewData);
+
+      // Mark review given on the project (tracks reciprocal review state)
+      await storage.markReviewGiven(projectId, role);
+
       // Notify the reviewee
-      const revieweeProfile = await storage.getProfileByUserId(data.profileId);
-      if (revieweeProfile) {
-        await storage.createNotification({
-          recipientId: revieweeProfile.userId,
-          actorId: data.clientId,
-          actorName: data.clientName,
-          actorAvatar: data.clientAvatar || null,
-          type: "review",
-          message: `${data.clientName} left you a ${data.rating}-star review`,
-          link: "/dashboard",
-          read: 0,
-        });
-      }
+      await storage.createNotification({
+        recipientId: revieweeUserId,
+        actorId: callerId,
+        actorName: actor.name,
+        actorAvatar: actor.avatar || null,
+        type: "review",
+        message: `${actor.name} left you a ${rating}-star review`,
+        link: "/dashboard",
+        read: 0,
+      });
+
       res.json(review);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -879,9 +1333,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(await storage.getSaved(Number(req.params.clientId)));
   });
 
-  app.post("/api/saved/toggle", async (req, res) => {
-    const { clientId, profileId } = req.body;
-    const saved = await storage.toggleSaved(Number(clientId), Number(profileId));
+  // PRD-018 A4: requireAuth + derive clientId from session
+  app.post("/api/saved/toggle", requireAuth, async (req, res) => {
+    const { profileId } = req.body;
+    const clientId = req.auth!.userId;
+    const saved = await storage.toggleSaved(clientId, Number(profileId));
     res.json({ saved });
   });
 
@@ -891,7 +1347,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── AI Search ────────────────────────────────────────────────────────────
-  app.post("/api/ai-search", async (req, res) => {
+  // PRD-018 A5: requireAuth gates the AI search endpoint
+  app.post("/api/ai-search", requireAuth, async (req, res) => {
     const { query } = req.body;
     if (!query) return res.status(400).json({ error: "Query required" });
 
@@ -1013,9 +1470,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(data);
   });
 
-  app.post("/api/feed", async (req, res) => {
+  // PRD-018 A6: requireAuth + session-derived userId
+  app.post("/api/feed", requireAuth, async (req, res) => {
     try {
-      const data = insertPostSchema.parse(req.body);
+      const data = insertPostSchema.parse({ ...req.body, userId: req.auth!.userId });
       const post = await storage.createPost(data);
       const pw = await storage.getPost(post.id);
       bustFeedCache();
@@ -1025,18 +1483,20 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.patch("/api/feed/:id", async (req, res) => {
-    const { userId, caption, tags } = req.body;
-    if (!userId) return res.status(400).json({ error: "userId required" });
-    const post = await storage.updatePost(Number(req.params.id), Number(userId), caption ?? "", tags ?? "[]");
+  // PRD-018 A6: requireAuth + session-derived userId
+  app.patch("/api/feed/:id", requireAuth, async (req, res) => {
+    const { caption, tags } = req.body;
+    const userId = req.auth!.userId;
+    const post = await storage.updatePost(Number(req.params.id), userId, caption ?? "", tags ?? "[]");
     if (!post) return res.status(403).json({ error: "Not allowed" });
     const pw = await storage.getPost(post.id);
     res.json(pw);
   });
 
-  app.delete("/api/feed/:id", async (req, res) => {
-    const { userId } = req.body;
-    const ok = await storage.deletePost(Number(req.params.id), Number(userId));
+  // PRD-018 A6: requireAuth + session-derived userId
+  app.delete("/api/feed/:id", requireAuth, async (req, res) => {
+    const userId = req.auth!.userId;
+    const ok = await storage.deletePost(Number(req.params.id), userId);
     if (!ok) return res.status(403).json({ error: "Not allowed" });
     bustFeedCache();
     res.json({ success: true });
@@ -1071,14 +1531,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(log);
   });
 
-  app.post("/api/feed/:id/like", async (req, res) => {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: "userId required" });
-    const liked = await storage.toggleLike(Number(req.params.id), Number(userId));
+  // PRD-018 A6: requireAuth + session-derived userId
+  app.post("/api/feed/:id/like", requireAuth, async (req, res) => {
+    const userId = req.auth!.userId;
+    const liked = await storage.toggleLike(Number(req.params.id), userId);
     const post = await storage.getPost(Number(req.params.id));
     // Notify post owner when someone likes (not when unliking, not self-like)
-    if (liked && post && post.post.userId !== Number(userId)) {
-      const actor = await storage.getUser(Number(userId));
+    if (liked && post && post.post.userId !== userId) {
+      const actor = await storage.getUser(userId);
       if (actor) {
         await notify({
           recipientId: post.post.userId,
@@ -1099,9 +1559,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(await storage.getComments(Number(req.params.id)));
   });
 
-  app.post("/api/feed/:id/comments", async (req, res) => {
+  // PRD-018 A6: requireAuth + session-derived userId
+  app.post("/api/feed/:id/comments", requireAuth, async (req, res) => {
     try {
-      const data = insertPostCommentSchema.parse({ ...req.body, postId: Number(req.params.id) });
+      const data = insertPostCommentSchema.parse({ ...req.body, userId: req.auth!.userId, postId: Number(req.params.id) });
       const comment = await storage.createComment(data);
       // Notify post owner of new comment (not self-comment)
       const post = await storage.getPost(Number(req.params.id));
@@ -1258,7 +1719,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Legacy subscribe (no-op — returns instruction to use /checkout)
-  app.post("/api/pro/subscribe", async (req, res) => {
+  // PRD-018 A7: requireAuth (deprecated stub — adding auth is harmless)
+  app.post("/api/pro/subscribe", requireAuth, async (req, res) => {
     res.status(410).json({ error: "This endpoint is deprecated. Use POST /api/pro/checkout." });
   });
 
@@ -1281,9 +1743,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(pw);
   });
 
-  app.post("/api/projects", async (req, res) => {
+  // PRD-018 A8: requireAuth + verify caller is a party on the project being created
+  app.post("/api/projects", requireAuth, async (req, res) => {
     try {
       const data = insertProjectSchema.parse(req.body);
+      // A8: caller must be either the clientId or freelancerId in the submitted data
+      if (data.clientId !== req.auth!.userId && data.freelancerId !== req.auth!.userId) {
+        return res.status(403).json({ error: "You must be the client or freelancer on the project" });
+      }
       const project = await storage.createProject(data);
       const full = await storage.getProject(project.id);
       res.json(full);
@@ -1322,11 +1789,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.post("/api/projects/:id/advance", async (req, res) => {
+  // PRD-018 A9: requireAuth + session-derived callerId
+  app.post("/api/projects/:id/advance", requireAuth, async (req, res) => {
     try {
-      const { note, authorId } = req.body;
-      const callerId = Number(authorId);
-      if (!callerId) return res.status(400).json({ error: "authorId required" });
+      const { note } = req.body;
+      const callerId = req.auth!.userId;
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
@@ -1368,11 +1835,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // FR-01: uses injected db from storage module.
   // FR-04: core transition + audit in one update; notification fires after commit (FR-05/17).
   // FR-08: writes completedAt + completedBy; idempotent — already-completed returns 200.
-  app.post("/api/projects/:id/actions/complete", async (req, res) => {
+  // PRD-018 A10: requireAuth + session-derived callerId
+  app.post("/api/projects/:id/actions/complete", requireAuth, async (req, res) => {
     try {
-      const { freelancerId } = req.body;
-      const callerId = Number(freelancerId);
-      if (!callerId) return res.status(400).json({ error: "freelancerId required" });
+      const callerId = req.auth!.userId;
       const projectId = Number(req.params.id);
 
       // FR-03: load with ownership check
@@ -1437,11 +1903,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // FR-09: writes deletedAt + deletedBy; default queries exclude deleted rows.
   // FR-10: does NOT cascade — payments/audit/messages untouched.
   // FR-11: blocks if financial activity exists.
-  app.post("/api/projects/:id/actions/delete", async (req, res) => {
+  // PRD-018 A11: requireAuth + session-derived callerId
+  app.post("/api/projects/:id/actions/delete", requireAuth, async (req, res) => {
     try {
-      const { freelancerId } = req.body;
-      const callerId = Number(freelancerId);
-      if (!callerId) return res.status(400).json({ error: "freelancerId required" });
+      const callerId = req.auth!.userId;
       const projectId = Number(req.params.id);
 
       // FR-03: ownership check
@@ -1490,9 +1955,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
   // ────────────────────────────────────────────────────────────────────────────
 
-  app.post("/api/projects/:id/updates", async (req, res) => {
+  // PRD-018 A12: requireAuth + verify caller is on the project + pass session userId as author
+  app.post("/api/projects/:id/updates", requireAuth, async (req, res) => {
     try {
-      const data = insertProjectUpdateSchema.parse({ ...req.body, projectId: Number(req.params.id) });
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.clientId !== req.auth!.userId && pw.project.freelancerId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Not authorised" });
+      }
+      const data = insertProjectUpdateSchema.parse({ ...req.body, authorId: req.auth!.userId, projectId });
       const update = await storage.addProjectUpdate(data);
       res.json(update);
     } catch (e: any) {
@@ -1516,11 +1988,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST create a meeting (instant or scheduled)
-  app.post("/api/projects/:id/meetings", async (req, res) => {
+  // PRD-018 A13: requireAuth + verify caller is on the project
+  app.post("/api/projects/:id/meetings", requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
-      const { createdBy, title, scheduledAt, isInstant } = req.body;
-      if (!createdBy) return res.status(400).json({ error: "createdBy required" });
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.clientId !== req.auth!.userId && pw.project.freelancerId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Not authorised" });
+      }
+      const { title, scheduledAt, isInstant } = req.body;
 
       // Generate a unique Google Meet link using a random room code
       const roomId = `viewrr-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -1528,7 +2005,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const meeting = await storage.createMeeting({
         projectId,
-        createdBy: Number(createdBy),
+        createdBy: req.auth!.userId,
         title: title || (isInstant ? "Instant call" : "Project call"),
         meetLink,
         scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
@@ -1543,8 +2020,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PATCH cancel a meeting
-  app.patch("/api/meetings/:id/cancel", async (req, res) => {
+  // PRD-018 A14: requireAuth + verify caller is on the meeting's project
+  app.patch("/api/meetings/:id/cancel", requireAuth, async (req, res) => {
     try {
+      const meeting = await storage.getMeeting(Number(req.params.id));
+      if (!meeting) return res.status(404).json({ error: "Meeting not found" });
+      const pw = await storage.getProject(meeting.projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.clientId !== req.auth!.userId && pw.project.freelancerId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Not authorised" });
+      }
       await storage.cancelMeeting(Number(req.params.id));
       res.json({ success: true });
     } catch (e) {
@@ -1704,9 +2189,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST freelancer submits current cycle (active → awaiting_signoff)
-  app.post("/api/projects/:id/retainer/submit-cycle", async (req, res) => {
+  // PRD-018 A15: requireAuth + verify caller is the freelancer on the project
+  app.post("/api/projects/:id/retainer/submit-cycle", requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.freelancerId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Only the freelancer can submit a cycle" });
+      }
       const { cycleId, note } = req.body;
       const cycle = await storage.updateRetainerCycle(Number(cycleId), {
         status: "awaiting_signoff",
@@ -1721,9 +2212,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST client signs off cycle (awaiting_signoff → awaiting_payment)
-  app.post("/api/projects/:id/retainer/signoff-cycle", async (req, res) => {
+  // PRD-018 A16: requireAuth + verify caller is the client on the project
+  app.post("/api/projects/:id/retainer/signoff-cycle", requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.clientId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Only the client can sign off a cycle" });
+      }
       const { cycleId } = req.body;
       const cycle = await storage.updateRetainerCycle(Number(cycleId), {
         status: "awaiting_payment",
@@ -1767,10 +2264,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-    // POST pause retainer
-  app.post("/api/projects/:id/retainer/pause", async (req, res) => {
+  // POST pause retainer
+  // PRD-018 A17: requireAuth + verify caller is on the project (either role)
+  app.post("/api/projects/:id/retainer/pause", requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.clientId !== req.auth!.userId && pw.project.freelancerId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Not authorised" });
+      }
       const { cycleId } = req.body;
       await storage.updateRetainerCycle(Number(cycleId), { status: "paused" });
       await storage.updateProjectStatus(projectId, "paused");
@@ -1781,9 +2284,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST resume retainer
-  app.post("/api/projects/:id/retainer/resume", async (req, res) => {
+  // PRD-018 A18: requireAuth + verify caller is on the project
+  app.post("/api/projects/:id/retainer/resume", requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: "Project not found" });
+      if (pw.project.clientId !== req.auth!.userId && pw.project.freelancerId !== req.auth!.userId) {
+        return res.status(403).json({ error: "Not authorised" });
+      }
       const { cycleId } = req.body;
       await storage.updateRetainerCycle(Number(cycleId), { status: "active" });
       await storage.updateProjectStatus(projectId, "active");
@@ -1809,55 +2318,60 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/projects/:id/stages — add a single stage
-  app.post("/api/projects/:id/stages", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived freelancerId
+  app.post("/api/projects/:id/stages", requireAuth, async (req, res) => {
     try {
-      const { freelancerId, title, description, expectedDeliverable, targetDate, approvalRequired, revisionAllowance, notes } = req.body;
-      if (!freelancerId || !title) return res.status(400).json({ error: "freelancerId and title required" });
+      const { title, description, expectedDeliverable, targetDate, approvalRequired, revisionAllowance, notes } = req.body;
+      if (!title) return res.status(400).json({ error: "title required" });
+      const freelancerId = req.auth!.userId;
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
-      if (pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Only the freelancer can manage stages" });
-      const stage = await addProjectStage(projectId, Number(freelancerId), { title, description, expectedDeliverable, targetDate, approvalRequired: !!approvalRequired, revisionAllowance, notes });
+      if (pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Only the freelancer can manage stages" });
+      const stage = await addProjectStage(projectId, freelancerId, { title, description, expectedDeliverable, targetDate, approvalRequired: !!approvalRequired, revisionAllowance, notes });
       // Auto-set planning status to draft if still at planning_required
       if ((pw.project as any).planningStatus === "planning_required") {
         await setPlanningStatus(projectId, "plan_draft");
       }
-      await logStageEvent(projectId, Number(freelancerId), "stage_added", `Added stage: ${title}`, stage.id);
+      await logStageEvent(projectId, freelancerId, "stage_added", `Added stage: ${title}`, stage.id);
       res.json(stage);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // POST /api/projects/:id/stages/bulk — replace all stages (template apply)
-  app.post("/api/projects/:id/stages/bulk", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived freelancerId
+  app.post("/api/projects/:id/stages/bulk", requireAuth, async (req, res) => {
     try {
-      const { freelancerId, stages } = req.body;
-      if (!freelancerId || !Array.isArray(stages)) return res.status(400).json({ error: "freelancerId and stages[] required" });
+      const { stages } = req.body;
+      if (!Array.isArray(stages)) return res.status(400).json({ error: "stages[] required" });
+      const freelancerId = req.auth!.userId;
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
-      if (pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Only the freelancer can manage stages" });
+      if (pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Only the freelancer can manage stages" });
       // Delete existing draft stages (only if all are still upcoming — protect started work)
       const existing = await getProjectStages(projectId);
       const hasStarted = existing.some(s => s.status !== "upcoming");
       if (hasStarted) return res.status(409).json({ error: "Cannot bulk replace stages after work has started" });
       for (const s of existing) await deleteProjectStage(s.id);
-      const created = await bulkCreateStages(projectId, Number(freelancerId), stages);
+      const created = await bulkCreateStages(projectId, freelancerId, stages);
       await setPlanningStatus(projectId, "plan_draft");
-      await logStageEvent(projectId, Number(freelancerId), "stages_bulk_set", `Applied ${stages.length} stages`);
+      await logStageEvent(projectId, freelancerId, "stages_bulk_set", `Applied ${stages.length} stages`);
       res.json(created);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // PATCH /api/stages/:id — edit a stage
-  app.patch("/api/stages/:id", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived callerId
+  app.patch("/api/stages/:id", requireAuth, async (req, res) => {
     try {
-      const { freelancerId, clientId, ...data } = req.body;
+      const { ...data } = req.body;
       const stageId = Number(req.params.id);
       const stage = await getProjectStage(stageId);
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
       if (!pw) return res.status(404).json({ error: "Project not found" });
-      const callerId = Number(freelancerId || clientId);
+      const callerId = req.auth!.userId;
       if (pw.project.freelancerId !== callerId && pw.project.clientId !== callerId) {
         return res.status(403).json({ error: "Not authorised" });
       }
@@ -1876,29 +2390,32 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // DELETE /api/stages/:id — delete a stage
-  app.delete("/api/stages/:id", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived freelancerId
+  app.delete("/api/stages/:id", requireAuth, async (req, res) => {
     try {
-      const { freelancerId } = req.body;
+      const freelancerId = req.auth!.userId;
       const stageId = Number(req.params.id);
       const stage = await getProjectStage(stageId);
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       if (stage.status !== "upcoming") return res.status(409).json({ error: "Cannot delete a stage that has already started" });
       const pw = await storage.getProject(stage.projectId);
-      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
-      await logStageEvent(stage.projectId, Number(freelancerId), "stage_deleted", `Deleted: ${stage.title}`, stageId);
+      if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
+      await logStageEvent(stage.projectId, freelancerId, "stage_deleted", `Deleted: ${stage.title}`, stageId);
       await deleteProjectStage(stageId);
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // POST /api/projects/:id/stages/reorder — reorder stages
-  app.post("/api/projects/:id/stages/reorder", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived freelancerId
+  app.post("/api/projects/:id/stages/reorder", requireAuth, async (req, res) => {
     try {
-      const { freelancerId, orderedIds } = req.body;
-      if (!freelancerId || !Array.isArray(orderedIds)) return res.status(400).json({ error: "freelancerId and orderedIds[] required" });
+      const { orderedIds } = req.body;
+      if (!Array.isArray(orderedIds)) return res.status(400).json({ error: "orderedIds[] required" });
+      const freelancerId = req.auth!.userId;
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
-      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
       // Protect completed stages from reordering
       const stages = await getProjectStages(projectId);
       const completedIds = stages.filter(s => s.status === "completed" || s.status === "approved").map(s => s.id);
@@ -1913,47 +2430,50 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/projects/:id/plan/confirm — freelancer confirms plan, optionally sends to client
-  app.post("/api/projects/:id/plan/confirm", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived freelancerId
+  app.post("/api/projects/:id/plan/confirm", requireAuth, async (req, res) => {
     try {
-      const { freelancerId, requireClientApproval } = req.body;
+      const { requireClientApproval } = req.body;
+      const freelancerId = req.auth!.userId;
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
-      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
       const stages = await getProjectStages(projectId);
       if (stages.length === 0) return res.status(400).json({ error: "Add at least one stage before confirming" });
       const now = new Date().toISOString();
       if (requireClientApproval) {
         await setPlanningStatus(projectId, "awaiting_client", { planSentToClientAt: now });
-        await notify({ recipientId: pw.project.clientId, actorId: Number(freelancerId),
+        await notify({ recipientId: pw.project.clientId, actorId: freelancerId,
           actorName: pw.freelancer?.name ?? "Freelancer", actorAvatar: pw.freelancer?.avatar ?? null,
           type: "stage_advanced",
           message: `${pw.freelancer?.name ?? "Your freelancer"} has shared the project plan for "${pw.project.title}" — review and approve to get started.`,
           link: "/your-work", read: 0 });
-        await logStageEvent(projectId, Number(freelancerId), "plan_sent_to_client");
+        await logStageEvent(projectId, freelancerId, "plan_sent_to_client");
         res.json({ status: "awaiting_client" });
       } else {
         // Freelancer starts immediately — activate first stage
         await setPlanningStatus(projectId, "confirmed", { planConfirmedAt: now });
         if (stages.length > 0) await startStage(stages[0].id);
-        await logStageEvent(projectId, Number(freelancerId), "plan_confirmed");
+        await logStageEvent(projectId, freelancerId, "plan_confirmed");
         res.json({ status: "confirmed" });
       }
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // POST /api/projects/:id/plan/approve — client approves plan
-  app.post("/api/projects/:id/plan/approve", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived clientId
+  app.post("/api/projects/:id/plan/approve", requireAuth, async (req, res) => {
     try {
-      const { clientId } = req.body;
+      const clientId = req.auth!.userId;
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
-      if (!pw || pw.project.clientId !== Number(clientId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.clientId !== clientId) return res.status(403).json({ error: "Not authorised" });
       const now = new Date().toISOString();
       await setPlanningStatus(projectId, "confirmed", { planConfirmedAt: now });
       const stages = await getProjectStages(projectId);
       if (stages.length > 0) await startStage(stages[0].id);
-      await logStageEvent(projectId, Number(clientId), "plan_approved_by_client");
-      await notify({ recipientId: pw.project.freelancerId, actorId: Number(clientId),
+      await logStageEvent(projectId, clientId, "plan_approved_by_client");
+      await notify({ recipientId: pw.project.freelancerId, actorId: clientId,
         actorName: pw.client?.name ?? "Client", actorAvatar: null,
         type: "stage_advanced",
         message: `${pw.client?.name ?? "Your client"} approved the project plan for "${pw.project.title}" — you're ready to begin!`,
@@ -1963,16 +2483,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/projects/:id/plan/request-change — client requests changes
-  app.post("/api/projects/:id/plan/request-change", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived clientId
+  app.post("/api/projects/:id/plan/request-change", requireAuth, async (req, res) => {
     try {
-      const { clientId, message } = req.body;
-      if (!clientId || !message) return res.status(400).json({ error: "clientId and message required" });
+      const { message } = req.body;
+      if (!message) return res.status(400).json({ error: "message required" });
+      const clientId = req.auth!.userId;
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
-      if (!pw || pw.project.clientId !== Number(clientId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.clientId !== clientId) return res.status(403).json({ error: "Not authorised" });
       await setPlanningStatus(projectId, "client_changes");
-      await logStageEvent(projectId, Number(clientId), "plan_change_requested", message);
-      await notify({ recipientId: pw.project.freelancerId, actorId: Number(clientId),
+      await logStageEvent(projectId, clientId, "plan_change_requested", message);
+      await notify({ recipientId: pw.project.freelancerId, actorId: clientId,
         actorName: pw.client?.name ?? "Client", actorAvatar: null,
         type: "stage_advanced",
         message: `${pw.client?.name ?? "Your client"} requested a change to the project plan for "${pw.project.title}".`,
@@ -1982,30 +2504,32 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/stages/:id/start — mark stage in_progress
-  app.post("/api/stages/:id/start", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived freelancerId
+  app.post("/api/stages/:id/start", requireAuth, async (req, res) => {
     try {
-      const { freelancerId } = req.body;
+      const freelancerId = req.auth!.userId;
       const stage = await getProjectStage(Number(req.params.id));
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
-      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
       const updated = await startStage(stage.id);
-      await logStageEvent(stage.projectId, Number(freelancerId), "stage_started", undefined, stage.id);
+      await logStageEvent(stage.projectId, freelancerId, "stage_started", undefined, stage.id);
       res.json(updated);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // POST /api/stages/:id/submit — freelancer submits for client review
-  app.post("/api/stages/:id/submit", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived freelancerId
+  app.post("/api/stages/:id/submit", requireAuth, async (req, res) => {
     try {
-      const { freelancerId } = req.body;
+      const freelancerId = req.auth!.userId;
       const stage = await getProjectStage(Number(req.params.id));
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
-      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
       const updated = await submitStageForReview(stage.id);
-      await logStageEvent(stage.projectId, Number(freelancerId), "stage_submitted", undefined, stage.id);
-      await notify({ recipientId: pw.project.clientId, actorId: Number(freelancerId),
+      await logStageEvent(stage.projectId, freelancerId, "stage_submitted", undefined, stage.id);
+      await notify({ recipientId: pw.project.clientId, actorId: freelancerId,
         actorName: pw.freelancer?.name ?? "Freelancer", actorAvatar: pw.freelancer?.avatar ?? null,
         type: "stage_advanced",
         message: `"${stage.title}" is ready for your review on "${pw.project.title}".`,
@@ -2015,20 +2539,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/stages/:id/approve — client approves a stage
-  app.post("/api/stages/:id/approve", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived clientId
+  app.post("/api/stages/:id/approve", requireAuth, async (req, res) => {
     try {
-      const { clientId } = req.body;
+      const clientId = req.auth!.userId;
       const stage = await getProjectStage(Number(req.params.id));
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
-      if (!pw || pw.project.clientId !== Number(clientId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.clientId !== clientId) return res.status(403).json({ error: "Not authorised" });
       const updated = await approveStage(stage.id);
-      await logStageEvent(stage.projectId, Number(clientId), "stage_approved", undefined, stage.id);
+      await logStageEvent(stage.projectId, clientId, "stage_approved", undefined, stage.id);
       // Auto-start next upcoming stage
       const stages = await getProjectStages(stage.projectId);
       const next = stages.find(s => s.status === "upcoming" && s.position > stage.position);
       if (next) await startStage(next.id);
-      await notify({ recipientId: pw.project.freelancerId, actorId: Number(clientId),
+      await notify({ recipientId: pw.project.freelancerId, actorId: clientId,
         actorName: pw.client?.name ?? "Client", actorAvatar: null,
         type: "stage_advanced",
         message: `${pw.client?.name ?? "Your client"} approved "${stage.title}" on "${pw.project.title}".`,
@@ -2038,15 +2563,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/stages/:id/complete — freelancer completes stage (no approval needed)
-  app.post("/api/stages/:id/complete", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived freelancerId
+  app.post("/api/stages/:id/complete", requireAuth, async (req, res) => {
     try {
-      const { freelancerId } = req.body;
+      const freelancerId = req.auth!.userId;
       const stage = await getProjectStage(Number(req.params.id));
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
-      if (!pw || pw.project.freelancerId !== Number(freelancerId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
       const updated = await completeStage(stage.id);
-      await logStageEvent(stage.projectId, Number(freelancerId), "stage_completed", undefined, stage.id);
+      await logStageEvent(stage.projectId, freelancerId, "stage_completed", undefined, stage.id);
       // Auto-start next upcoming stage
       const stages = await getProjectStages(stage.projectId);
       const next = stages.find(s => s.status === "upcoming" && s.position > stage.position);
@@ -2056,17 +2582,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/stages/:id/request-changes — client requests changes on a stage
-  app.post("/api/stages/:id/request-changes", async (req, res) => {
+  // PRD-018 A19: requireAuth + session-derived clientId
+  app.post("/api/stages/:id/request-changes", requireAuth, async (req, res) => {
     try {
-      const { clientId, message } = req.body;
-      if (!clientId || !message) return res.status(400).json({ error: "clientId and message required" });
+      const { message } = req.body;
+      if (!message) return res.status(400).json({ error: "message required" });
+      const clientId = req.auth!.userId;
       const stage = await getProjectStage(Number(req.params.id));
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
-      if (!pw || pw.project.clientId !== Number(clientId)) return res.status(403).json({ error: "Not authorised" });
+      if (!pw || pw.project.clientId !== clientId) return res.status(403).json({ error: "Not authorised" });
       const updated = await requestStageChanges(stage.id, message);
-      await logStageEvent(stage.projectId, Number(clientId), "stage_changes_requested", message, stage.id);
-      await notify({ recipientId: pw.project.freelancerId, actorId: Number(clientId),
+      await logStageEvent(stage.projectId, clientId, "stage_changes_requested", message, stage.id);
+      await notify({ recipientId: pw.project.freelancerId, actorId: clientId,
         actorName: pw.client?.name ?? "Client", actorAvatar: null,
         type: "stage_advanced",
         message: `${pw.client?.name ?? "Your client"} requested changes on "${stage.title}".`,
@@ -2102,22 +2630,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(list);
   });
 
-  app.post("/api/projects/:id/deliverables", async (req, res) => {
-    const { url, label, platform, embedUrl, createdBy } = req.body;
-    if (!url || !label || !platform || !embedUrl || !createdBy) {
+  // PRD-018 A20: requireAuth + session-derived createdBy
+  app.post("/api/projects/:id/deliverables", requireAuth, async (req, res) => {
+    const { url, label, platform, embedUrl } = req.body;
+    if (!url || !label || !platform || !embedUrl) {
       return res.status(400).json({ error: "Missing fields" });
     }
     const d = await storage.addDeliverable({
       projectId: Number(req.params.id),
       url, label, platform, embedUrl,
-      createdBy: Number(createdBy),
+      createdBy: req.auth!.userId,
     });
     res.json(d);
   });
 
-  app.delete("/api/deliverables/:id", async (req, res) => {
-    const { userId } = req.body;
-    const ok = await storage.deleteDeliverable(Number(req.params.id), Number(userId));
+  // PRD-018 A20: requireAuth + session-derived userId
+  app.delete("/api/deliverables/:id", requireAuth, async (req, res) => {
+    const ok = await storage.deleteDeliverable(Number(req.params.id), req.auth!.userId);
     if (!ok) return res.status(403).json({ error: "Not allowed" });
     res.json({ success: true });
   });
@@ -2135,15 +2664,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/projects/:id/time-entries — log a new time entry
-  app.post("/api/projects/:id/time-entries", async (req, res) => {
+  // PRD-018 A21: requireAuth + session-derived userId
+  app.post("/api/projects/:id/time-entries", requireAuth, async (req, res) => {
     try {
-      const { userId, agencyId, description, minutes, billable, loggedAt } = req.body;
-      if (!userId || !minutes || !loggedAt) {
-        return res.status(400).json({ error: "userId, minutes, and loggedAt are required" });
+      const { agencyId, description, minutes, billable, loggedAt } = req.body;
+      if (!minutes || !loggedAt) {
+        return res.status(400).json({ error: "minutes and loggedAt are required" });
       }
       const entry = await storage.createTimeEntry({
         projectId: Number(req.params.id),
-        userId: Number(userId),
+        userId: req.auth!.userId,
         agencyId: agencyId ? Number(agencyId) : null,
         description: description || "",
         minutes: Number(minutes),
@@ -2157,11 +2687,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PATCH /api/time-entries/:id — update a time entry (owner only)
-  app.patch("/api/time-entries/:id", async (req, res) => {
+  // PRD-018 A21: requireAuth + session-derived userId
+  app.patch("/api/time-entries/:id", requireAuth, async (req, res) => {
     try {
-      const { userId, ...data } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-      const updated = await storage.updateTimeEntry(Number(req.params.id), Number(userId), data);
+      const { ...data } = req.body;
+      const updated = await storage.updateTimeEntry(Number(req.params.id), req.auth!.userId, data);
       if (!updated) return res.status(403).json({ error: "Not found or not allowed" });
       res.json(updated);
     } catch (e) {
@@ -2170,11 +2700,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // DELETE /api/time-entries/:id — delete a time entry (owner only)
-  app.delete("/api/time-entries/:id", async (req, res) => {
+  // PRD-018 A21: requireAuth + session-derived userId
+  app.delete("/api/time-entries/:id", requireAuth, async (req, res) => {
     try {
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-      const ok = await storage.deleteTimeEntry(Number(req.params.id), Number(userId));
+      const ok = await storage.deleteTimeEntry(Number(req.params.id), req.auth!.userId);
       if (!ok) return res.status(403).json({ error: "Not found or not allowed" });
       res.json({ success: true });
     } catch (e) {
@@ -2205,7 +2734,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Briefs ────────────────────────────────────────────────────────────────
   app.get("/api/briefs", async (req, res) => {
     const { category, location, clientId } = req.query;
-    let briefs = await storage.getBriefs();
+    // WS-E: pagination support (default limit 50, offset 0 — backwards-compatible)
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const offset = Number(req.query.offset ?? 0);
+    let briefs = await storage.getBriefs(limit, offset);
     if (category && category !== "All") briefs = briefs.filter(b => b.category === category);
     if (location) briefs = briefs.filter(b => b.location.toLowerCase().includes(String(location).toLowerCase()));
     if (clientId) briefs = briefs.filter(b => b.clientId === Number(clientId));
@@ -2218,7 +2750,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(brief);
   });
 
-  app.post("/api/briefs", async (req, res) => {
+  app.post("/api/briefs", requireAuth, briefLimiter, async (req, res) => {
     try {
       const data = insertBriefSchema.parse(req.body);
       const brief = await storage.createBrief(data);
@@ -2230,7 +2762,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // ─── Brief Interests ───────────────────────────────────────────────────────
   // Freelancer expresses interest in a brief
-  app.post("/api/interests", async (req, res) => {
+  app.post("/api/interests", requireAuth, interestLimiter, async (req, res) => {
     try {
       const data = insertBriefInterestSchema.parse(req.body);
       const interest = await storage.createBriefInterest(data);
@@ -2272,7 +2804,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Counter-offer on a brief interest
-  app.patch("/api/interests/:id/counter", async (req, res) => {
+  app.patch("/api/interests/:id/counter", requireAuth, async (req, res) => {
     try {
       const { counterOfferPence, clientName, clientAvatar } = req.body;
       if (!counterOfferPence || counterOfferPence < 50)
@@ -2452,7 +2984,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Mark a single notification as read
-  app.patch("/api/notifications/:id/read", async (req, res) => {
+  // PRD-018 A22: requireAuth — only authenticated users can mark notifications read
+  app.patch("/api/notifications/:id/read", requireAuth, async (req, res) => {
     try {
       await storage.markNotificationRead(Number(req.params.id));
       res.json({ ok: true });
@@ -2480,25 +3013,29 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/workspace/tasks", async (req, res) => {
+  // PRD-018 A23: requireAuth + session-derived userId
+  app.post("/api/workspace/tasks", requireAuth, async (req, res) => {
     try {
-      const task = await storage.createTask(req.body);
+      const { userId: _ignored, ...rest } = req.body;
+      const task = await storage.createTask({ ...rest, userId: req.auth!.userId });
       res.json(task);
     } catch (e: any) { res.status(400).json({ error: e.message }); }
   });
 
-  app.patch("/api/workspace/tasks/:id", async (req, res) => {
+  // PRD-018 A23: requireAuth + session-derived userId
+  app.patch("/api/workspace/tasks/:id", requireAuth, async (req, res) => {
     try {
-      const { userId, ...data } = req.body;
-      const task = await storage.updateTask(Number(req.params.id), Number(userId), data);
+      const { userId: _ignored, ...data } = req.body;
+      const task = await storage.updateTask(Number(req.params.id), req.auth!.userId, data);
       if (!task) return res.status(404).json({ error: "Not found" });
       res.json(task);
     } catch (e: any) { res.status(400).json({ error: e.message }); }
   });
 
-  app.delete("/api/workspace/tasks/:id", async (req, res) => {
+  // PRD-018 A23: requireAuth + session-derived userId
+  app.delete("/api/workspace/tasks/:id", requireAuth, async (req, res) => {
     try {
-      const ok = await storage.deleteTask(Number(req.params.id), Number(req.body.userId));
+      const ok = await storage.deleteTask(Number(req.params.id), req.auth!.userId);
       if (!ok) return res.status(403).json({ error: "Not allowed" });
       res.json({ ok: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -2512,25 +3049,29 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post("/api/workspace/events", async (req, res) => {
+  // PRD-018 A24: requireAuth + session-derived userId
+  app.post("/api/workspace/events", requireAuth, async (req, res) => {
     try {
-      const event = await storage.createCalendarEvent(req.body);
+      const { userId: _ignored, ...rest } = req.body;
+      const event = await storage.createCalendarEvent({ ...rest, userId: req.auth!.userId });
       res.json(event);
     } catch (e: any) { res.status(400).json({ error: e.message }); }
   });
 
-  app.patch("/api/workspace/events/:id", async (req, res) => {
+  // PRD-018 A24: requireAuth + session-derived userId
+  app.patch("/api/workspace/events/:id", requireAuth, async (req, res) => {
     try {
-      const { userId, ...data } = req.body;
-      const event = await storage.updateCalendarEvent(Number(req.params.id), Number(userId), data);
+      const { userId: _ignored, ...data } = req.body;
+      const event = await storage.updateCalendarEvent(Number(req.params.id), req.auth!.userId, data);
       if (!event) return res.status(404).json({ error: "Not found" });
       res.json(event);
     } catch (e: any) { res.status(400).json({ error: e.message }); }
   });
 
-  app.delete("/api/workspace/events/:id", async (req, res) => {
+  // PRD-018 A24: requireAuth + session-derived userId
+  app.delete("/api/workspace/events/:id", requireAuth, async (req, res) => {
     try {
-      const ok = await storage.deleteCalendarEvent(Number(req.params.id), Number(req.body.userId));
+      const ok = await storage.deleteCalendarEvent(Number(req.params.id), req.auth!.userId);
       if (!ok) return res.status(403).json({ error: "Not allowed" });
       res.json({ ok: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -2539,21 +3080,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Connection Requests (LinkedIn-style) ───────────────────────────────────
 
   // Send a connection request
-  app.post("/api/connections/request", async (req, res) => {
+  // PRD-018 A25: requireAuth + session-derived senderId
+  app.post("/api/connections/request", requireAuth, async (req, res) => {
     try {
-      const { senderId, recipientId } = req.body;
-      if (!senderId || !recipientId) return res.status(400).json({ error: "Missing fields" });
-      if (senderId === recipientId) return res.status(400).json({ error: "Cannot connect with yourself" });
+      const senderId = req.auth!.userId;
+      const { recipientId } = req.body;
+      if (!recipientId) return res.status(400).json({ error: "Missing fields" });
+      if (senderId === Number(recipientId)) return res.status(400).json({ error: "Cannot connect with yourself" });
       // Check if already accepted
-      const already = await storage.isConnected(Number(senderId), Number(recipientId));
+      const already = await storage.isConnected(senderId, Number(recipientId));
       if (already) return res.status(409).json({ error: "Already connected" });
-      const req2 = await storage.sendConnectionRequest(Number(senderId), Number(recipientId));
+      const connReq = await storage.sendConnectionRequest(senderId, Number(recipientId));
       // Notify recipient
-      const sender = await storage.getUser(Number(senderId));
+      const sender = await storage.getUser(senderId);
       if (sender) {
         await notify({
           recipientId: Number(recipientId),
-          actorId: Number(senderId),
+          actorId: senderId,
           actorName: sender.name,
           actorAvatar: sender.avatar ?? null,
           type: "connection_request",
@@ -2562,31 +3105,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           read: 0,
         });
       }
-      res.json(req2);
+      res.json(connReq);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
   // Accept / decline a connection request
-  app.patch("/api/connections/request/:id", async (req, res) => {
+  // PRD-018 A25: requireAuth + session-derived responderId
+  app.patch("/api/connections/request/:id", requireAuth, async (req, res) => {
     try {
       const { status } = req.body; // 'accepted' | 'declined'
       if (!['accepted','declined'].includes(status)) return res.status(400).json({ error: "Invalid status" });
       await storage.respondToConnectionRequest(Number(req.params.id), status);
-      // If accepted, notify the original sender
-      if (status === 'accepted') {
-        // Fetch the request to get IDs
-        const allConns = await storage.getPendingConnectionRequests(0); // won't work for accepted
-        // Use a direct DB fetch approach — get from DB by id
-        // Instead notify via the responderId stored in req.body
-        const { responderId } = req.body;
-        if (responderId) {
-          const responder = await storage.getUser(Number(responderId));
-          const reqRow = await storage.getConnectionRequestBetween(Number(responderId), Number(responderId)); // fallback
-          // We'll get sender from id via a lookup below
-        }
-      }
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2594,39 +3125,28 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Better accept/decline route with proper notification
-  app.post("/api/connections/respond", async (req, res) => {
+  // PRD-018 A25: requireAuth + session-derived responderId
+  app.post("/api/connections/respond", requireAuth, async (req, res) => {
     try {
-      const { requestId, responderId, status } = req.body;
-      if (!requestId || !responderId || !['accepted','declined'].includes(status)) {
+      const responderId = req.auth!.userId;
+      const { requestId, senderId, status } = req.body;
+      if (!requestId || !['accepted','declined'].includes(status)) {
         return res.status(400).json({ error: "Missing or invalid fields" });
       }
       await storage.respondToConnectionRequest(Number(requestId), status);
       if (status === 'accepted') {
-        // Look up sender — need to read the request row
-        // We don't have a getConnectionRequestById, so use getPendingRequests won't help
-        // Instead: notify via the responderId's name to the other party
-        const responder = await storage.getUser(Number(responderId));
-        // Get the request row by searching
-        const conns = await storage.getConnections(Number(responderId));
-        // Just send a general notification
-        if (responder) {
-          // Find the sender by checking connections (the new connection)
-          const allConns2 = await storage.getConnections(Number(responderId));
-          // The sender is someone who is now connected to responderId
-          // We'll track it via senderId in req.body
-          const { senderId } = req.body;
-          if (senderId) {
-            await notify({
-              recipientId: Number(senderId),
-              actorId: Number(responderId),
-              actorName: responder.name,
-              actorAvatar: responder.avatar ?? null,
-              type: "connection_accepted",
-              message: `${responder.name} accepted your connection request`,
-              link: "/dashboard",
-              read: 0,
-            });
-          }
+        const responder = await storage.getUser(responderId);
+        if (responder && senderId) {
+          await notify({
+            recipientId: Number(senderId),
+            actorId: responderId,
+            actorName: responder.name,
+            actorAvatar: responder.avatar ?? null,
+            type: "connection_accepted",
+            message: `${responder.name} accepted your connection request`,
+            link: "/dashboard",
+            read: 0,
+          });
         }
       }
       res.json({ success: true });
@@ -2665,19 +3185,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const userA = Number(req.query.userA);
       const userB = Number(req.query.userB);
       if (!userA || !userB) return res.status(400).json({ error: "userA and userB required" });
-      const req2 = await storage.getConnectionRequestBetween(userA, userB);
-      res.json({ status: req2?.status ?? 'none', requestId: req2?.id ?? null, senderId: req2?.senderId ?? null });
+      const connStatus = await storage.getConnectionRequestBetween(userA, userB);
+      res.json({ status: connStatus?.status ?? 'none', requestId: connStatus?.id ?? null, senderId: connStatus?.senderId ?? null });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
   // Remove a connection
-  app.delete("/api/connections", async (req, res) => {
+  // PRD-018 A25: requireAuth + session-derived userA
+  app.delete("/api/connections", requireAuth, async (req, res) => {
     try {
-      const { userA, userB } = req.body;
-      if (!userA || !userB) return res.status(400).json({ error: "Missing fields" });
-      await storage.removeConnection(Number(userA), Number(userB));
+      const userA = req.auth!.userId;
+      const { userB } = req.body;
+      if (!userB) return res.status(400).json({ error: "Missing fields" });
+      await storage.removeConnection(userA, Number(userB));
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2876,7 +3398,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         await db`
           INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
           VALUES (${user.id}, ${tv[0].id}, 'stripe_connect_disclosure', 'v1.0', 'stripe_connect_onboarding', ${ip}, ${ua})
-          ON CONFLICT (user_id, terms_version_id) DO UPDATE SET accepted_at = NOW()::TEXT
+          ON CONFLICT (user_id, terms_version_id) DO NOTHING
         `;
       }
 
@@ -2980,11 +3502,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // PRD-015 FR-11/12: Payment breakdown for earnings view
   // Returns commission rate actually used (from commission_rate_bps column, or inferred)
-  app.get("/api/stripe/payment-breakdown/:publicId", async (req, res) => {
+  // PRD-018 B1: requireAuth + session-derived uid
+  app.get("/api/stripe/payment-breakdown/:publicId", requireAuth, async (req, res) => {
     try {
-      const { userId } = req.query;
-      if (!userId) return res.status(400).json({ error: "userId required" });
-      const uid = Number(userId);
+      const uid = req.auth!.userId;
 
       const db = neon(process.env.DATABASE_URL!);
       const rows = await db`
@@ -3044,10 +3565,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // FR-13: Full Connect readiness status (richer than before)
   // PRD-009 FR-09: auto-sync on page open — always syncs Stripe on every GET
-  app.get("/api/stripe/status/:userId", async (req, res) => {
+  // PRD-018 B4: requireAuth + verify caller matches param
+  app.get("/api/stripe/status/:userId", requireAuth, async (req, res) => {
     try {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
       const userId = Number(req.params.userId);
+      if (req.auth!.userId !== userId) return res.status(403).json({ error: "Forbidden" });
 
       const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
@@ -3142,11 +3665,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Payment status endpoint (FR-03: browser polls this after stripe.confirmPayment)
-  app.get("/api/payments/:publicId", async (req, res) => {
+  // PRD-018 B2: requireAuth + session-derived uid
+  app.get("/api/payments/:publicId", requireAuth, async (req, res) => {
     try {
-      const { userId } = req.query;
       // Load payment — returning only what the requesting party can see
-      const db = (await import("./payment-service")).reconcilePayment; // just to ensure service loaded
       const neonClient = neon(process.env.DATABASE_URL!);
       const rows = await neonClient(
         "SELECT * FROM payments WHERE public_id = $1 LIMIT 1",
@@ -3155,7 +3677,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!rows.length) return res.status(404).json({ error: "Payment not found" });
       const p = rows[0];
       // Only client or freelancer on the project can view
-      const uid = Number(userId);
+      const uid = req.auth!.userId;
       if (uid !== p.client_id && uid !== p.freelancer_id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -3206,9 +3728,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // FR-03: Browser notification only — fulfilment is handled by webhook
   // This endpoint records that the client-side confirmed, but does NOT mark project paid
-  app.post("/api/stripe/confirm-intent", async (req, res) => {
+  // PRD-018 A27: requireAuth
+  app.post("/api/stripe/confirm-intent", requireAuth, async (req, res) => {
     try {
-      const { paymentIntentId, projectId, clientUserId } = req.body;
+      const { paymentIntentId, projectId } = req.body;
       if (!paymentIntentId || !projectId) return res.status(400).json({ error: "paymentIntentId and projectId required" });
 
       // Just verify the intent status with Stripe and return — webhook handles fulfilment
@@ -3264,289 +3787,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
         setImmediate(async () => {
         try {
-          // FR-10: P0 event handlers
-          switch (event.type) {
-
-            case "payment_intent.succeeded": {
-              const intent = event.data.object as Stripe.PaymentIntent;
-              await handlePaymentIntentSucceeded(intent, correlationId);
-              break;
-            }
-
-            case "payment_intent.payment_failed": {
-              const intent = event.data.object as Stripe.PaymentIntent;
-              const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
-              if (viewrrPaymentId) {
-                // Update payment status to failed
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                await sqlClient(
-                  "UPDATE payments SET status='failed', failed_at=$1, version=version+1 WHERE public_id=$2 AND status NOT IN ('succeeded','refunded')",
-                  [new Date().toISOString(), viewrrPaymentId]
-                );
-                await auditLog({
-                  actorType: "webhook",
-                  action: "payment_intent_failed",
-                  afterState: { paymentIntentId: intent.id, failureCode: intent.last_payment_error?.code },
-                  correlationId,
-                });
-              }
-              break;
-            }
-
-            case "payment_intent.canceled": {
-              const intent = event.data.object as Stripe.PaymentIntent;
-              const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
-              if (viewrrPaymentId) {
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                await sqlClient(
-                  "UPDATE payments SET status='cancelled', cancelled_at=$1, version=version+1 WHERE public_id=$2",
-                  [new Date().toISOString(), viewrrPaymentId]
-                );
-              }
-              break;
-            }
-
-            case "charge.refunded": {
-              // Handled by refund workflow — log for audit
-              const charge = event.data.object as Stripe.Charge;
-              console.log("[webhook] charge.refunded:", charge.id, "amount_refunded:", charge.amount_refunded);
-              break;
-            }
-
-            case "refund.created":
-            case "refund.updated": {
-              const refund = event.data.object as Stripe.Refund;
-              const viewrrRefundId = refund.metadata?.viewrr_refund_id;
-              if (viewrrRefundId && refund.status) {
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                const newStatus = refund.status === "succeeded" ? "succeeded" : refund.status === "failed" ? "failed" : "processing";
-                await sqlClient(
-                  "UPDATE payment_refunds SET status=$1, stripe_refund_id=$2 WHERE public_id=$3",
-                  [newStatus, refund.id, viewrrRefundId]
-                );
-              }
-              break;
-            }
-
-            case "transfer.reversed": {
-              const transfer = event.data.object as Stripe.Transfer;
-              const sqlClient = neon(process.env.DATABASE_URL!);
-              await sqlClient(
-                "UPDATE payment_transfers SET status='partially_reversed', reversed_pence=$1 WHERE stripe_transfer_id=$2",
-                [transfer.amount_reversed, transfer.id]
-              );
-              break;
-            }
-
-            // FR-13: account.updated — sync readiness + release held earnings
-            case "account.updated": {
-              const account = event.data.object as Stripe.Account;
-              const viewrrUserId = Number(account.metadata?.viewrr_user_id);
-              if (!viewrrUserId) break;
-
-              const user = await storage.getUser(viewrrUserId);
-              if (!user) break;
-
-              // Sync Connect account state
-              await syncConnectAccount(viewrrUserId, account.id);
-
-              const isReady =
-                account.charges_enabled === true &&
-                (account.capabilities as any)?.transfers === "active";
-
-              if (isReady) {
-                // FR-12: NO 35p payout clock transfer
-                // FR-08: release held earnings from ledger (not stripePendingPence)
-                await releaseHeldEarnings(viewrrUserId, account.id, correlationId);
-                await storage.createNotification({
-                  recipientId: viewrrUserId,
-                  actorId: viewrrUserId,
-                  actorName: "Viewrr",
-                  actorAvatar: null,
-                  type: "payment_received",
-                  // FR-16: accurate messaging — "allocated to Stripe balance" not "paid to bank"
-                  message: "Your Stripe account is verified. Any pending earnings have been allocated to your Stripe balance.",
-                  link: "/your-work",
-                  read: 0,
-                });
-              }
-              break;
-            }
-
-            // FR-10: P1 payout events
-            case "payout.created":
-            case "payout.updated":
-            case "payout.paid":
-            case "payout.failed": {
-              const payout = event.data.object as Stripe.Payout;
-              // Find freelancer by connected account
-              const accountId = (event as any).account as string | undefined;
-              if (accountId) {
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                const users = await sqlClient(
-                  "SELECT id FROM users WHERE stripe_account_id = $1 LIMIT 1",
-                  [accountId]
-                );
-                if (users.length) {
-                  const freelancerId = users[0].id;
-                  const status =
-                    event.type === "payout.paid" ? "paid" :
-                    event.type === "payout.failed" ? "failed" :
-                    event.type === "payout.created" ? "pending" : "in_transit";
-
-                  await sqlClient(
-                    `INSERT INTO payment_payouts (freelancer_id, stripe_payout_id, amount_pence, currency, status, arrival_date, failure_code, created_at, paid_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                     ON CONFLICT (stripe_payout_id) DO UPDATE SET status=$5, paid_at=$9`,
-                    [
-                      freelancerId,
-                      payout.id,
-                      payout.amount,
-                      payout.currency,
-                      status,
-                      payout.arrival_date ? new Date(payout.arrival_date * 1000).toISOString() : null,
-                      (payout as any).failure_code ?? null,
-                      new Date().toISOString(),
-                      event.type === "payout.paid" ? new Date().toISOString() : null,
-                    ]
-                  );
-
-                  // FR-09 (PRD-011): enriched payout notifications
-                  if (event.type === "payout.paid") {
-                    await storage.createNotification({
-                      recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
-                      type: "payment_received",
-                      message: `✅ Payment Complete — Your earnings of £${(payout.amount / 100).toFixed(2)} have successfully reached your bank account.`,
-                      link: "/your-work", read: 0,
-                    });
-                  } else if (event.type === "payout.created" || event.type === "payout.updated") {
-                    const isInTransit = (event.data.object as any).status === "in_transit";
-                    if (isInTransit) {
-                      const arrivalStr = payout.arrival_date
-                        ? new Date(payout.arrival_date * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
-                        : null;
-                      await storage.createNotification({
-                        recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
-                        type: "payment_received",
-                        message: `💸 Your payout is on its way — Stripe has initiated your payout of £${(payout.amount / 100).toFixed(2)}.${arrivalStr ? ` Estimated bank arrival: ${arrivalStr}.` : ""}`,
-                        link: "/your-work", read: 0,
-                      });
-                    }
-                  } else if (event.type === "payout.failed") {
-                    await storage.createNotification({
-                      recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
-                      type: "payment_received",
-                      message: `A payout of £${(payout.amount / 100).toFixed(2)} failed. Please check your bank details in your Stripe account.`,
-                      link: "/your-work", read: 0,
-                    });
-                  }
-                }
-              }
-              break;
-            }
-
-            // FR-09 (PRD-011): notify freelancer when funds become available
-            case "balance.available": {
-              const accountId = (event as any).account as string | undefined;
-              if (accountId) {
-                const sqlClient = neon(process.env.DATABASE_URL!);
-                const users = await sqlClient(
-                  "SELECT id FROM users WHERE stripe_account_id = $1 LIMIT 1",
-                  [accountId]
-                );
-                if (users.length) {
-                  const freelancerId = users[0].id;
-                  const balanceObj = event.data.object as any;
-                  const available = (balanceObj.available ?? []).find((b: any) => b.currency === "gbp");
-                  const amountPence = available?.amount ?? 0;
-                  if (amountPence > 0) {
-                    await storage.createNotification({
-                      recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
-                      type: "payment_received",
-                      message: `🎉 Your earnings are now available — Stripe has released £${(amountPence / 100).toFixed(2)} and will automatically send it to your bank according to your payout schedule.`,
-                      link: "/your-work", read: 0,
-                    });
-                  }
-                }
-              }
-              break;
-            }
-
-            case "charge.dispute.created": {
-              const dispute = event.data.object as Stripe.Dispute;
-              console.warn("[webhook] Dispute created:", dispute.id, "charge:", dispute.charge);
-              // Alert admin — in production this would create an admin exception record
-              await auditLog({
-                actorType: "webhook",
-                action: "dispute_created",
-                afterState: { disputeId: dispute.id, chargeId: dispute.charge, amount: dispute.amount },
-                correlationId,
-              });
-              break;
-            }
-
-            // ── PRD-013: Pro Viewrr subscription lifecycle events ──────────────
-            case "customer.subscription.updated":
-            case "customer.subscription.created": {
-              const sub = event.data.object as any;
-              const viewrrUserId = sub.metadata?.viewrr_user_id
-                ? Number(sub.metadata.viewrr_user_id) : undefined;
-              if (sub.status === "active") {
-                await activateProFromWebhook(
-                  sub.id,
-                  sub.customer as string,
-                  event.id,
-                  sub.current_period_start,
-                  sub.current_period_end,
-                  viewrrUserId,
-                );
-              } else if (sub.status === "past_due" || sub.status === "unpaid") {
-                await markProPaymentFailed(sub.id, event.id);
-              } else if (sub.status === "canceled") {
-                await expireProEntitlement(sub.id, event.id);
-              }
-              break;
-            }
-            case "customer.subscription.deleted": {
-              const sub = event.data.object as any;
-              await expireProEntitlement(sub.id, event.id);
-              break;
-            }
-            case "invoice.payment_succeeded": {
-              const inv = event.data.object as any;
-              if (inv.subscription) {
-                // Renewal — update period
-                try {
-                  const stripeClient = stripe;
-                  const stripeSub = await stripeClient.subscriptions.retrieve(inv.subscription as string);
-                  await renewProFromWebhook(
-                    stripeSub.id,
-                    stripeSub.customer as string,
-                    event.id,
-                    stripeSub.current_period_start,
-                    stripeSub.current_period_end,
-                  );
-                } catch (e) { console.error("[pro-renew]", e); }
-              }
-              break;
-            }
-            case "invoice.payment_failed": {
-              const inv = event.data.object as any;
-              if (inv.subscription) {
-                await markProPaymentFailed(inv.subscription as string, event.id);
-              }
-              break;
-            }
-
-            default:
-              // Log unhandled event types for observability
-              console.log("[webhook] Unhandled event type:", event.type);
-          }
-
+          // FR-04: Delegate to canonical processor (WS-A extraction)
+          await processStripeEvent(event, correlationId);
           await markEventProcessed(event.id);
-
+          console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", event: "stripe_event_processed", requestId: correlationId, stripeEventId: event.id, eventType: event.type }));
         } catch (processingError: any) {
-          console.error("[webhook] Processing error:", processingError.message);
+          console.error(JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "stripe_event_failed", requestId: correlationId, stripeEventId: event.id, eventType: event.type, error: processingError.message.slice(0, 500) }));
           await markEventProcessed(event.id, processingError.message);
         }
         }); // end setImmediate
@@ -3637,10 +3883,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Agency Routes ────────────────────────────────────────────────────────────────
 
   // POST /api/agencies — create a new agency (owner must be a freelancer with no existing agency)
-  app.post("/api/agencies", async (req, res) => {
+  // PRD-018 A26: requireAuth + session-derived ownerUserId
+  app.post("/api/agencies", requireAuth, async (req, res) => {
     try {
-      const { ownerUserId, name, bio, specialisms, reelUrl, location, website } = req.body;
-      if (!ownerUserId || !name) return res.status(400).json({ error: "ownerUserId and name are required" });
+      const { name, bio, specialisms, reelUrl, location, website } = req.body;
+      const ownerUserId = req.auth!.userId;
+      if (!name) return res.status(400).json({ error: "name is required" });
 
       const owner = await storage.getUser(ownerUserId);
       if (!owner) return res.status(404).json({ error: "User not found" });
@@ -3695,7 +3943,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const agency = await storage.getAgencyBySlug(req.params.slug);
       if (!agency) return res.status(404).json({ error: "Agency not found" });
       const members = await storage.getAgencyMembers(agency.id);
-      res.json({ agency, members });
+      // PRD-018 E5: override stale projectCount on member profiles with DB-authoritative count
+      const memberUserIds = members
+        .map((m: any) => m.profile?.userId)
+        .filter((id: any): id is number => typeof id === "number");
+      const countMap = await storage.getCompletedProjectCountsBulk(memberUserIds);
+      const membersWithCount = members.map((m: any) => ({
+        ...m,
+        profile: m.profile
+          ? { ...m.profile, projectCount: countMap.get(m.profile.userId) ?? 0 }
+          : m.profile,
+      }));
+      res.json({ agency, members: membersWithCount });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -3714,11 +3973,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/agencies/:id/join — freelancer joins via invite (creates pending member record)
-  app.post("/api/agencies/:id/join", async (req, res) => {
+  // PRD-018 A26: requireAuth + session-derived userId
+  app.post("/api/agencies/:id/join", requireAuth, async (req, res) => {
     try {
-      const agencyId = parseInt(req.params.id);
-      const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId required" });
+      const agencyId = parseInt(String(req.params.id));
+      const userId = req.auth!.userId;
 
       const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
@@ -3805,7 +4064,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const agencyId = parseInt(req.params.id);
       const dashboard = await storage.getAgencyDashboard(agencyId);
-      res.json(dashboard);
+      // PRD-018 E5: override stale projectCount on member profiles with DB-authoritative count
+      const memberUserIds = (dashboard.members as any[])
+        .map((m: any) => m.profile?.userId)
+        .filter((id: any): id is number => typeof id === "number");
+      const countMap = await storage.getCompletedProjectCountsBulk(memberUserIds);
+      const membersWithCount = (dashboard.members as any[]).map((m: any) => ({
+        ...m,
+        profile: m.profile
+          ? { ...m.profile, projectCount: countMap.get(m.profile.userId) ?? 0 }
+          : m.profile,
+      }));
+      res.json({ ...dashboard, members: membersWithCount });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -3836,10 +4106,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PATCH /api/agencies/:agencyId/members/:memberId/rate — owner sets member rate card
-  app.patch("/api/agencies/:agencyId/members/:memberId/rate", async (req, res) => {
+  // PRD-018 A26: requireAuth + verify caller is agency owner
+  app.patch("/api/agencies/:agencyId/members/:memberId/rate", requireAuth, async (req, res) => {
     try {
-      const agencyId = parseInt(req.params.agencyId);
-      const memberId = parseInt(req.params.memberId);
+      const agencyId = parseInt(String(req.params.agencyId));
+      const memberId = parseInt(String(req.params.memberId));
+      const agency = await storage.getAgency(agencyId);
+      if (!agency) return res.status(404).json({ error: "Agency not found" });
+      if (agency.ownerUserId !== req.auth!.userId) return res.status(403).json({ error: "Only the agency owner can update member rates" });
       const { role, dayRatePence, hourlyRatePence } = req.body;
       const updated = await storage.updateAgencyMemberRate(memberId, agencyId, {
         role: role ?? undefined,
@@ -3913,7 +4187,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const briefs = await db
         .select()
         .from(schema.agencyBriefs)
-        .where(drizzleSql`${schema.agencyBriefs.clientId} = ${clientId} AND ${schema.agencyBriefs.status} IN ('proposal_sent', 'won', 'lost')`);
+        .where(and(
+          eq(schema.agencyBriefs.clientId, clientId),
+          inArray(schema.agencyBriefs.status, ['proposal_sent', 'won', 'lost'])
+        ));
       const result = await Promise.all(briefs.map(async (brief) => {
         const proposal = await db
           .select()
@@ -3931,11 +4208,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/agencies/:id/briefs          — client submits a brief to this agency
-  app.post("/api/agencies/:id/briefs", async (req, res) => {
+  // PRD-018 A26: requireAuth + session-derived clientId
+  app.post("/api/agencies/:id/briefs", requireAuth, async (req, res) => {
     try {
-      const agencyId = parseInt(req.params.id);
-      const { clientId, clientName, clientAvatar, title, description, category, budgetMin, budgetMax, startDate, duration, requirements } = req.body;
-      if (!clientId || !title || !description) return res.status(400).json({ error: "clientId, title and description are required" });
+      const agencyId = parseInt(String(req.params.id));
+      const clientId = req.auth!.userId;
+      const { clientName, clientAvatar, title, description, category, budgetMin, budgetMax, startDate, duration, requirements } = req.body;
+      if (!title || !description) return res.status(400).json({ error: "title and description are required" });
       const brief = await storage.createAgencyBrief({
         agencyId,
         clientId,
@@ -3969,9 +4248,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PATCH /api/agencies/briefs/:briefId/status  — update brief status
-  app.patch("/api/agencies/briefs/:briefId/status", async (req, res) => {
+  // PRD-018 A26: requireAuth
+  app.patch("/api/agencies/briefs/:briefId/status", requireAuth, async (req, res) => {
     try {
-      const briefId = parseInt(req.params.briefId);
+      const briefId = parseInt(String(req.params.briefId));
       const { status } = req.body;
       const valid = ["incoming", "viewed", "proposal_sent", "won", "lost", "declined"];
       if (!valid.includes(status)) return res.status(400).json({ error: "Invalid status" });
@@ -3988,9 +4268,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─────────────────────────────────────────────────────────────
 
   // POST /api/agencies/briefs/:briefId/proposal  — agency sends a proposal
-  app.post("/api/agencies/briefs/:briefId/proposal", async (req, res) => {
+  // PRD-018 A26: requireAuth
+  app.post("/api/agencies/briefs/:briefId/proposal", requireAuth, async (req, res) => {
     try {
-      const briefId = parseInt(req.params.briefId);
+      const briefId = parseInt(String(req.params.briefId));
       const brief = await storage.getAgencyBrief(briefId);
       if (!brief) return res.status(404).json({ error: "Brief not found" });
       const existing = await storage.getAgencyProposal(briefId);
@@ -4046,9 +4327,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PATCH /api/agencies/proposals/:proposalId/status  — client responds (accept/decline)
-  app.patch("/api/agencies/proposals/:proposalId/status", async (req, res) => {
+  // PRD-018 A26: requireAuth
+  app.patch("/api/agencies/proposals/:proposalId/status", requireAuth, async (req, res) => {
     try {
-      const proposalId = parseInt(req.params.proposalId);
+      const proposalId = parseInt(String(req.params.proposalId));
       const { status, agencyId, briefTitle, clientName } = req.body;
       const valid = ["accepted", "declined"];
       if (!valid.includes(status)) return res.status(400).json({ error: "Status must be accepted or declined" });
@@ -4120,19 +4402,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Invoice Template ─────────────────────────────────────────────────────────────────
 
   // GET /api/invoice-template — get the logged-in freelancer's template
-  app.get('/api/invoice-template', async (req, res) => {
-    const userId = Number(req.query.userId);
-    if (!userId) return res.status(400).json({ error: 'userId query param required' });
+  // PRD-018 B6: requireAuth + session-derived userId
+  app.get('/api/invoice-template', requireAuth, async (req, res) => {
+    const userId = req.auth!.userId;
     const template = await storage.getInvoiceTemplate(userId);
     res.json(template || null);
   });
 
   // POST /api/invoice-template — create or update template
-  app.post('/api/invoice-template', async (req, res) => {
+  // PRD-018 B7: requireAuth + session-derived userId
+  app.post('/api/invoice-template', requireAuth, async (req, res) => {
     try {
-      const { userId, ...rest } = req.body;
-      if (!userId) return res.status(400).json({ error: 'userId required' });
-      const template = await storage.upsertInvoiceTemplate(Number(userId), rest);
+      const { userId: _ignored, ...rest } = req.body;
+      const template = await storage.upsertInvoiceTemplate(req.auth!.userId, rest);
       res.json(template);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -4142,9 +4424,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Invoices ──────────────────────────────────────────────────────────────────
 
   // GET /api/projects/:id/invoice — get the invoice for a project
-  app.get('/api/projects/:id/invoice', async (req, res) => {
+  // PRD-018 B8: requireAuth + verify caller is client or freelancer
+  app.get('/api/projects/:id/invoice', requireAuth, async (req, res) => {
     try {
-      const invoice = await storage.getInvoiceByProject(Number(req.params.id));
+      const projectId = Number(req.params.id);
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: 'Project not found' });
+      if (pw.project.clientId !== req.auth!.userId && pw.project.freelancerId !== req.auth!.userId) {
+        return res.status(403).json({ error: 'Not authorised' });
+      }
+      const invoice = await storage.getInvoiceByProject(projectId);
       if (!invoice) return res.status(404).json({ error: 'No invoice found' });
       // Also attach the freelancer's template for rendering
       const template = await storage.getInvoiceTemplate(invoice.freelancerId);
@@ -4155,17 +4444,25 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // POST /api/projects/:id/invoice — freelancer sends invoice
-  app.post('/api/projects/:id/invoice', async (req, res) => {
+  // PRD-018 B9: requireAuth + session-derived freelancerId
+  app.post('/api/projects/:id/invoice', requireAuth, async (req, res) => {
     try {
       const projectId = Number(req.params.id);
-      const { freelancerId, clientId, clientName, clientEmail, projectTitle, lineItems, notes, vatPercent } = req.body;
-      if (!freelancerId || !clientId || !lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
-        return res.status(400).json({ error: 'freelancerId, clientId and lineItems required' });
+      const freelancerId = req.auth!.userId;
+      const pw = await storage.getProject(projectId);
+      if (!pw) return res.status(404).json({ error: 'Project not found' });
+      if (pw.project.freelancerId !== freelancerId) {
+        return res.status(403).json({ error: 'Only the freelancer can send an invoice' });
       }
+      const { clientName, clientEmail, projectTitle, lineItems, notes, vatPercent } = req.body;
+      if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        return res.status(400).json({ error: 'lineItems required' });
+      }
+      const resolvedClientId = pw.project.clientId;
 
       // FR-03 (PRD-010): Stripe readiness gate — must be connected, verified, transfers + payouts enabled
       if (stripe) {
-        const freelancerUser = await storage.getUser(Number(freelancerId));
+        const freelancerUser = await storage.getUser(freelancerId);
         if (!freelancerUser?.stripeAccountId) {
           return res.status(402).json({
             error: "stripe_not_connected",
@@ -4194,15 +4491,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const vatPence = vatPercent ? Math.round(subtotalPence * vatPercent / 100) : 0;
       const totalPence = subtotalPence + vatPence;
       // Get next invoice number
-      const invoiceNumber = await storage.getNextInvoiceNumber(Number(freelancerId));
+      const invoiceNumber = await storage.getNextInvoiceNumber(freelancerId);
       const invoice = await storage.createInvoice({
         invoiceNumber,
         projectId,
-        freelancerId: Number(freelancerId),
-        clientId: Number(clientId),
+        freelancerId,
+        clientId: resolvedClientId,
         clientName: clientName || '',
         clientEmail: clientEmail || '',
-        projectTitle: projectTitle || '',
+        projectTitle: projectTitle || pw.project.title || '',
         lineItems: JSON.stringify(lineItems),
         subtotalPence,
         vatPence,
@@ -4213,14 +4510,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       });
       // Notify client that invoice has been sent
       try {
-        const freelancer = await storage.getUser(Number(freelancerId));
+        const freelancerUser = await storage.getUser(freelancerId);
         await notify({
-          recipientId: Number(clientId),
-          actorId: Number(freelancerId),
-          actorName: freelancer?.name ?? "Freelancer",
-          actorAvatar: freelancer?.avatar ?? null,
+          recipientId: resolvedClientId,
+          actorId: freelancerId,
+          actorName: freelancerUser?.name ?? "Freelancer",
+          actorAvatar: freelancerUser?.avatar ?? null,
           type: "invoice_sent",
-          message: `Your invoice for "${projectTitle || 'your project'}" is ready to view`,
+          message: `Your invoice for "${projectTitle || pw.project.title || 'your project'}" is ready to view`,
           link: `/invoice/${projectId}`,
           read: 0,
         });
@@ -4231,9 +4528,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // PATCH /api/invoices/:id/paid — mark invoice paid (called when Stripe payment confirmed)
-  app.patch('/api/invoices/:id/paid', async (req, res) => {
+  // PATCH /api/invoices/:id/paid — mark invoice paid (only client on the project)
+  // PRD-018 B10: requireAuth + verify caller is client on project
+  app.patch('/api/invoices/:id/paid', requireAuth, async (req, res) => {
     try {
+      const invoice = await storage.getInvoiceById(Number(req.params.id));
+      if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+      if (invoice.clientId !== req.auth!.userId) return res.status(403).json({ error: 'Only the client can mark an invoice paid' });
       await storage.markInvoicePaid(Number(req.params.id));
       res.json({ success: true });
     } catch (e: any) {
@@ -4272,11 +4573,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const allProfiles = await db.select().from(schema.profiles);
       const profileByUser = new Map(allProfiles.map(p => [p.userId, p]));
 
-      // Count projects per freelancer
-      const allProjects = await db.select({ id: schema.projects.id, freelancerId: schema.projects.freelancerId }).from(schema.projects);
+      // PRD-018 E5: Count COMPLETED projects per freelancer (DB-authoritative)
+      const allProjects = await db.select({ id: schema.projects.id, freelancerId: schema.projects.freelancerId, status: schema.projects.status }).from(schema.projects);
       const projectCountMap = new Map<number, number>();
       for (const proj of allProjects) {
-        if (proj.freelancerId) projectCountMap.set(proj.freelancerId, (projectCountMap.get(proj.freelancerId) ?? 0) + 1);
+        if (proj.freelancerId && proj.status === "completed") {
+          projectCountMap.set(proj.freelancerId, (projectCountMap.get(proj.freelancerId) ?? 0) + 1);
+        }
       }
 
       let creatives = allUsers.filter((u: any) => u.role === 'freelancer');
@@ -4453,7 +4756,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const requester = req.auth!.adminUser!;
     try {
       const profiles = await storage.getFreelancerProfilesWithAccreditation();
-      res.json(profiles);
+      // PRD-018 E5: add DB-authoritative completedProjectCount to each profile
+      const userIds = profiles.map((p: any) => p.userId as number);
+      const countMap = await storage.getCompletedProjectCountsBulk(userIds);
+      const result = profiles.map((p: any) => ({
+        ...p,
+        completedProjectCount: countMap.get(p.userId) ?? 0,
+      }));
+      res.json(result);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -4687,12 +4997,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // GET /api/payments/:paymentPublicId/timeline
-
-  app.get("/api/payments/:paymentPublicId/timeline", async (req, res) => {
+  // PRD-018 B3: requireAuth + session-derived uid
+  app.get("/api/payments/:paymentPublicId/timeline", requireAuth, async (req, res) => {
     try {
       const db = neon(process.env.DATABASE_URL!);
       const { paymentPublicId } = req.params;
-      const { userId, role } = req.query as { userId?: string; role?: string };
 
       const paymentRows = await db`SELECT * FROM payments WHERE public_id = ${paymentPublicId} LIMIT 1`;
       if (!paymentRows.length) return res.status(404).json({ error: "Payment not found" });
@@ -4700,7 +5009,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       // Determine visibility filter based on requester
       let visibility = "both";
-      const uid = Number(userId);
+      const uid = req.auth!.userId;
       if (uid === payment.client_id) visibility = "client";
       else if (uid === payment.freelancer_id) visibility = "freelancer";
 
@@ -4829,10 +5138,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!tv.length) return res.status(404).json({ error: "Terms version not found" });
       const ip = req.headers["x-forwarded-for"]?.toString() ?? req.socket.remoteAddress;
       const ua = req.headers["user-agent"] ?? "";
+      // WS-A: Append-only — never overwrite accepted_at (original timestamp preserved)
       await db`
         INSERT INTO terms_acceptances (user_id, terms_version_id, document, version, context, ip_address, user_agent)
         VALUES (${req.auth!.userId}, ${tv[0].id}, ${document}, ${version}, ${context ?? "manual"}, ${ip}, ${ua})
-        ON CONFLICT (user_id, terms_version_id) DO UPDATE SET accepted_at = NOW()::TEXT
+        ON CONFLICT (user_id, terms_version_id) DO NOTHING
       `;
       res.json({ accepted: true });
     } catch (e: any) {
@@ -4841,11 +5151,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // GET /api/me/legal-acceptances
-  app.get("/api/me/legal-acceptances", async (req, res) => {
+  // PRD-018 B5: requireAuth + session-derived userId
+  app.get("/api/me/legal-acceptances", requireAuth, async (req, res) => {
     try {
       const db = neon(process.env.DATABASE_URL!);
-      const userId = Number(req.query.userId);
-      if (!userId) return res.status(400).json({ error: "userId required" });
+      const userId = req.auth!.userId;
       const acceptances = await db`
         SELECT ta.*, tv.effective_date FROM terms_acceptances ta
         JOIN terms_versions tv ON tv.id = ta.terms_version_id
@@ -4853,6 +5163,39 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         ORDER BY ta.accepted_at DESC
       `;
       res.json({ acceptances });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/me/terms-status — PRD-021 WS-A
+  // Returns: for each document type, the currently effective version and whether the caller has accepted it.
+  // Supports v1→v2 version checks without overwriting either acceptance record.
+  app.get("/api/me/terms-status", requireAuth, async (req, res) => {
+    try {
+      const db = neon(process.env.DATABASE_URL!);
+      const userId = req.auth!.userId;
+      // Current effective version per document (highest effective_date)
+      const current = await db`
+        SELECT DISTINCT ON (document) id, document, version, effective_date
+        FROM terms_versions
+        ORDER BY document, effective_date DESC
+      `;
+      // All acceptances for this user (preserves both v1 and v2 rows)
+      const accepted = await db`
+        SELECT ta.document, ta.version, ta.terms_version_id, ta.accepted_at
+        FROM terms_acceptances ta
+        WHERE ta.user_id = ${userId}
+      `;
+      const acceptedMap = new Map(accepted.map((a: any) => [a.terms_version_id, a]));
+      const status = current.map((tv: any) => ({
+        document: tv.document,
+        currentVersion: tv.version,
+        effectiveDate: tv.effective_date,
+        accepted: acceptedMap.has(tv.id),
+        acceptedAt: acceptedMap.get(tv.id)?.accepted_at ?? null,
+      }));
+      res.json({ status });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -5414,8 +5757,299 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     await configureAutoDailyPayout(userId, stripeAccountId);
   });
 
+  // WS-A: process_stripe_event job handler — used by replay endpoint and recovery
+  registerJobHandler("process_stripe_event", async (payload, attemptCount) => {
+    const { stripeEventId } = payload as { stripeEventId: string };
+    if (!stripeEventId) return; // nothing to do
+
+    // Fetch the event record from DB to verify it exists and isn't already processed
+    const sqlClient = neon(process.env.DATABASE_URL!);
+    const rows = await sqlClient(
+      "SELECT stripe_event_id, processing_status, raw_payload FROM stripe_events WHERE stripe_event_id = $1 LIMIT 1",
+      [stripeEventId]
+    ) as Array<{ stripe_event_id: string; processing_status: string; raw_payload: string | null }>;
+
+    if (!rows.length) {
+      console.warn(`[process_stripe_event] Event not found in DB: ${stripeEventId}`);
+      return; // idempotent no-op
+    }
+
+    const row = rows[0];
+    if (row.processing_status === "processed") {
+      console.log(`[process_stripe_event] Already processed, skipping: ${stripeEventId}`);
+      return; // idempotent no-op
+    }
+
+    // Reconstruct event from raw_payload if available, else fetch from Stripe
+    let event: Stripe.Event;
+    if (row.raw_payload) {
+      event = JSON.parse(row.raw_payload) as Stripe.Event;
+    } else if (stripe) {
+      event = await stripe.events.retrieve(stripeEventId);
+    } else {
+      console.error(`[process_stripe_event] No raw_payload and Stripe not configured: ${stripeEventId}`);
+      return;
+    }
+
+    const requestId = `job_${stripeEventId}_attempt${attemptCount ?? 1}`;
+    try {
+      await processStripeEvent(event, requestId);
+      await markEventProcessed(stripeEventId);
+    } catch (e: any) {
+      await markEventProcessed(stripeEventId, e.message);
+      throw e; // re-throw so job-queue can apply retry/backoff
+    }
+  });
+
   // Start the worker (non-blocking)
   startWorker();
+
+  // WS-A: Recover stale stripe events on startup (async, non-blocking)
+  setImmediate(async () => {
+    try {
+      const recovered = await recoverStaleStripeEvents();
+      if (recovered > 0) console.log(`[stripe-recovery] Recovered ${recovered} stale events on startup`);
+    } catch (e: any) { console.error('[stripe-recovery] Startup recovery error:', e.message); }
+  });
+  // Also run periodic recovery every 5 minutes
+  setInterval(async () => {
+    try { await recoverStaleStripeEvents(); } catch {}
+  }, 5 * 60 * 1000);
+
+  // ─── PRD-021 WS-B: Data export ────────────────────────────────────────────
+  // GET /api/me/export — compile and return user's personal data
+  app.get("/api/me/export", requireAuth, async (req: any, res: any) => {
+    try {
+
+      const userId = req.auth!.userId;
+      const exportData = await compileUserExport(userId);
+      res.setHeader("Content-Disposition", `attachment; filename="viewrr-data-export-${userId}-${Date.now()}.json"`);
+      res.setHeader("Content-Type", "application/json");
+      res.json(exportData);
+    } catch (e: any) {
+      res.status(500).json({ error: "Export failed. Please try again later." });
+    }
+  });
+
+  // ─── PRD-021 WS-B: Account deletion request ────────────────────────────────
+  // POST /api/me/request-deletion — check blockers, create deletion request
+  app.post("/api/me/request-deletion", requireAuth, async (req: any, res: any) => {
+    try {
+
+      const userId = req.auth!.userId;
+      const blocker = await checkDeletionBlockers(userId);
+      if (blocker.blocked) {
+        return res.status(409).json({
+          ok: false,
+          blocked: true,
+          code: blocker.code,
+          message: blocker.reason,
+        });
+      }
+      const sql = neon(process.env.DATABASE_URL!);
+      const now = new Date().toISOString();
+      await sql`
+        INSERT INTO account_deletion_requests (user_id, status, requested_at)
+        VALUES (${userId}, 'pending', ${now})
+      `;
+      res.json({ ok: true, message: "Deletion request submitted. Your account will be anonymised within 30 days." });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/me/confirm-deletion — actually anonymise (requires re-auth: password confirmation)
+  // Separated from request to prevent accidental/automated deletion
+  app.post("/api/me/confirm-deletion", requireAuth, async (req: any, res: any) => {
+    try {
+
+      const userId = req.auth!.userId;
+
+      // Require password re-confirmation
+      const { password } = req.body;
+      if (!password) return res.status(400).json({ error: "Password confirmation required" });
+
+      const user = await storage.getUserByEmail(
+        (await storage.getUser(userId))?.email ?? ""
+      );
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (!user.passwordHash) return res.status(400).json({ error: "No password set — contact support" });
+
+      const { valid } = await verifyPassword(password, user.passwordHash);
+      if (!valid) return res.status(403).json({ error: "Incorrect password" });
+
+      // Final blocker check
+      const blocker = await checkDeletionBlockers(userId);
+      if (blocker.blocked) {
+        return res.status(409).json({ ok: false, blocked: true, code: blocker.code, message: blocker.reason });
+      }
+
+      // Mark in-progress, then anonymise
+      const sql = neon(process.env.DATABASE_URL!);
+      await sql`
+        UPDATE account_deletion_requests
+        SET status = 'processing'
+        WHERE user_id = ${userId} AND status = 'pending'
+      `;
+
+      await anonymiseUserAccount(userId);
+
+      // Clear session cookie
+      clearSessionCookie(res);
+      res.json({ ok: true, message: "Account anonymised. We are sorry to see you go." });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Admin: GET /api/admin/deletion-requests — view pending deletion requests
+  app.get("/api/admin/deletion-requests", requireAdminGuard, async (req: any, res: any) => {
+    try {
+      const sql = neon(process.env.DATABASE_URL!);
+      const requests = await sql`
+        SELECT adr.*, u.email, u.name FROM account_deletion_requests adr
+        LEFT JOIN users u ON u.id = adr.user_id
+        ORDER BY adr.requested_at DESC
+        LIMIT 100
+      `;
+      res.json({ requests });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-021 WS-F: Reports ─────────────────────────────────────────────────
+  const reportLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many reports submitted. Please wait before reporting again." },
+    keyGenerator: (req) => String((req as any).auth?.userId ?? req.ip),
+  });
+
+  // POST /api/reports — submit a moderation report
+  app.post("/api/reports", requireAuth, reportLimiter, async (req: any, res: any) => {
+    try {
+
+      const { subjectType, subjectId, reason, description } = req.body;
+      if (!subjectType || !subjectId || !reason) {
+        return res.status(400).json({ error: "subjectType, subjectId, and reason are required" });
+      }
+      const reportId = await createReport({
+        reporterUserId: req.auth!.userId,
+        subjectType,
+        subjectId: Number(subjectId),
+        reason,
+        description,
+      });
+      res.status(201).json({ ok: true, reportId });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // GET /api/admin/reports — list reports (admin only)
+  app.get("/api/admin/reports", requireAdminGuard, async (req: any, res: any) => {
+    try {
+      const sql = neon(process.env.DATABASE_URL!);
+      const status = (req.query.status as string) ?? "open";
+      const limit = Math.min(Number(req.query.limit ?? 50), 100);
+      const offset = Number(req.query.offset ?? 0);
+      const reports = await sql`
+        SELECT ur.*, u.name AS reporter_name, u.email AS reporter_email
+        FROM user_reports ur
+        LEFT JOIN users u ON u.id = ur.reporter_user_id
+        WHERE ur.status = ${status}
+        ORDER BY ur.created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+      const [{ count }] = await sql`SELECT COUNT(*) FROM user_reports WHERE status = ${status}`;
+      res.json({ reports, total: Number(count), limit, offset });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/admin/reports/:id/resolve — resolve a report
+  app.patch("/api/admin/reports/:id/resolve", requireAdminGuard, async (req: any, res: any) => {
+    try {
+
+      const { resolution, note } = req.body;
+      if (!resolution) return res.status(400).json({ error: "resolution required" });
+      await resolveReport({
+        reportId: Number(req.params.id),
+        adminUserId: req.auth!.userId,
+        resolution,
+        note,
+      });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-021 WS-F: Suspension ──────────────────────────────────────────────
+  // POST /api/admin/users/:id/suspend
+  app.post("/api/admin/users/:id/suspend", requireAdminGuard, async (req: any, res: any) => {
+    try {
+
+      const { reason } = req.body;
+      if (!reason) return res.status(400).json({ error: "reason required" });
+      const targetId = Number(req.params.id);
+      if (targetId === req.auth!.userId) return res.status(400).json({ error: "Cannot suspend yourself" });
+      await suspendUser(targetId, req.auth!.userId, reason);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/admin/users/:id/unsuspend
+  app.post("/api/admin/users/:id/unsuspend", requireAdminGuard, async (req: any, res: any) => {
+    try {
+
+      const { note } = req.body;
+      await unsuspendUser(Number(req.params.id), req.auth!.userId, note ?? "");
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── PRD-021 WS-F: Blocking ────────────────────────────────────────────────
+  // POST /api/me/block/:userId
+  app.post("/api/me/block/:userId", requireAuth, async (req: any, res: any) => {
+    try {
+
+      await blockUser(req.auth!.userId, Number(req.params.userId));
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // DELETE /api/me/block/:userId — unblock
+  app.delete("/api/me/block/:userId", requireAuth, async (req: any, res: any) => {
+    try {
+
+      await unblockUser(req.auth!.userId, Number(req.params.userId));
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/me/blocks — list who I have blocked
+  app.get("/api/me/blocks", requireAuth, async (req: any, res: any) => {
+    try {
+
+      const blockedIds = await getBlockList(req.auth!.userId);
+      res.json({ blockedIds });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // PRD-012: Retainer builder + workspace routes
   registerRetainerBuilderRoutes(app);

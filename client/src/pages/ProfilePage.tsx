@@ -13,7 +13,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { displayRole, roleBadgeClass } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect } from "react";
-import { connectionCount } from "@/lib/storage";
+// PRD-018 D2: connectionCount stub removed — real count from /api/connections
 import AccreditationBadge, { type AccreditationLevel } from "@/components/accreditation/AccreditationBadge";
 
 type ConnStatus = 'none' | 'pending_sent' | 'pending_received' | 'connected';
@@ -52,7 +52,17 @@ export default function ProfilePage() {
   const [connStatus, setConnStatus] = useState<ConnStatus>('none');
   const [connRequestId, setConnRequestId] = useState<number | null>(null);
   const [connLoading, setConnLoading] = useState(false);
-  const connCount = connectionCount(profileIdNum);
+  // PRD-018 D2: real connection count from /api/connections
+  const { data: connectionsData } = useQuery<{ count: number } | unknown[]>({
+    queryKey: ["/api/connections", profileIdNum],
+    queryFn: async () => {
+      const res = await fetch(`/api/connections?userId=${profileIdNum}`);
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: !!profileIdNum,
+  });
+  const connCount = Array.isArray(connectionsData) ? connectionsData.length : 0;
 
   const { data, isLoading, isError } = useQuery<ProfileData>({
     queryKey: ["/api/profiles", id],

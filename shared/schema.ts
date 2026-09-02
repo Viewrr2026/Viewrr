@@ -8,6 +8,8 @@ export const users = pgTable("users", {
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash"),
+  // PRD-019: password algorithm discriminator ('sha256_v1' | 'argon2id')
+  passwordAlgo: text("password_algo").notNull().default("sha256_v1"),
   phone: text("phone"),
   role: text("role").notNull().default("freelancer"), // "freelancer" | "client"
   accountSubtype: text("account_subtype").default("sole"), // "sole" | "agency_owner" | "agency_member"
@@ -23,6 +25,10 @@ export const users = pgTable("users", {
   stripeAccountId: text("stripe_account_id"),           // Express account ID (acct_...)
   stripeOnboarded: integer("stripe_onboarded").default(0), // 1 = fully verified
   stripePendingPence: integer("stripe_pending_pence").default(0), // held earnings in pence
+  accountStatus: text("account_status").notNull().default("active"),
+  suspendedAt: text("suspended_at"),
+  suspendedReason: text("suspended_reason"),
+  suspendedBy: integer("suspended_by"),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
@@ -77,10 +83,12 @@ export const reviews = pgTable("reviews", {
   comment: text("comment").notNull(),
   projectType: text("project_type"),
   projectId: integer("project_id"),               // which project this review is for
+  verifiedProjectReview: integer("verified_project_review").default(0),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 
-export const insertReviewSchema = createInsertSchema(reviews).omit({ id: true, createdAt: true });
+// verifiedProjectReview is ALWAYS server-set — never accepted from request body
+export const insertReviewSchema = createInsertSchema(reviews).omit({ id: true, createdAt: true, verifiedProjectReview: true });
 export type InsertReview = z.infer<typeof insertReviewSchema>;
 export type Review = typeof reviews.$inferSelect;
 
@@ -281,7 +289,7 @@ export type BriefInterest = typeof briefInterests.$inferSelect;
 export const notifications = pgTable("notifications", {
   id: serial("id").primaryKey(),
   recipientId: integer("recipient_id").notNull(),  // who receives this
-  actorId: integer("actor_id").notNull(),           // who triggered it
+  actorId: integer("actor_id"),                     // who triggered it (null for system events)
   actorName: text("actor_name").notNull(),
   actorAvatar: text("actor_avatar"),
   type: text("type").notNull(), // "like" | "comment" | "message" | "interest" | "interest_accepted" | "interest_declined" | "profile_view" | "connection"
@@ -739,6 +747,11 @@ export const stripeEvents = pgTable("stripe_events", {
   processedAt: text("processed_at"),
   errorCode: text("error_code"),
   errorSummary: text("error_summary"),
+  // WS-A: PRD-020 stale-event recovery fields (migration 0008)
+  processingStartedAt: text("processing_started_at"),
+  lastAttemptAt: text("last_attempt_at"),
+  maxAttempts: integer("max_attempts").notNull().default(5),
+  rawPayload: text("raw_payload"),
 });
 export type StripeEvent = typeof stripeEvents.$inferSelect;
 
@@ -869,3 +882,111 @@ export const projectStageEvents = pgTable("project_stage_events", {
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
 export type ProjectStageEvent = typeof projectStageEvents.$inferSelect;
+
+// ─── Auth Sessions (PRD-019) ──────────────────────────────────────────────────
+export const authSessions = pgTable("auth_sessions", {
+  id: serial("id").primaryKey(),
+  sessionId: text("session_id").notNull().unique(),    // public UUID; safe to log
+  userId: integer("user_id").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),    // SHA-256(rawToken); raw NEVER stored
+  clientType: text("client_type").notNull().default("web"), // 'web' | 'mobile'
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  idleExpiresAt: timestamp("idle_expires_at", { withTimezone: true }),  // mobile only
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  revokedReason: text("revoked_reason"),  // 'logout'|'password_reset'|'user_deleted'
+});
+
+export type AuthSession = typeof authSessions.$inferSelect;
+export type InsertAuthSession = typeof authSessions.$inferInsert;
+
+// ─── Upload Objects (PRD-020 WS-D) ───────────────────────────────────────────
+// Durable record for every uploaded file — backed by Cloudflare R2 object storage
+export const uploadObjects = pgTable("upload_objects", {
+  id: serial("id").primaryKey(),
+  ownerUserId: integer("owner_user_id").notNull(),
+  objectKey: text("object_key").notNull().unique(),
+  resourceType: text("resource_type").notNull(), // portfolio | profile | project | deliverable | message
+  resourceId: integer("resource_id"),            // nullable — set after resource is created
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes"),
+  originalFilename: text("original_filename"),    // stored as metadata only (never used as path)
+  status: text("status").notNull().default("pending"), // pending | uploaded | ready | deleted
+  uploadIntentExpiresAt: text("upload_intent_expires_at").notNull(), // when presigned PUT URL expires
+  confirmedAt: text("confirmed_at"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+
+export type UploadObject = typeof uploadObjects.$inferSelect;
+export type InsertUploadObject = typeof uploadObjects.$inferInsert;
+
+// ─── Verification Codes (PRD-020 WS-E) ───────────────────────────────────────
+// DB-backed verification codes — restart-safe replacement for in-memory Map
+export const verificationCodes = pgTable("verification_codes", {
+  id: serial("id").primaryKey(),
+  purpose: text("purpose").notNull(),            // email_verification | sms_verification
+  destinationHash: text("destination_hash").notNull(), // SHA-256(lowercased destination)
+  codeHash: text("code_hash").notNull(),          // SHA-256(code + destination + purpose)
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  expiresAt: text("expires_at").notNull(),
+  usedAt: text("used_at"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  invalidatedAt: text("invalidated_at"),          // set when resend invalidates this code
+});
+
+export type VerificationCode = typeof verificationCodes.$inferSelect;
+export type InsertVerificationCode = typeof verificationCodes.$inferInsert;
+
+// ─── PRD-021: Data Export Requests ───────────────────────────────────────────
+export const dataExportRequests = pgTable("data_export_requests", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  status: text("status").notNull().default("pending"),
+  requestedAt: text("requested_at").notNull().default(new Date().toISOString()),
+  completedAt: text("completed_at"),
+  expiresAt: text("expires_at"),
+  exportSizeBytes: integer("export_size_bytes"),
+  errorMessage: text("error_message"),
+});
+export type DataExportRequest = typeof dataExportRequests.$inferSelect;
+
+// ─── PRD-021: Account Deletion Requests ──────────────────────────────────────
+export const accountDeletionRequests = pgTable("account_deletion_requests", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  status: text("status").notNull().default("pending"),
+  requestedAt: text("requested_at").notNull().default(new Date().toISOString()),
+  processedAt: text("processed_at"),
+  blockerReason: text("blocker_reason"),
+  processedBy: integer("processed_by"),
+  anonymisedAt: text("anonymised_at"),
+});
+export type AccountDeletionRequest = typeof accountDeletionRequests.$inferSelect;
+
+// ─── PRD-021: User Reports (moderation) ──────────────────────────────────────
+export const userReports = pgTable("user_reports", {
+  id: serial("id").primaryKey(),
+  reporterUserId: integer("reporter_user_id").notNull(),
+  subjectType: text("subject_type").notNull(),
+  subjectId: integer("subject_id").notNull(),
+  reason: text("reason").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("open"),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+  reviewedAt: text("reviewed_at"),
+  reviewedBy: integer("reviewed_by"),
+  resolutionNote: text("resolution_note"),
+  moderatorAction: text("moderator_action"),
+});
+export type UserReport = typeof userReports.$inferSelect;
+export const insertUserReportSchema = createInsertSchema(userReports).omit({ id: true, createdAt: true, status: true, reviewedAt: true, reviewedBy: true, resolutionNote: true, moderatorAction: true });
+
+// ─── PRD-021: User Blocks ─────────────────────────────────────────────────────
+export const userBlocks = pgTable("user_blocks", {
+  id: serial("id").primaryKey(),
+  blockerUserId: integer("blocker_user_id").notNull(),
+  blockedUserId: integer("blocked_user_id").notNull(),
+  createdAt: text("created_at").notNull().default(new Date().toISOString()),
+});
+export type UserBlock = typeof userBlocks.$inferSelect;

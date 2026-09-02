@@ -20,496 +20,16 @@ function safeUser<T extends Record<string, any>>(user: T): Omit<T, "passwordHash
   return safe as Omit<T, "passwordHash" | "password_hash">;
 }
 
-// Run migrations — create all tables if they don't exist
-async function runMigrations() {
-// ─── Retainer: add columns to projects + create retainer_cycles table ──────
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_retainer INTEGER DEFAULT 0`; } catch {}
-// Retainer fields on invitations
-try { await sql`ALTER TABLE project_invitations ADD COLUMN IF NOT EXISTS is_retainer INTEGER DEFAULT 0`; } catch {}
-try { await sql`ALTER TABLE project_invitations ADD COLUMN IF NOT EXISTS billing_cycle TEXT`; } catch {}
-try { await sql`ALTER TABLE project_invitations ADD COLUMN IF NOT EXISTS deliverables_per_cycle TEXT`; } catch {}
-try { await sql`ALTER TABLE project_invitations ADD COLUMN IF NOT EXISTS total_cycles INTEGER`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS billing_cycle TEXT`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deliverables_per_cycle TEXT`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS total_cycles INTEGER`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS current_cycle_number INTEGER DEFAULT 1`; } catch {}
-await sql`
-  CREATE TABLE IF NOT EXISTS retainer_cycles (
-    id SERIAL PRIMARY KEY,
-    project_id INTEGER NOT NULL,
-    cycle_number INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',
-    start_date TEXT NOT NULL,
-    end_date TEXT,
-    freelancer_note TEXT,
-    payment_status TEXT NOT NULL DEFAULT 'unpaid',
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL UNIQUE,
-    password_hash TEXT,
-    phone TEXT,
-    role TEXT NOT NULL DEFAULT 'freelancer',
-    avatar TEXT,
-    bio TEXT,
-    location TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-// Add new columns to existing users table if they don't exist
-try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`; } catch {}
-try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT`; } catch {}
-// Stripe Connect columns
-try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_id TEXT`; } catch {}
-try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_onboarded INTEGER DEFAULT 0`; } catch {}
-try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_pending_pence INTEGER DEFAULT 0`; } catch {}
-
-await sql`
-  CREATE TABLE IF NOT EXISTS profiles (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    specialisms TEXT NOT NULL DEFAULT '[]',
-    skills TEXT NOT NULL DEFAULT '[]',
-    hourly_rate REAL,
-    day_rate REAL,
-    availability TEXT NOT NULL DEFAULT 'available',
-    years_experience INTEGER,
-    reel_url TEXT,
-    portfolio_items TEXT NOT NULL DEFAULT '[]',
-    social_links TEXT NOT NULL DEFAULT '{}',
-    rating REAL DEFAULT 0,
-    review_count INTEGER DEFAULT 0,
-    project_count INTEGER DEFAULT 0,
-    featured INTEGER DEFAULT 0,
-    badges TEXT NOT NULL DEFAULT '[]',
-    is_pro INTEGER DEFAULT 0,
-    pro_since TEXT
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS reviews (
-    id SERIAL PRIMARY KEY,
-    profile_id INTEGER NOT NULL,
-    client_id INTEGER NOT NULL,
-    client_name TEXT NOT NULL,
-    client_avatar TEXT,
-    rating INTEGER NOT NULL,
-    comment TEXT NOT NULL,
-    project_type TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS messages (
-    id SERIAL PRIMARY KEY,
-    from_id INTEGER NOT NULL,
-    to_id INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    read INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS profile_views (
-    id SERIAL PRIMARY KEY,
-    profile_user_id INTEGER NOT NULL,
-    viewer_ip TEXT,
-    viewer_id INTEGER,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS brief_interests (
-    id SERIAL PRIMARY KEY,
-    brief_id INTEGER NOT NULL,
-    brief_title TEXT NOT NULL,
-    brief_client_id INTEGER NOT NULL,
-    brief_client_name TEXT NOT NULL,
-    freelancer_id INTEGER NOT NULL,
-    freelancer_name TEXT NOT NULL,
-    freelancer_avatar TEXT,
-    cover_note TEXT NOT NULL,
-    rate TEXT,
-    availability TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL DEFAULT NOW()::text,
-    responded_at TEXT
-  )
-`;
-// Add responded_at column if it doesn't exist (for existing deployments)
-await sql`ALTER TABLE brief_interests ADD COLUMN IF NOT EXISTS responded_at TEXT`.catch(() => {});
-// Add card_thumbnail to profiles for freelancer card customisation
-await sql`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS card_thumbnail TEXT`.catch(() => {});
-// Add payment_status to projects for delivery/watermark flow
-await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'unpaid'`.catch(() => {});
-// Add review tracking columns to projects
-await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS review_given_by_client INTEGER DEFAULT 0`.catch(() => {});
-await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS review_given_by_freelancer INTEGER DEFAULT 0`.catch(() => {});
-// Add project_id to reviews for linking
-await sql`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS project_id INTEGER`.catch(() => {});
-// Agreed price flow
-await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agreed_amount_pence INTEGER`.catch(() => {});
-await sql`ALTER TABLE brief_interests ADD COLUMN IF NOT EXISTS proposed_price_pence INTEGER`.catch(() => {});
-await sql`ALTER TABLE brief_interests ADD COLUMN IF NOT EXISTS price_breakdown TEXT`.catch(() => {});
-await sql`ALTER TABLE brief_interests ADD COLUMN IF NOT EXISTS counter_offer_pence INTEGER`.catch(() => {});
-await sql`
-  CREATE TABLE IF NOT EXISTS saved (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER NOT NULL,
-    profile_id INTEGER NOT NULL
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS projects (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER NOT NULL,
-    freelancer_id INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'active',
-    current_stage INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS project_updates (
-    id SERIAL PRIMARY KEY,
-    project_id INTEGER NOT NULL,
-    author_id INTEGER NOT NULL,
-    stage INTEGER NOT NULL,
-    note TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS briefs (
-    id SERIAL PRIMARY KEY,
-    client_id INTEGER NOT NULL,
-    client_name TEXT NOT NULL,
-    client_avatar TEXT,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    category TEXT NOT NULL,
-    location TEXT NOT NULL,
-    remote INTEGER DEFAULT 0,
-    start_date TEXT,
-    duration TEXT,
-    budget_min REAL,
-    budget_max REAL,
-    budget_type TEXT NOT NULL DEFAULT 'project',
-    requirements TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'open',
-    application_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS posts (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    caption TEXT NOT NULL DEFAULT '',
-    media_url TEXT,
-    media_type TEXT,
-    tags TEXT NOT NULL DEFAULT '[]',
-    like_count INTEGER NOT NULL DEFAULT 0,
-    comment_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS post_likes (
-    id SERIAL PRIMARY KEY,
-    post_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS post_comments (
-    id SERIAL PRIMARY KEY,
-    post_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS notifications (
-    id SERIAL PRIMARY KEY,
-    recipient_id INTEGER NOT NULL,
-    actor_id INTEGER NOT NULL,
-    actor_name TEXT NOT NULL,
-    actor_avatar TEXT,
-    type TEXT NOT NULL,
-    message TEXT NOT NULL,
-    link TEXT,
-    read INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS connection_requests (
-    id SERIAL PRIMARY KEY,
-    sender_id INTEGER NOT NULL,
-    recipient_id INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL DEFAULT NOW()::text,
-    responded_at TEXT,
-    UNIQUE(sender_id, recipient_id)
-  )
-`;
-// ─── Agency columns on users ─────────────────────────────────────────────────
-try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS account_subtype TEXT DEFAULT 'sole'`; } catch {}
-try { await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS agency_id INTEGER`; } catch {}
-// ─── Agencies table ───────────────────────────────────────────────────────────
-await sql`
-  CREATE TABLE IF NOT EXISTS agencies (
-    id SERIAL PRIMARY KEY,
-    owner_user_id INTEGER NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    slug TEXT NOT NULL UNIQUE,
-    bio TEXT NOT NULL DEFAULT '',
-    logo TEXT,
-    banner TEXT,
-    location TEXT,
-    website TEXT,
-    specialisms TEXT NOT NULL DEFAULT '[]',
-    reel_url TEXT,
-    invite_code TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-// ─── Agency members table ─────────────────────────────────────────────────────
-await sql`
-  CREATE TABLE IF NOT EXISTS agency_members (
-    id SERIAL PRIMARY KEY,
-    agency_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL UNIQUE,
-    status TEXT NOT NULL DEFAULT 'pending',
-    joined_at TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-// ─── Agency member rate cards + role ──────────────────────────────────────────
-try { await sql`ALTER TABLE agency_members ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'member'`; } catch {}
-try { await sql`ALTER TABLE agency_members ADD COLUMN IF NOT EXISTS day_rate_pence INTEGER`; } catch {}
-try { await sql`ALTER TABLE agency_members ADD COLUMN IF NOT EXISTS hourly_rate_pence INTEGER`; } catch {}
-// ─── Agency featured work + testimonials ──────────────────────────────────────
-try { await sql`ALTER TABLE agencies ADD COLUMN IF NOT EXISTS featured_work TEXT NOT NULL DEFAULT '[]'`; } catch {}
-try { await sql`ALTER TABLE agencies ADD COLUMN IF NOT EXISTS testimonials TEXT NOT NULL DEFAULT '[]'`; } catch {}
-// ─── Time Entries table ───────────────────────────────────────────────────────
-await sql`
-  CREATE TABLE IF NOT EXISTS time_entries (
-    id SERIAL PRIMARY KEY,
-    project_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    agency_id INTEGER,
-    description TEXT NOT NULL DEFAULT '',
-    minutes INTEGER NOT NULL,
-    billable BOOLEAN NOT NULL DEFAULT TRUE,
-    logged_at TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-// ─── Agency Briefs table ──────────────────────────────────────────────────────
-await sql`
-  CREATE TABLE IF NOT EXISTS agency_briefs (
-    id SERIAL PRIMARY KEY,
-    agency_id INTEGER NOT NULL,
-    client_id INTEGER NOT NULL,
-    client_name TEXT NOT NULL,
-    client_avatar TEXT,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    category TEXT NOT NULL DEFAULT '',
-    budget_min INTEGER,
-    budget_max INTEGER,
-    start_date TEXT,
-    duration TEXT,
-    requirements TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'incoming',
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-// ─── Agency Proposals table ───────────────────────────────────────────────────
-await sql`
-  CREATE TABLE IF NOT EXISTS agency_proposals (
-    id SERIAL PRIMARY KEY,
-    agency_brief_id INTEGER NOT NULL UNIQUE,
-    agency_id INTEGER NOT NULL,
-    quoted_amount_pence INTEGER NOT NULL,
-    cover_note TEXT NOT NULL DEFAULT '',
-    timeline TEXT NOT NULL DEFAULT '',
-    team_member_ids TEXT NOT NULL DEFAULT '[]',
-    breakdown TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'sent',
-    sent_at TEXT NOT NULL DEFAULT NOW()::text,
-    responded_at TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-// ─── Agency Activity table ────────────────────────────────────────────────────
-await sql`
-  CREATE TABLE IF NOT EXISTS agency_activity (
-    id SERIAL PRIMARY KEY,
-    agency_id INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL DEFAULT '',
-    entity_type TEXT,
-    entity_id INTEGER,
-    actor_id INTEGER,
-    actor_name TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-// ─── Agency member project columns ───────────────────────────────────────────
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agency_id INTEGER`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS agency_brief_id INTEGER`; } catch {}
-// ─── Reliable Project Completion & Deletion (PRD) ──────────────────────────
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_at TEXT`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_by INTEGER`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TEXT`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_by INTEGER`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deletion_reason TEXT`; } catch {}
-// ─── PRD-014: Dynamic Project Stages ────────────────────────────────────────
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS planning_status TEXT NOT NULL DEFAULT 'legacy'`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS plan_confirmed_at TEXT`; } catch {}
-try { await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS plan_sent_to_client_at TEXT`; } catch {}
-try {
-  await sql`CREATE TABLE IF NOT EXISTS project_stages (
-    id SERIAL PRIMARY KEY,
-    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    position INTEGER NOT NULL DEFAULT 0,
-    title TEXT NOT NULL,
-    description TEXT,
-    expected_deliverable TEXT,
-    target_date TEXT,
-    approval_required INTEGER NOT NULL DEFAULT 0,
-    revision_allowance TEXT NOT NULL DEFAULT 'none',
-    status TEXT NOT NULL DEFAULT 'upcoming',
-    started_at TEXT, submitted_at TEXT, approved_at TEXT, completed_at TEXT,
-    created_by INTEGER NOT NULL, updated_at TEXT, notes TEXT, client_change_request TEXT
-  )`;
-} catch {}
-try {
-  await sql`CREATE TABLE IF NOT EXISTS project_stage_events (
-    id SERIAL PRIMARY KEY,
-    project_id INTEGER NOT NULL,
-    stage_id INTEGER,
-    event_type TEXT NOT NULL,
-    actor_id INTEGER NOT NULL,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (NOW()::TEXT)
-  )`;
-} catch {}
-// ─── PRD-015: Stripe Verification & Earnings Fix ────────────────────────────
-try { await sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS commission_rate_bps INTEGER`; } catch {}
-try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_stripe_sync TEXT`; } catch {}
-try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_onboarding_link_at TEXT`; } catch {}
-try { await sql`ALTER TABLE stripe_connect_accounts ADD COLUMN IF NOT EXISTS last_onboarding_link_error TEXT`; } catch {}
-
-// ─── PRD-016A Phase 0: Password reset tokens ────────────────────────────────
-// Secure, single-use, time-limited tokens for password reset.
-// Only the SHA-256 hash of the raw token is stored — the raw token goes only in email.
-await sql`
-  CREATE TABLE IF NOT EXISTS password_reset_tokens (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    token_hash TEXT NOT NULL UNIQUE,
-    expires_at TEXT NOT NULL,
-    used_at TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-
-// ─── PRD-013: Pro Viewrr subscription tables ────────────────────────────────
-await sql`
-  CREATE TABLE IF NOT EXISTS pro_subscriptions (
-    id SERIAL PRIMARY KEY,
-    public_id TEXT NOT NULL UNIQUE,
-    user_id INTEGER NOT NULL UNIQUE,
-    membership_type TEXT NOT NULL DEFAULT 'paid',
-    stripe_customer_id TEXT,
-    stripe_subscription_id TEXT,
-    stripe_price_id TEXT,
-    status TEXT NOT NULL DEFAULT 'checkout_pending',
-    amount_pence INTEGER DEFAULT 4999,
-    currency TEXT DEFAULT 'gbp',
-    current_period_start TEXT,
-    current_period_end TEXT,
-    cancel_at_period_end INTEGER DEFAULT 0,
-    terms_version TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text,
-    updated_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS founding_pro_allocations (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL UNIQUE,
-    allocation_number INTEGER NOT NULL,
-    allocated_at TEXT NOT NULL DEFAULT NOW()::text,
-    active INTEGER NOT NULL DEFAULT 1
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS pro_subscription_events (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    subscription_id INTEGER,
-    event_type TEXT NOT NULL,
-    old_status TEXT,
-    new_status TEXT,
-    commission_rate_bps INTEGER,
-    stripe_event_id TEXT,
-    metadata TEXT,
-    correlation_id TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-// ─── Invoice tables ─────────────────────────────────────────────────────────
-await sql`
-  CREATE TABLE IF NOT EXISTS invoice_templates (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL UNIQUE,
-    business_name TEXT NOT NULL DEFAULT '',
-    business_address TEXT NOT NULL DEFAULT '',
-    business_email TEXT NOT NULL DEFAULT '',
-    business_phone TEXT NOT NULL DEFAULT '',
-    logo_url TEXT,
-    vat_number TEXT NOT NULL DEFAULT '',
-    payment_terms TEXT NOT NULL DEFAULT 'Payment processed securely through Viewrr',
-    footer_note TEXT NOT NULL DEFAULT '',
-    accent_color TEXT NOT NULL DEFAULT '#FF5A1F',
-    updated_at TEXT NOT NULL DEFAULT NOW()::text,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
-await sql`
-  CREATE TABLE IF NOT EXISTS invoices (
-    id SERIAL PRIMARY KEY,
-    invoice_number TEXT NOT NULL,
-    project_id INTEGER NOT NULL,
-    freelancer_id INTEGER NOT NULL,
-    client_id INTEGER NOT NULL,
-    client_name TEXT NOT NULL DEFAULT '',
-    client_email TEXT NOT NULL DEFAULT '',
-    project_title TEXT NOT NULL DEFAULT '',
-    line_items TEXT NOT NULL DEFAULT '[]',
-    subtotal_pence INTEGER NOT NULL DEFAULT 0,
-    vat_pence INTEGER NOT NULL DEFAULT 0,
-    total_pence INTEGER NOT NULL DEFAULT 0,
-    notes TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'sent',
-    issued_at TEXT NOT NULL DEFAULT NOW()::text,
-    paid_at TEXT,
-    created_at TEXT NOT NULL DEFAULT NOW()::text
-  )
-`;
+// ─── WS-B PRD-020: Schema migrations are now managed exclusively via migrations/*.sql ─────────
+// Run those files (via your deployment pipeline) to apply schema changes.
+// This function only verifies the database is reachable before serving traffic.
+async function verifyDatabaseConnection() {
+  try {
+    await sql`SELECT 1`;
+    console.log("[db] Database connection verified");
+  } catch (e: any) {
+    throw new Error(`[db] Database connection failed at startup: ${e.message}`);
+  }
 }
 
 export interface IStorage {
@@ -526,7 +46,7 @@ export interface IStorage {
   getPasswordResetToken(tokenHash: string): Promise<{ id: number; userId: number; expiresAt: string; usedAt: string | null } | null>;
   markPasswordResetTokenUsed(id: number): Promise<void>;
   atomicConsumeTokenAndResetPassword(tokenHash: string, newPasswordHash: string): Promise<
-    { ok: true } | { ok: false; reason: "not_found" | "used" | "expired" }
+    { ok: true; userId: number } | { ok: false; reason: string }
   >;
 
   // Profiles
@@ -540,7 +60,7 @@ export interface IStorage {
 
   // Reviews
   getReviewsByProfile(profileId: number): Promise<schema.Review[]>;
-  createReview(data: schema.InsertReview): Promise<schema.Review>;
+  createReview(data: schema.InsertReview & { verifiedProjectReview?: number }): Promise<schema.Review>;
   markReviewGiven(projectId: number, role: "client" | "freelancer"): Promise<void>;
 
   // Messages
@@ -573,6 +93,8 @@ export interface IStorage {
 
   // Projects
   getProjectsForUser(userId: number): Promise<ProjectWithDetails[]>;
+  getCompletedProjectCount(freelancerUserId: number): Promise<number>;
+  getCompletedProjectCountsBulk(freelancerUserIds: number[]): Promise<Map<number, number>>;
   getProject(id: number): Promise<ProjectWithDetails | undefined>;
   getProjectByInterestId(interestId: number): Promise<schema.Project | undefined>;
   createProject(data: schema.InsertProject): Promise<schema.Project>;
@@ -588,11 +110,12 @@ export interface IStorage {
 
   // Meetings
   getMeetingsForProject(projectId: number): Promise<schema.Meeting[]>;
+  getMeeting(id: number): Promise<schema.Meeting | undefined>;
   createMeeting(data: schema.InsertMeeting): Promise<schema.Meeting>;
   cancelMeeting(id: number): Promise<void>;
 
   // Briefs
-  getBriefs(): Promise<schema.Brief[]>;
+  getBriefs(limit?: number, offset?: number): Promise<schema.Brief[]>;
   getBrief(id: number): Promise<schema.Brief | undefined>;
   createBrief(data: schema.InsertBrief): Promise<schema.Brief>;
 
@@ -682,6 +205,7 @@ export interface IStorage {
   upsertInvoiceTemplate(userId: number, data: Partial<schema.InsertInvoiceTemplate>): Promise<schema.InvoiceTemplate>;
   // Invoices
   createInvoice(data: schema.InsertInvoice): Promise<schema.Invoice>;
+  getInvoiceById(invoiceId: number): Promise<schema.Invoice | undefined>;
   getInvoiceByProject(projectId: number): Promise<schema.Invoice | undefined>;
   getInvoicesByFreelancer(freelancerId: number): Promise<schema.Invoice[]>;
   markInvoicePaid(invoiceId: number): Promise<void>;
@@ -832,9 +356,10 @@ class Storage implements IStorage {
       if (record.usedAt)                          { await sql`ROLLBACK`; return { ok: false, reason: "used" };      }
       if (new Date(record.expiresAt) < new Date()){ await sql`ROLLBACK`; return { ok: false, reason: "expired" };   }
       await sql`UPDATE password_reset_tokens SET used_at = NOW()::text WHERE id = ${record.id}`;
-      await sql`UPDATE users SET password_hash = ${newPasswordHash} WHERE id = ${record.userId}`;
+      // PRD-019: Also update password_algo to 'argon2id' when resetting password
+      await sql`UPDATE users SET password_hash = ${newPasswordHash}, password_algo = 'argon2id' WHERE id = ${record.userId}`;
       await sql`COMMIT`;
-      return { ok: true };
+      return { ok: true, userId: record.userId as number };
     } catch (e) {
       try { await sql`ROLLBACK`; } catch {}
       throw e;
@@ -972,7 +497,7 @@ class Storage implements IStorage {
     return db.select().from(schema.reviews).where(eq(schema.reviews.profileId, profileId));
   }
 
-  async createReview(data: schema.InsertReview): Promise<schema.Review> {
+  async createReview(data: schema.InsertReview & { verifiedProjectReview?: number }): Promise<schema.Review> {
     const r = await db.insert(schema.reviews).values(data).returning();
     const review = r[0];
     // Update profile rating
@@ -1372,6 +897,36 @@ class Storage implements IStorage {
     return results;
   }
 
+  async getCompletedProjectCount(freelancerUserId: number): Promise<number> {
+    const r = await db.select({ count: drizzleSql<number>`count(*)::int` })
+      .from(schema.projects)
+      .where(and(
+        eq(schema.projects.freelancerId, freelancerUserId),
+        eq(schema.projects.status, "completed")
+      ));
+    return r[0]?.count ?? 0;
+  }
+
+  // Bulk version for list endpoints — one SQL query for all user ids, avoids N+1.
+  async getCompletedProjectCountsBulk(freelancerUserIds: number[]): Promise<Map<number, number>> {
+    if (freelancerUserIds.length === 0) return new Map();
+    const rows = await db.select({
+      freelancerId: schema.projects.freelancerId,
+      count: drizzleSql<number>`count(*)::int`,
+    })
+      .from(schema.projects)
+      .where(and(
+        inArray(schema.projects.freelancerId, freelancerUserIds),
+        eq(schema.projects.status, "completed")
+      ))
+      .groupBy(schema.projects.freelancerId);
+    const map = new Map<number, number>();
+    for (const row of rows) {
+      if (row.freelancerId !== null) map.set(row.freelancerId, row.count);
+    }
+    return map;
+  }
+
   async getProject(id: number): Promise<ProjectWithDetails | undefined> {
     const r = await db.select().from(schema.projects).where(eq(schema.projects.id, id));
     const project = r[0];
@@ -1486,6 +1041,11 @@ class Storage implements IStorage {
     return r;
   }
 
+  async getMeeting(id: number): Promise<schema.Meeting | undefined> {
+    const r = await db.select().from(schema.meetings).where(eq(schema.meetings.id, id)).limit(1);
+    return r[0];
+  }
+
   async createMeeting(data: schema.InsertMeeting): Promise<schema.Meeting> {
     const r = await db.insert(schema.meetings).values(data).returning();
     return r[0];
@@ -1498,10 +1058,13 @@ class Storage implements IStorage {
   }
 
   // ─── Briefs ────────────────────────────────────────────────────────────────
-  async getBriefs(): Promise<schema.Brief[]> {
+  async getBriefs(limit = 50, offset = 0): Promise<schema.Brief[]> {
     const r = await db.select().from(schema.briefs)
-      .where(eq(schema.briefs.isActive, true));
-    return r.reverse();
+      .where(eq(schema.briefs.isActive, true))
+      .orderBy(desc(schema.briefs.createdAt))
+      .limit(limit)
+      .offset(offset);
+    return r;
   }
 
   async getBrief(id: number): Promise<schema.Brief | undefined> {
@@ -2146,6 +1709,11 @@ class Storage implements IStorage {
     return r[0];
   }
 
+  async getInvoiceById(invoiceId: number): Promise<schema.Invoice | undefined> {
+    const r = await db.select().from(schema.invoices).where(eq(schema.invoices.id, invoiceId));
+    return r[0];
+  }
+
   async getInvoiceByProject(projectId: number): Promise<schema.Invoice | undefined> {
     const r = await db.select().from(schema.invoices).where(eq(schema.invoices.projectId, projectId));
     return r[0];
@@ -2253,7 +1821,7 @@ export const storage = new Storage();
 
 
 export async function initStorage() {
-  await runMigrations();
+  await verifyDatabaseConnection();
 }
 
 // ── Extend Storage with notification preferences methods ──
