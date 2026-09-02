@@ -147,4 +147,10 @@ CREATE INDEX IF NOT EXISTS messages_to_read_idx    ON messages (to_id, read);
 -- It is declared in shared/schema.ts only, so Drizzle matches reality.
 -- Deliberately NOT created here.
 
+-- ─── Migration tracking ──────────────────────────────────────────────────────
+
+INSERT INTO schema_migrations (migration_name)
+VALUES ('0006_prd1_mobile_v1')
+ON CONFLICT DO NOTHING;
+
 COMMIT;
