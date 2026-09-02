@@ -58,6 +58,7 @@ export default function AccountDeletion() {
   /** Set once a request has been recorded in this session. */
   const [scheduledFor, setScheduledFor] = useState<string | null>(null);
   const [requestNotice, setRequestNotice] = useState<string | null>(null);
+  const [confirmedScheduled, setConfirmedScheduled] = useState(false);
 
   const load = useCallback((signal: AbortSignal) => fetchDeletionStatus(signal), []);
   const { resource, reload, refreshing, refresh } = useAsyncResource<DeletionStatus>(load);
@@ -70,6 +71,7 @@ export default function AccountDeletion() {
   const onRequest = useCallback(async () => {
     setRequesting(true);
     setActionError(null);
+    setConfirmedScheduled(false);
     try {
       const result = await requestDeletion();
       setScheduledFor(result.scheduledFor);
@@ -86,11 +88,30 @@ export default function AccountDeletion() {
     setConfirming(true);
     setActionError(null);
     try {
-      await confirmDeletion(password);
+      const result = await confirmDeletion(password);
       setPassword("");
       setSheetOpen(false);
-      // The account is gone; the credential in the Keychain now points at
-      // nothing. Signing out is the only correct end state.
+
+      if (result.state === "scheduled") {
+        setConfirmedScheduled(true);
+        setScheduledFor(result.scheduledFor);
+        setRequestNotice(
+          result.message ??
+            "Your deletion is confirmed and scheduled. It will complete automatically once the outstanding obligations clear.",
+        );
+        setStep("review");
+        return;
+      }
+
+      if (result.state !== "anonymised") {
+        setActionError(
+          result.message ??
+            "Viewrr could not confirm the final deletion state. Please try again.",
+        );
+        return;
+      }
+
+      // The account has actually been anonymised and the server session revoked.
       await signOut();
     } catch (cause) {
       setSheetOpen(false);
@@ -129,16 +150,31 @@ export default function AccountDeletion() {
                 </CardBody>
               </Card>
 
-              {status.state === "scheduled" && !scheduledFor ? (
+              {status.state === "pending" && step === "review" ? (
                 <Card>
                   <View style={styles.headRow}>
                     <CalendarClock size={18} color={colors.primary} strokeWidth={2.2} />
-                    <CardLabel>Already requested</CardLabel>
+                    <CardLabel>Confirmation still required</CardLabel>
                   </View>
                   <CardBody>
-                    {status.scheduledFor
-                      ? `Your account is scheduled for deletion on ${formatDate(status.scheduledFor)}. You can complete it now with your password, or leave it to run on that date.`
-                      : "A deletion request is already on file for this account. You can complete it now with your password."}
+                    Your deletion request is recorded, but it is not confirmed yet. Continue below
+                    and enter your password before Viewrr can delete or schedule deletion of the account.
+                  </CardBody>
+                </Card>
+              ) : null}
+
+              {status.state === "scheduled" || confirmedScheduled ? (
+                <Card>
+                  <View style={styles.headRow}>
+                    <CalendarClock size={18} color={colors.primary} strokeWidth={2.2} />
+                    <CardLabel>Deletion confirmed</CardLabel>
+                  </View>
+                  <CardBody>
+                    {confirmedScheduled && requestNotice
+                      ? requestNotice
+                      : status.scheduledFor
+                        ? `Your deletion is confirmed and scheduled for ${formatDate(status.scheduledFor)}. It will run sooner if the outstanding obligations clear first.`
+                        : "Your deletion is confirmed and scheduled. It will complete automatically once the outstanding obligations clear."}
                   </CardBody>
                 </Card>
               ) : null}
@@ -202,13 +238,29 @@ export default function AccountDeletion() {
               {step === "review" ? (
                 <View style={styles.actions}>
                   {actionError ? <ErrorLine message={actionError} /> : null}
-                  <Button
-                    label={deferred ? "Request deletion" : "Continue to delete"}
-                    variant="destructive"
-                    loading={requesting}
-                    onPress={() => void onRequest()}
-                    accessibilityHint="Records your deletion request. You will confirm with your password on the next step."
-                  />
+                  {status.state !== "scheduled" && !confirmedScheduled ? (
+                    <Button
+                      label={
+                        status.state === "pending"
+                          ? "Continue to confirmation"
+                          : deferred
+                            ? "Request deletion"
+                            : "Continue to delete"
+                      }
+                      variant="destructive"
+                      loading={requesting}
+                      onPress={
+                        status.state === "pending"
+                          ? () => setStep("confirm")
+                          : () => void onRequest()
+                      }
+                      accessibilityHint={
+                        status.state === "pending"
+                          ? "Continue to password confirmation."
+                          : "Records your deletion request. You will confirm with your password on the next step."
+                      }
+                    />
+                  ) : null}
                   <Button
                     label="Keep my account"
                     variant="ghost"
@@ -223,8 +275,10 @@ export default function AccountDeletion() {
                     <CardBody>
                       {requestNotice ??
                         (scheduleDate
-                          ? `Your request is recorded. Deletion is scheduled for ${formatDate(scheduleDate)}. Enter your password to confirm the request now.`
-                          : "Your request is recorded. Enter your password to delete the account.")}
+                          ? `Your request is recorded. If you confirm it, deletion will be scheduled for ${formatDate(scheduleDate)} unless the outstanding obligations clear sooner.`
+                          : deferred
+                            ? "Your request is recorded. Enter your password to confirm it. Because obligations remain, deletion will be scheduled rather than performed immediately."
+                            : "Your request is recorded. Enter your password to delete the account.")}
                     </CardBody>
                     <TextField
                       label="Password"
@@ -242,7 +296,7 @@ export default function AccountDeletion() {
                   {actionError ? <ErrorLine message={actionError} /> : null}
 
                   <Button
-                    label="Delete my account"
+                    label={deferred ? "Confirm deletion request" : "Delete my account"}
                     variant="destructive"
                     disabled={password.length === 0}
                     loading={confirming}
@@ -263,10 +317,12 @@ export default function AccountDeletion() {
 
               <ActionSheet
                 visible={sheetOpen}
-                title="Delete this account permanently?"
+                title={deferred ? "Confirm deletion request?" : "Delete this account permanently?"}
                 message={
-                  scheduleDate
-                    ? `Confirming files the deletion. Anything Viewrr is obliged to keep is removed on ${formatDate(scheduleDate)}; everything else goes now. This cannot be undone.`
+                  deferred
+                    ? scheduleDate
+                      ? `Confirming makes this deletion request final. Because obligations remain, deletion is scheduled for ${formatDate(scheduleDate)} unless they clear sooner.`
+                      : "Confirming makes this deletion request final. Because obligations remain, deletion will be scheduled and will run automatically once they clear."
                     : "Confirming deletes the account now. This cannot be undone."
                 }
                 onClose={() => setSheetOpen(false)}
@@ -274,7 +330,9 @@ export default function AccountDeletion() {
                 actions={[
                   {
                     label: "Yes, delete my account",
-                    description: "You will be signed out of this device",
+                    description: deferred
+                      ? "Deletion will run automatically when it can safely complete"
+                      : "You will be signed out of this device",
                     tone: "destructive",
                     icon: Trash2,
                     disabled: confirming,

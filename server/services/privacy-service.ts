@@ -531,7 +531,7 @@ export async function checkDeletionBlockers(userId: number): Promise<DeletionAss
 // ─── Deletion status (contract §D: GET /api/me/deletion-status) ──────────────
 
 export type DeletionStatus = {
-  state: "none" | "scheduled" | "blocked";
+  state: "none" | "pending" | "scheduled" | "blocked";
   scheduledFor?: string;
   blockers: { code: string; label: string; detail: string; clearsAutomatically: boolean }[];
   retention: { category: string; action: string; periodDays: number; detail: string }[];
@@ -548,6 +548,7 @@ export async function getDeletionStatus(userId: number): Promise<DeletionStatus>
 
   // An already-submitted request wins: show the user the date we committed to.
   let existingScheduledFor: string | null = null;
+  let existingRequestState: string | null = null;
   let adminHold = false;
   try {
     const rows = await sql`
@@ -560,11 +561,12 @@ export async function getDeletionStatus(userId: number): Promise<DeletionStatus>
     `;
     if (rows.length) {
       existingScheduledFor = rows[0].scheduled_for ? new Date(rows[0].scheduled_for).toISOString() : null;
-      adminHold = rows[0].state === "blocked";
+      existingRequestState = String(rows[0].state ?? rows[0].status ?? "");
+      adminHold = existingRequestState === "blocked";
     }
   } catch (e: any) {
     // Pre-migration-0006 databases have no `state`/`scheduled_for` column.
-    // Degrade to the live assessment rather than failing the request.
+    // Degrade safely rather than pretending an unconfirmed request is scheduled.
     console.warn("[privacy] deletion-status: request lookup failed:", e?.message);
   }
 
@@ -585,7 +587,9 @@ export async function getDeletionStatus(userId: number): Promise<DeletionStatus>
   if (adminHold) {
     return { state: "blocked", scheduledFor: existingScheduledFor ?? undefined, blockers, retention };
   }
-  if (assessment.state === "scheduled" || existingScheduledFor) {
+
+  // Only a password-CONFIRMED request may be described as scheduled.
+  if (existingRequestState === "scheduled" || existingRequestState === "processing") {
     return {
       state: "scheduled",
       scheduledFor: existingScheduledFor ?? assessment.scheduledFor ?? undefined,
@@ -593,6 +597,13 @@ export async function getDeletionStatus(userId: number): Promise<DeletionStatus>
       retention,
     };
   }
+
+  // Request exists, but the user has not yet completed password confirmation.
+  if (existingRequestState === "pending") {
+    return { state: "pending", blockers, retention };
+  }
+
+  // Blockers alone do not mean deletion has been requested or confirmed.
   return { state: "none", blockers, retention };
 }
 

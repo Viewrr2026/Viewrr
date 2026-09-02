@@ -36,7 +36,7 @@ export type RetentionEntry = {
   periodDays: number;
 };
 
-export type DeletionState = "none" | "scheduled" | "blocked";
+export type DeletionState = "none" | "pending" | "scheduled" | "blocked";
 
 /** GET /api/me/deletion-status — never 409s, never refuses. */
 export type DeletionStatus = {
@@ -61,7 +61,9 @@ function asString(value: unknown): string | null {
 }
 
 function asDeletionState(value: unknown): DeletionState | null {
-  return value === "none" || value === "scheduled" || value === "blocked" ? value : null;
+  return value === "none" || value === "pending" || value === "scheduled" || value === "blocked"
+    ? value
+    : null;
 }
 
 function normaliseBlockers(value: unknown): DeletionBlocker[] {
@@ -124,8 +126,24 @@ export async function requestDeletion(): Promise<DeletionRequestResult> {
  * POST /api/me/confirm-deletion — password re-authentication is mandatory.
  * The password is sent once and never stored, logged or held in a ref.
  */
-export function confirmDeletion(password: string) {
-  return api.post<{ ok?: boolean; message?: string }>("/api/me/confirm-deletion", { password });
+export type DeletionConfirmResult = {
+  ok: boolean;
+  state: "scheduled" | "anonymised" | null;
+  scheduledFor: string | null;
+  message: string | null;
+  blockers: DeletionBlocker[];
+};
+
+export async function confirmDeletion(password: string): Promise<DeletionConfirmResult> {
+  const raw = await api.post<unknown>("/api/me/confirm-deletion", { password });
+  const row = (raw ?? {}) as Record<string, unknown>;
+  return {
+    ok: row.ok === true,
+    state: row.state === "scheduled" || row.state === "anonymised" ? row.state : null,
+    scheduledFor: asString(row.scheduledFor),
+    message: asString(row.message),
+    blockers: normaliseBlockers(row.blockers),
+  };
 }
 
 /* ── Data export ───────────────────────────────────────────────────────── */

@@ -7152,7 +7152,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const sql = neon(process.env.DATABASE_URL!);
       const now = new Date().toISOString();
 
-      const state = assessment.state === "scheduled" ? "scheduled" : "pending";
+      // Requesting deletion and CONFIRMING deletion are deliberately separate.
+      // A row remains pending until password re-authentication succeeds.
+      const state = "pending";
       const scheduledFor = assessment.scheduledFor;
       const deferredReason = assessment.blockers.length
         ? assessment.blockers.map((b) => b.code).join(",")
@@ -7166,7 +7168,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           INSERT INTO account_deletion_requests
             (user_id, status, requested_at, state, scheduled_for, deferred_reason)
           VALUES
-            (${userId}, ${state}, ${now}, ${state}, ${scheduledFor}, ${deferredReason})
+            (${userId}, ${state}, ${now}, ${state}, NULL, ${deferredReason})
         `;
       } catch (insertErr: any) {
         console.warn("[request-deletion] Falling back to pre-0006 columns:", insertErr?.message);
@@ -7176,15 +7178,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         `;
       }
 
-      if (state === "scheduled") {
+      if (assessment.state === "scheduled") {
         return res.json({
           ok: true,
-          state: "scheduled",
+          state: "pending",
           scheduledFor,
           blockers: assessment.blockers.map((b) => ({
             code: b.code, label: b.label, detail: b.detail, clearsAutomatically: b.clearsAutomatically,
           })),
-          message: `Your deletion request is recorded. We cannot erase your account immediately because of ${assessment.blockers.length} outstanding item${assessment.blockers.length === 1 ? "" : "s"} listed below. It is scheduled for ${new Date(scheduledFor!).toLocaleDateString("en-GB")}, and will happen sooner if those clear first. Your request will not be forgotten or refused.`,
+          message: `Your deletion request is recorded but is not confirmed yet. Enter your password to confirm it. Because ${assessment.blockers.length} outstanding item${assessment.blockers.length === 1 ? "" : "s"} currently remains, confirmed deletion will be scheduled for ${new Date(scheduledFor!).toLocaleDateString("en-GB")} unless those obligations clear sooner.`,
         });
       }
 
