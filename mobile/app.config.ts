@@ -9,7 +9,7 @@ import type { ConfigContext, ExpoConfig } from "expo/config";
  *
  * Environment is selected with APP_ENV at config-evaluation time:
  *   APP_ENV=development  (default)  → local Express backend
- *   APP_ENV=staging                 → staging Render service
+ *   APP_ENV=staging                 → preview builds; see CLOSED ALPHA below
  *   APP_ENV=production              → live Viewrr backend
  *
  * EAS LINKAGE — fixed project identity, intentionally hardcoded.
@@ -34,12 +34,34 @@ const APP_ENV = (process.env.APP_ENV ?? "development") as AppEnv;
 const IS_DEV = APP_ENV === "development";
 const IS_STAGING = APP_ENV === "staging";
 
+/** The live Viewrr API origin. Declared once so no environment restates it. */
+const PRODUCTION_API_BASE_URL = "https://www.viewrr.co.uk";
+
+/**
+ * CLOSED ALPHA — the `staging` environment points at the PRODUCTION API.
+ *
+ * There is no hosted staging API for mobile to talk to yet, so a preview build
+ * resolving `https://staging.viewrr.co.uk` reached nothing and every screen
+ * opened straight into the offline state. For the closed alpha it therefore
+ * uses the live API, which is the only backend that actually exists.
+ *
+ * What this does NOT change: the preview build stays internal distribution,
+ * keeps its own `uk.co.viewrr.app.staging` bundle identifier, its own
+ * `viewrr-staging` scheme and its own "Viewrr Staging" name. It is a separate
+ * app on the device, reading real production data.
+ *
+ * Because that data is real, treat preview as production for anything
+ * destructive. Revert this to a dedicated staging origin as soon as one is
+ * hosted — the only edit needed is this one line.
+ */
+const STAGING_API_BASE_URL = PRODUCTION_API_BASE_URL;
+
 /** Absolute API base URL per environment. Never relative. */
 const API_BASE_URL: Record<AppEnv, string> = {
   // Override per-machine with EXPO_PUBLIC_API_BASE_URL (e.g. a LAN IP for device testing).
   development: process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://localhost:5000",
-  staging: process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://staging.viewrr.co.uk",
-  production: "https://www.viewrr.co.uk",
+  staging: process.env.EXPO_PUBLIC_API_BASE_URL ?? STAGING_API_BASE_URL,
+  production: PRODUCTION_API_BASE_URL,
 };
 
 const NAME: Record<AppEnv, string> = {
