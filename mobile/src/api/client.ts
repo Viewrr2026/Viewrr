@@ -157,6 +157,9 @@ export const api = {
   /** PATCH is the verb the notification and profile endpoints use. */
   patch: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, "method" | "body">) =>
     request<T>(path, { ...options, method: "PATCH", body }),
+  /** DELETE is used by the feed's own-post removal. No body is sent. */
+  delete: <T>(path: string, options?: Omit<RequestOptions, "method" | "body">) =>
+    request<T>(path, { ...options, method: "DELETE" }),
 };
 
 /** Exposed for diagnostics screens only. */

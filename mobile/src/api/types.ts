@@ -142,3 +142,152 @@ export type BriefInterest = {
   status: string;
   createdAt: string;
 };
+
+/* ── Feed ──────────────────────────────────────────────────────────────────
+ * GET /api/feed returns storage.PostWithUser[]: `{ post, user, liked }`.
+ *
+ * SECURITY NOTE (reported, not worked around): the backend embeds the FULL
+ * users row on every post and comment — safeUser() strips only the password
+ * hash, so `email`, `phone`, `stripeAccountId`, `stripePendingPence` and
+ * `suspendedReason` are all on the wire, to unauthenticated callers. Mobile
+ * models the author as `FeedAuthor` below, which declares ONLY the fields a
+ * post header may render. Anything absent from this type cannot reach a screen
+ * by accident. The over-exposure itself is a backend fix.
+ */
+
+/** The subset of a post/comment author mobile is permitted to render. */
+export type FeedAuthor = {
+  id: number;
+  name: string;
+  avatar?: string | null;
+  headline?: string | null;
+  location?: string | null;
+  role?: string | null;
+};
+
+/** schema.Post. `tags` is a JSON-encoded array in a TEXT column. */
+export type Post = {
+  id: number;
+  userId: number;
+  caption: string;
+  mediaUrl: string | null;
+  /** Free text; web writes "image" | "video". */
+  mediaType: string | null;
+  tags: string;
+  likeCount: number;
+  commentCount: number;
+  createdAt: string;
+};
+
+/** One row of GET /api/feed. */
+export type FeedItem = {
+  post: Post;
+  user: FeedAuthor;
+  liked: boolean;
+};
+
+/** POST /api/feed/:id/like */
+export type LikeResult = { liked: boolean; likeCount: number };
+
+/** schema.PostComment. */
+export type PostComment = {
+  id: number;
+  postId: number;
+  userId: number;
+  content: string;
+  createdAt: string;
+};
+
+/** One row of GET /api/feed/:id/comments. */
+export type CommentItem = {
+  comment: PostComment;
+  user: FeedAuthor;
+};
+
+/* ── Browse Talent ─────────────────────────────────────────────────────────
+ * GET /api/profiles returns storage.ProfileWithUser[] — `{ profile, user }`,
+ * with safePublicProfile() applied and projectCount overridden by the
+ * DB-authoritative completed-project count (server/routes.ts:948-957).
+ *
+ * Same PII caveat as the feed: the embedded `user` is the full row. `TalentUser`
+ * below is deliberately narrow for the same reason.
+ */
+
+export type TalentUser = {
+  id: number;
+  name: string;
+  avatar?: string | null;
+  banner?: string | null;
+  headline?: string | null;
+  bio?: string | null;
+  location?: string | null;
+  role?: string | null;
+  accountSubtype?: string | null;
+  createdAt?: string | null;
+};
+
+/** schema.Profile minus the internal accreditation columns. */
+export type TalentProfile = {
+  id: number | null;
+  userId: number;
+  /** JSON-encoded arrays / object on the wire. */
+  specialisms: string;
+  skills: string;
+  portfolioItems: string;
+  socialLinks: string;
+  badges: string;
+  hourlyRate: number | null;
+  dayRate: number | null;
+  /** "available" | "busy" | "unavailable" */
+  availability: string | null;
+  yearsExperience: number | null;
+  reelUrl: string | null;
+  rating: number | null;
+  reviewCount: number | null;
+  projectCount: number | null;
+  cardThumbnail: string | null;
+  isPro: number | null;
+  accreditationLevel: string | null;
+  reviewAverage?: number | null;
+  verifiedReviewCount?: number | null;
+};
+
+/** One row of GET /api/profiles. */
+export type TalentItem = {
+  profile: TalentProfile;
+  user: TalentUser;
+};
+
+/** schema.Review — reviews are inlined into GET /api/profiles/:id. */
+export type Review = {
+  id: number;
+  profileId: number;
+  clientId: number;
+  clientName: string;
+  clientAvatar: string | null;
+  rating: number;
+  comment: string;
+  projectType: string | null;
+  verifiedProjectReview: number | null;
+  createdAt: string;
+};
+
+/**
+ * GET /api/profiles/:id. The id may be a profile id OR a user id — the handler
+ * resolves both. `isClientStub` is returned when the id belongs to a user with
+ * no profile row (a client), in which case `profile.id` is null.
+ */
+export type TalentDetail = {
+  profile: TalentProfile;
+  user: TalentUser;
+  reviews: Review[];
+  isClientStub?: boolean;
+};
+
+/** An entry of the profile's `portfolioItems` JSON array. */
+export type PortfolioItem = {
+  url: string;
+  title?: string;
+  clientName?: string;
+  thumbnail?: string;
+};

@@ -1,534 +1,384 @@
 import { useRouter } from "expo-router";
-import { Briefcase, FileText, Sparkles } from "lucide-react-native";
-import { useCallback, useMemo, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { PenLine, Rss } from "lucide-react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 
-import { loadHome, type HomeData } from "@/api/home";
-import type { BriefInterest, ConversationSummary, ProjectWithDetails } from "@/api/types";
+import { ApiError } from "@/api/errors";
+import { FEED_PAGE, deletePost, loadFeedPage, mergePages, toggleLike } from "@/api/feed";
+import type { FeedItem } from "@/api/types";
 import { AppHeader } from "@/components/AppHeader";
 import { Avatar } from "@/components/Avatar";
-import { Card, CardBody, CardLabel, CardTitle } from "@/components/Card";
-import { DataState } from "@/components/DataState";
 import { EmptyState } from "@/components/EmptyState";
-import { ListRow } from "@/components/ListRow";
-import { Metric } from "@/components/Metric";
+import { ErrorState } from "@/components/ErrorState";
 import { Screen } from "@/components/Screen";
-import { SectionHeader } from "@/components/SectionHeader";
-import { StatusBadge } from "@/components/StatusBadge";
-import { useAsyncResource } from "@/hooks/useAsyncResource";
-import { formatBudget, formatPence, profileProgress } from "@/lib/format";
-import { greetingFor, relativeTime } from "@/lib/time";
-import { useNotifications } from "@/notifications/NotificationsProvider";
+import { SkeletonCard } from "@/components/Skeleton";
+import { Composer } from "@/components/feed/Composer";
+import { OpportunitiesCard } from "@/components/feed/OpportunitiesCard";
+import { PostCard } from "@/components/feed/PostCard";
 import { useSession } from "@/session/SessionProvider";
-import { radii, spacing, useTheme } from "@/theme";
+import { gutter, radii, spacing, typography, useTheme } from "@/theme";
 
 /**
- * Home V1.
+ * Home — the Viewrr Feed.
  *
- * Every number and row on this screen is read from the API. Where a value
- * cannot be read it renders as "—" and where a collection is empty the section
- * is replaced by an empty state — nothing is padded out with sample content,
- * because a dashboard that lies once is never trusted again.
+ * Home is the community feed, not a dashboard: the same LinkedIn-style
+ * chronological stream the website serves at /feed, rebuilt as a native list
+ * rather than a port of the three-column desktop layout. The desktop page has a
+ * left profile rail, a centre column and a right rail of trending tags and
+ * CTAs; on a phone only the centre column is the product, so the rails are
+ * dropped and the one rail item with real value to a creative — open briefs —
+ * becomes a module in the stream.
  *
- * One loader serves the whole screen (api/home), so the cards here share a
- * single round-trip rather than each fetching for themselves.
+ * Two deliberate native upgrades over web:
+ *   • infinite scroll instead of the web's "Load more posts" button, which the
+ *     backend genuinely supports (real LIMIT/OFFSET in storage.getFeedPosts);
+ *   • pull to refresh, which resets to page zero.
+ *
+ * Everything web fakes — Share, Repost, the DM modal, client-derived "Trending
+ * now" — is absent. See PostCard for the reasoning on each.
  */
-
-/** Sections show a few rows and hand off to the tab for the rest. */
-const PREVIEW = 3;
-
-export default function Home() {
-  const { user } = useSession();
+export default function FeedScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const { refresh: refreshBadge } = useNotifications();
+  const { user } = useSession();
+  const viewerId = user?.id;
 
-  const userId = user?.id ?? null;
-  const role = user?.role ?? "client";
+  const [items, setItems] = useState<FeedItem[]>([]);
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [failure, setFailure] = useState<{ offline: boolean; message: string } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [exhausted, setExhausted] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(false);
 
-  const load = useCallback(
-    (signal: AbortSignal) => {
-      if (userId === null) return Promise.reject(new Error("No session"));
-      return loadHome(userId, role, signal);
+  const mounted = useRef(true);
+  const inFlight = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      inFlight.current?.abort();
+    };
+  }, []);
+
+  const describe = useCallback((cause: unknown) => {
+    const offline =
+      cause instanceof ApiError && (cause.kind === "network" || cause.kind === "timeout");
+    return {
+      offline,
+      message:
+        cause instanceof ApiError
+          ? (cause.serverMessage ?? cause.userMessage)
+          : "Something went wrong. Try again.",
+    };
+  }, []);
+
+  /** Load page zero. `mode` only decides which spinner the user sees. */
+  const loadFirstPage = useCallback(
+    async (mode: "initial" | "refresh") => {
+      inFlight.current?.abort();
+      const controller = new AbortController();
+      inFlight.current = controller;
+
+      if (mode === "refresh") setRefreshing(true);
+      else setPhase("loading");
+
+      try {
+        const page = await loadFeedPage({ offset: 0, viewerUserId: viewerId, signal: controller.signal });
+        if (!mounted.current || controller.signal.aborted) return;
+        setItems(page);
+        setExhausted(page.length < FEED_PAGE);
+        setFailure(null);
+        setPhase("ready");
+      } catch (cause) {
+        if (!mounted.current || controller.signal.aborted) return;
+        // A 401 is already handled globally by the API client, which tears the
+        // session down — no point painting an error over a screen that is about
+        // to unmount.
+        if (cause instanceof ApiError && cause.kind === "unauthorized") return;
+        setFailure(describe(cause));
+        setPhase("error");
+      } finally {
+        if (mounted.current && mode === "refresh") setRefreshing(false);
+      }
     },
-    [role, userId],
+    [describe, viewerId],
   );
 
-  const { resource, refreshing, refresh, reload } = useAsyncResource<HomeData>(load, {
-    enabled: userId !== null,
-  });
+  useEffect(() => {
+    void loadFirstPage("initial");
+  }, [loadFirstPage]);
 
-  const onRefresh = useCallback(() => {
-    refresh();
-    refreshBadge();
-  }, [refresh, refreshBadge]);
+  /**
+   * Infinite scroll. `offset` is the number of rows already held rather than a
+   * page counter, so a post inserted while scrolling shifts the window by one
+   * instead of skipping a whole page — and `mergePages` drops the duplicate
+   * that the untied `createdAt DESC` sort can hand back at a boundary.
+   */
+  const loadMore = useCallback(async () => {
+    if (loadingMore || exhausted || phase !== "ready" || items.length === 0) return;
 
-  const firstName = (user?.displayName ?? "").trim().split(/\s+/)[0] || "there";
+    setLoadingMore(true);
+    try {
+      const page = await loadFeedPage({ offset: items.length, viewerUserId: viewerId });
+      if (!mounted.current) return;
+      setItems((current) => mergePages(current, page));
+      if (page.length < FEED_PAGE) setExhausted(true);
+    } catch {
+      // A failed page is not a failed screen: keep what is on screen, stop
+      // paging, and let a pull-to-refresh recover.
+      if (mounted.current) setExhausted(true);
+    } finally {
+      if (mounted.current) setLoadingMore(false);
+    }
+  }, [exhausted, items.length, loadingMore, phase, viewerId]);
+
+  /**
+   * Optimistic like with rollback.
+   *
+   * The endpoint toggles rather than sets, so it is never retried automatically:
+   * a blind retry after a timeout would un-like the post. On failure the row
+   * simply returns to its previous state.
+   */
+  const onToggleLike = useCallback(
+    (postId: number) => {
+      let previous: FeedItem | undefined;
+
+      setItems((current) =>
+        current.map((item) => {
+          if (item.post.id !== postId) return item;
+          previous = item;
+          return {
+            ...item,
+            liked: !item.liked,
+            post: {
+              ...item.post,
+              likeCount: Math.max(0, item.post.likeCount + (item.liked ? -1 : 1)),
+            },
+          };
+        }),
+      );
+
+      void toggleLike(postId)
+        .then((result) => {
+          if (!mounted.current) return;
+          // Adopt the server's counter — it is authoritative, and the column is
+          // updated non-atomically server-side, so it can differ from ours.
+          setItems((current) =>
+            current.map((item) =>
+              item.post.id === postId
+                ? { ...item, liked: result.liked, post: { ...item.post, likeCount: result.likeCount } }
+                : item,
+            ),
+          );
+        })
+        .catch(() => {
+          if (!mounted.current || !previous) return;
+          const restore = previous;
+          setItems((current) =>
+            current.map((item) => (item.post.id === postId ? restore : item)),
+          );
+        });
+    },
+    [],
+  );
+
+  /** The count column is denormalised, so nudge it locally after a comment. */
+  const onCommentAdded = useCallback((postId: number) => {
+    setItems((current) =>
+      current.map((item) =>
+        item.post.id === postId
+          ? { ...item, post: { ...item.post, commentCount: item.post.commentCount + 1 } }
+          : item,
+      ),
+    );
+  }, []);
+
+  const onDelete = useCallback((postId: number) => {
+    const snapshot = items;
+    setItems((current) => current.filter((item) => item.post.id !== postId));
+
+    void deletePost(postId).catch(() => {
+      // Ownership is enforced server-side; a rejection means the row is still
+      // there, so put it back rather than leaving the list lying.
+      if (mounted.current) setItems(snapshot);
+    });
+  }, [items]);
+
+  const openAuthor = useCallback(
+    (userId: number) => router.push(`/(app)/discover/${userId}`),
+    [router],
+  );
+
+  const isCreative = user?.role === "freelancer";
+
+  const header = (
+    <View style={styles.header}>
+      <Pressable
+        onPress={() => setComposerOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel="Share an update"
+        style={({ pressed }) => [
+          styles.composerRow,
+          { backgroundColor: colors.card, borderColor: colors.border },
+          pressed && styles.pressed,
+        ]}
+      >
+        <Avatar name={user?.displayName ?? "You"} size="sm" />
+        <Text style={[styles.composerHint, { color: colors.mutedForeground }]} numberOfLines={1}>
+          Share an update with the community
+        </Text>
+        <PenLine size={16} color={colors.primary} strokeWidth={2.2} />
+      </Pressable>
+
+      {isCreative ? <OpportunitiesCard /> : null}
+    </View>
+  );
+
+  if (phase === "loading") {
+    return (
+      <Screen edges={["top", "left", "right"]} flush>
+        <View style={styles.gutter}>
+          <AppHeader title="Home" brand />
+        </View>
+        <View style={styles.skeletons}>
+          <SkeletonCard lines={3} />
+          <SkeletonCard lines={4} />
+          <SkeletonCard lines={2} />
+        </View>
+      </Screen>
+    );
+  }
+
+  if (phase === "error" && failure) {
+    return (
+      <Screen edges={["top", "left", "right"]}>
+        <AppHeader title="Home" brand />
+        <ErrorState
+          title={failure.offline ? "You're offline" : "The feed didn't load"}
+          message={
+            failure.offline
+              ? "Viewrr can't reach the network right now. Check your connection and try again."
+              : failure.message
+          }
+          onRetry={() => void loadFirstPage("initial")}
+        />
+      </Screen>
+    );
+  }
 
   return (
-    <Screen
-      scroll
-      edges={["top", "left", "right"]}
-      refreshing={refreshing}
-      onRefresh={resource.phase === "ready" ? onRefresh : undefined}
-    >
-      <AppHeader title={firstName} eyebrow={greetingFor()} brand />
+    <Screen edges={["top", "left", "right"]} flush>
+      <View style={styles.gutter}>
+        <AppHeader title="Home" brand />
+      </View>
 
-      <DataState resource={resource} onRetry={reload} skeleton="dashboard">
-        {(data) =>
-          data.role === "freelancer" ? (
-            <CreativeHome data={data} colors={colors} router={router} />
-          ) : (
-            <ClientHome data={data} colors={colors} router={router} />
-          )
+      <FlatList
+        data={items}
+        keyExtractor={(item) => String(item.post.id)}
+        renderItem={({ item }) => (
+          <PostCard
+            item={item}
+            viewerId={viewerId ?? -1}
+            onOpenAuthor={openAuthor}
+            onToggleLike={onToggleLike}
+            onCommentAdded={onCommentAdded}
+            onDelete={onDelete}
+          />
+        )}
+        ListHeaderComponent={header}
+        ItemSeparatorComponent={() => <View style={styles.separator} />}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        onEndReached={() => void loadMore()}
+        onEndReachedThreshold={0.6}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void loadFirstPage("refresh")}
+            tintColor={colors.mutedForeground}
+            colors={[colors.primary]}
+          />
         }
-      </DataState>
+        ListEmptyComponent={
+          <EmptyState
+            icon={Rss}
+            title="The feed is quiet"
+            body="Posts from creatives and clients you work alongside show up here. Share the first update."
+            actionLabel="Share an update"
+            onAction={() => setComposerOpen(true)}
+            inline
+          />
+        }
+        ListFooterComponent={
+          loadingMore ? (
+            <ActivityIndicator color={colors.mutedForeground} style={styles.footer} />
+          ) : exhausted && items.length > 0 ? (
+            <Text style={[styles.caughtUp, { color: colors.mutedForeground }]}>
+              You&rsquo;re all caught up
+            </Text>
+          ) : null
+        }
+      />
+
+      <Composer
+        visible={composerOpen}
+        onClose={() => setComposerOpen(false)}
+        onPosted={(created) => {
+          // Prepend rather than refetch: the server's 2-minute feed cache is not
+          // busted by every write, so a refetch can briefly hide the new post.
+          setItems((current) => mergePages([created], current));
+        }}
+      />
     </Screen>
   );
 }
 
-/* ── shared pieces ───────────────────────────────────────────────────────── */
-
-type Router = ReturnType<typeof useRouter>;
-type Colors = ReturnType<typeof useTheme>["colors"];
-
-function activeProjects(projects: ProjectWithDetails[]): ProjectWithDetails[] {
-  return projects.filter((entry) => entry.project.status === "active");
-}
-
-function unreadMessages(conversations: ConversationSummary[]): number {
-  return conversations.reduce((total, conversation) => total + (conversation.unread || 0), 0);
-}
-
-function ProjectRow({
-  entry,
-  viewerRole,
-  onPress,
-}: {
-  entry: ProjectWithDetails;
-  viewerRole: "client" | "freelancer";
-  onPress: () => void;
-}) {
-  const { project, client, freelancer } = entry;
-  // Show the other side of the job, never the user's own name.
-  const counterpart = viewerRole === "client" ? freelancer : client;
-  const amount = formatPence(project.agreedAmountPence);
-
-  return (
-    <ListRow
-      title={project.title}
-      subtitle={counterpart?.name ? `with ${counterpart.name}` : undefined}
-      meta={amount ? `${amount} · stage ${project.currentStage}` : `Stage ${project.currentStage}`}
-      leading={<Avatar name={counterpart?.name ?? "Viewrr"} uri={counterpart?.avatar} size="md" />}
-      trailing={<StatusBadge status={project.status} />}
-      chevron={false}
-      onPress={onPress}
-    />
-  );
-}
-
-function ConversationRow({
-  conversation,
-  onPress,
-}: {
-  conversation: ConversationSummary;
-  onPress: () => void;
-}) {
-  return (
-    <ListRow
-      title={conversation.otherName}
-      subtitle={conversation.lastMessage}
-      meta={relativeTime(conversation.lastAt)}
-      leading={
-        <Avatar name={conversation.otherName} uri={conversation.otherAvatar} size="md" />
-      }
-      highlighted={conversation.unread > 0}
-      onPress={onPress}
-    />
-  );
-}
-
-function InterestRow({
-  interest,
-  counterparty,
-  onPress,
-}: {
-  interest: BriefInterest;
-  /** Whose name to show: the applicant (client view) or the brief owner (creative view). */
-  counterparty: "freelancer" | "client";
-  onPress: () => void;
-}) {
-  const price = formatPence(interest.counterOfferPence ?? interest.proposedPricePence);
-  const name = counterparty === "freelancer" ? interest.freelancerName : interest.briefClientName;
-  const avatar = counterparty === "freelancer" ? interest.freelancerAvatar : null;
-
-  return (
-    <ListRow
-      title={interest.briefTitle}
-      subtitle={name}
-      meta={price ? `${price} · ${relativeTime(interest.createdAt)}` : relativeTime(interest.createdAt)}
-      leading={<Avatar name={name} uri={avatar} size="md" />}
-      trailing={<StatusBadge status={interest.status} />}
-      chevron={false}
-      onPress={onPress}
-    />
-  );
-}
-
-function Section({
-  title,
-  count,
-  actionLabel,
-  onAction,
-  children,
-}: {
-  title: string;
-  count?: number;
-  actionLabel?: string;
-  onAction?: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <View style={styles.section}>
-      <SectionHeader
-        title={title}
-        {...(typeof count === "number" ? { count } : {})}
-        {...(actionLabel && onAction ? { actionLabel, onAction } : {})}
-      />
-      <View>{children}</View>
-    </View>
-  );
-}
-
-/* ── creative ────────────────────────────────────────────────────────────── */
-
-function CreativeHome({
-  data,
-  colors,
-  router,
-}: {
-  data: Extract<HomeData, { role: "freelancer" }>;
-  colors: Colors;
-  router: Router;
-}) {
-  const active = useMemo(() => activeProjects(data.projects), [data.projects]);
-  const unread = unreadMessages(data.conversations);
-  const liveInterests = useMemo(
-    () => data.interests.filter((interest) => interest.status !== "declined"),
-    [data.interests],
-  );
-  const openBriefs = useMemo(
-    () => data.briefs.filter((brief) => brief.status === "open" || brief.isActive).slice(0, PREVIEW),
-    [data.briefs],
-  );
-
-  const progress = profileProgress(data.profile, data.user);
-  const nothingOn = active.length === 0 && liveInterests.length === 0 && unread === 0;
-
-  return (
-    <View style={styles.body}>
-      <View style={styles.metrics}>
-        <Metric
-          label="Active projects"
-          value={active.length}
-          onPress={() => router.push("/(app)/work")}
-        />
-        <Metric
-          label="Unread messages"
-          value={unread}
-          emphasis
-          onPress={() => router.push("/(app)/messages")}
-        />
-        <Metric
-          label="Live applications"
-          value={liveInterests.length}
-          onPress={() => router.push("/(app)/briefs")}
-        />
-      </View>
-
-      {progress.nextStep ? (
-        <Card style={styles.card}>
-          <CardLabel>Your profile</CardLabel>
-          <CardTitle>{progress.percent}% complete</CardTitle>
-          <View style={[styles.track, { backgroundColor: colors.muted }]}>
-            <View
-              style={[
-                styles.fill,
-                { width: `${Math.max(progress.percent, 4)}%`, backgroundColor: colors.primary },
-              ]}
-            />
-          </View>
-          <CardBody>
-            {progress.complete} of {progress.total} done. Next: {progress.nextStep.toLowerCase()}.
-          </CardBody>
-        </Card>
-      ) : null}
-
-      {active.length > 0 ? (
-        <Section
-          title="Active work"
-          count={active.length}
-          actionLabel="All work"
-          onAction={() => router.push("/(app)/work")}
-        >
-          {active.slice(0, PREVIEW).map((entry) => (
-            <ProjectRow
-              key={entry.project.id}
-              entry={entry}
-              viewerRole="freelancer"
-              onPress={() =>
-                router.push({
-                  pathname: "/(app)/work/[projectId]",
-                  params: { projectId: String(entry.project.id) },
-                })
-              }
-            />
-          ))}
-        </Section>
-      ) : null}
-
-      {liveInterests.length > 0 ? (
-        <Section
-          title="Your applications"
-          count={liveInterests.length}
-          actionLabel="Briefs"
-          onAction={() => router.push("/(app)/briefs")}
-        >
-          {liveInterests.slice(0, PREVIEW).map((interest) => (
-            <InterestRow
-              key={interest.id}
-              interest={interest}
-              counterparty="client"
-              onPress={() =>
-                router.push({
-                  pathname: "/(app)/briefs/[briefId]",
-                  params: { briefId: String(interest.briefId) },
-                })
-              }
-            />
-          ))}
-        </Section>
-      ) : null}
-
-      {openBriefs.length > 0 ? (
-        <Section title="Open briefs" actionLabel="See all" onAction={() => router.push("/(app)/briefs")}>
-          {openBriefs.map((brief) => {
-            const budget = formatBudget(brief.budgetMin, brief.budgetMax, brief.budgetType);
-            return (
-              <ListRow
-                key={brief.id}
-                title={brief.title}
-                subtitle={[brief.category, brief.remote ? "Remote" : brief.location]
-                  .filter(Boolean)
-                  .join(" · ")}
-                meta={budget ?? relativeTime(brief.createdAt)}
-                leading={<Avatar name={brief.clientName} uri={brief.clientAvatar} size="md" />}
-                onPress={() =>
-                  router.push({
-                    pathname: "/(app)/briefs/[briefId]",
-                    params: { briefId: String(brief.id) },
-                  })
-                }
-              />
-            );
-          })}
-        </Section>
-      ) : null}
-
-      {data.conversations.length > 0 ? (
-        <Section title="Recent messages" actionLabel="Inbox" onAction={() => router.push("/(app)/messages")}>
-          {data.conversations.slice(0, PREVIEW).map((conversation) => (
-            <ConversationRow
-              key={conversation.otherId}
-              conversation={conversation}
-              onPress={() => router.push("/(app)/messages")}
-            />
-          ))}
-        </Section>
-      ) : null}
-
-      {nothingOn && openBriefs.length === 0 ? (
-        <EmptyState
-          inline
-          icon={Sparkles}
-          title="Nothing on right now"
-          body="When a brief matches your specialisms or a client gets in touch, it will show up here."
-          actionLabel="Browse briefs"
-          onAction={() => router.push("/(app)/briefs")}
-        />
-      ) : null}
-    </View>
-  );
-}
-
-/* ── client ──────────────────────────────────────────────────────────────── */
-
-function ClientHome({
-  data,
-  colors,
-  router,
-}: {
-  data: Extract<HomeData, { role: "client" }>;
-  colors: Colors;
-  router: Router;
-}) {
-  const active = useMemo(() => activeProjects(data.projects), [data.projects]);
-  const unread = unreadMessages(data.conversations);
-  const newApplicants = useMemo(
-    () => data.interests.filter((interest) => interest.status === "pending"),
-    [data.interests],
-  );
-  const openBriefs = useMemo(
-    () => data.myBriefs.filter((brief) => brief.status === "open" || brief.isActive),
-    [data.myBriefs],
-  );
-
-  const nothingOn =
-    active.length === 0 && openBriefs.length === 0 && data.interests.length === 0 && unread === 0;
-
-  return (
-    <View style={styles.body}>
-      <View style={styles.metrics}>
-        <Metric
-          label="Active projects"
-          value={active.length}
-          onPress={() => router.push("/(app)/work")}
-        />
-        <Metric
-          label="Unread messages"
-          value={unread}
-          emphasis
-          onPress={() => router.push("/(app)/messages")}
-        />
-        <Metric label="New applicants" value={newApplicants.length} emphasis />
-      </View>
-
-      {newApplicants.length > 0 ? (
-        <Section title="Waiting on you" count={newApplicants.length}>
-          {newApplicants.slice(0, PREVIEW).map((interest) => (
-            <InterestRow
-              key={interest.id}
-              interest={interest}
-              counterparty="freelancer"
-              onPress={() =>
-                router.push({
-                  pathname: "/(app)/briefs/[briefId]",
-                  params: { briefId: String(interest.briefId) },
-                })
-              }
-            />
-          ))}
-        </Section>
-      ) : null}
-
-      {active.length > 0 ? (
-        <Section
-          title="Active projects"
-          count={active.length}
-          actionLabel="All work"
-          onAction={() => router.push("/(app)/work")}
-        >
-          {active.slice(0, PREVIEW).map((entry) => (
-            <ProjectRow
-              key={entry.project.id}
-              entry={entry}
-              viewerRole="client"
-              onPress={() =>
-                router.push({
-                  pathname: "/(app)/work/[projectId]",
-                  params: { projectId: String(entry.project.id) },
-                })
-              }
-            />
-          ))}
-        </Section>
-      ) : null}
-
-      {openBriefs.length > 0 ? (
-        <Section title="Your open briefs" count={openBriefs.length}>
-          {openBriefs.slice(0, PREVIEW).map((brief) => (
-            <ListRow
-              key={brief.id}
-              title={brief.title}
-              subtitle={[brief.category, brief.remote ? "Remote" : brief.location]
-                .filter(Boolean)
-                .join(" · ")}
-              meta={`${brief.applicationCount} ${
-                brief.applicationCount === 1 ? "applicant" : "applicants"
-              } · ${relativeTime(brief.createdAt)}`}
-              leading={
-                <View style={[styles.briefGlyph, { backgroundColor: colors.secondary }]}>
-                  <FileText size={18} color={colors.mutedForeground} strokeWidth={2} />
-                </View>
-              }
-              trailing={<StatusBadge status={brief.status} />}
-              chevron={false}
-              onPress={() =>
-                router.push({
-                  pathname: "/(app)/briefs/[briefId]",
-                  params: { briefId: String(brief.id) },
-                })
-              }
-            />
-          ))}
-        </Section>
-      ) : null}
-
-      {data.conversations.length > 0 ? (
-        <Section title="Recent messages" actionLabel="Inbox" onAction={() => router.push("/(app)/messages")}>
-          {data.conversations.slice(0, PREVIEW).map((conversation) => (
-            <ConversationRow
-              key={conversation.otherId}
-              conversation={conversation}
-              onPress={() => router.push("/(app)/messages")}
-            />
-          ))}
-        </Section>
-      ) : null}
-
-      {nothingOn ? (
-        <EmptyState
-          inline
-          icon={Briefcase}
-          title="Nothing on right now"
-          body="Post a brief or find a creative, and your projects, applicants and messages will gather here."
-          actionLabel="Find creatives"
-          onAction={() => router.push("/(app)/discover")}
-        />
-      ) : null}
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  body: {
-    gap: spacing[5],
-    paddingBottom: spacing[4],
+  gutter: {
+    paddingHorizontal: gutter,
   },
-  metrics: {
+  list: {
+    paddingHorizontal: gutter,
+    paddingBottom: spacing[8],
+    gap: 0,
+  },
+  header: {
+    gap: spacing[3],
+    paddingBottom: spacing[3],
+  },
+  composerRow: {
     flexDirection: "row",
-    gap: spacing[3],
-  },
-  card: {
-    gap: spacing[3],
-  },
-  track: {
-    height: 6,
-    borderRadius: radii.full,
-    overflow: "hidden",
-  },
-  fill: {
-    height: "100%",
-    borderRadius: radii.full,
-  },
-  section: {
-    gap: spacing[1],
-  },
-  briefGlyph: {
-    width: 44,
-    height: 44,
-    borderRadius: radii.full,
     alignItems: "center",
-    justifyContent: "center",
+    gap: spacing[3],
+    paddingHorizontal: spacing[3],
+    paddingVertical: spacing[3],
+    borderRadius: radii.full,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  composerHint: {
+    ...typography.small,
+    flex: 1,
+  },
+  pressed: {
+    opacity: 0.8,
+  },
+  separator: {
+    height: spacing[3],
+  },
+  skeletons: {
+    paddingHorizontal: gutter,
+    gap: spacing[3],
+  },
+  footer: {
+    paddingVertical: spacing[5],
+  },
+  caughtUp: {
+    ...typography.caption,
+    textAlign: "center",
+    paddingVertical: spacing[6],
   },
 });

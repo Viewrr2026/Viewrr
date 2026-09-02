@@ -1,53 +1,46 @@
-import type { SessionUser } from "@/session/SessionProvider";
-
 /**
  * The permanent five-position bottom navigation.
  *
- * Positions are fixed. Only slot 2 changes by role, and it changes to the
- * surface that role actually opens the app for:
+ * Every normal user — client, creative, admin — gets the same five primary
+ * destinations, in the same order, and they mirror the website's own product
+ * surfaces:
  *
- *   position   client      creative
- *   1          Home        Home
- *   2          Discover    Briefs
- *   3          Work        Work
- *   4          Messages    Messages
- *   5          Profile     Profile
+ *   1  Home       the Viewrr Feed          (web /feed)
+ *   2  Discover   Browse Talent            (web /marketplace)
+ *   3  Work       projects and delivery    (web /your-work)
+ *   4  Messages   inbox and conversations  (web /messages)
+ *   5  Profile    profile, settings, account
  *
- * A creative does not hire creatives, and a client does not apply to briefs,
- * so giving both the same slot-2 destination would waste a primary tab for one
- * of them. Everything else stays put, so muscle memory survives a role change.
+ * Navigation is deliberately NOT role-adaptive. A tab bar that rearranges
+ * itself per account type teaches two different products, breaks muscle memory
+ * the moment an account changes role, and makes every screenshot, support
+ * answer and onboarding note conditional. Role differences belong inside the
+ * screens — what the Feed shows a creative, what actions a profile offers —
+ * not in the primary navigation.
+ *
+ * Brief opportunities still matter to creatives; they surface inside the Feed
+ * and Work rather than displacing Browse Talent from the bar.
  */
-
-export type TabRole = "client" | "creative";
 
 export type TabSlot = {
   /** Expo Router segment under app/(app). */
-  name: "index" | "discover" | "briefs" | "work" | "messages" | "profile";
+  name: "index" | "discover" | "work" | "messages" | "profile";
   label: string;
-  icon: "home" | "discover" | "briefs" | "work" | "messages" | "profile";
+  icon: "home" | "discover" | "work" | "messages" | "profile";
 };
 
-/** Admin accounts use the client shell — the founder console stays on web. */
-export function tabRoleFor(user: SessionUser | null): TabRole {
-  return user?.role === "freelancer" ? "creative" : "client";
-}
-
-const HOME: TabSlot = { name: "index", label: "Home", icon: "home" };
-const DISCOVER: TabSlot = { name: "discover", label: "Discover", icon: "discover" };
-const BRIEFS: TabSlot = { name: "briefs", label: "Briefs", icon: "briefs" };
-const WORK: TabSlot = { name: "work", label: "Work", icon: "work" };
-const MESSAGES: TabSlot = { name: "messages", label: "Messages", icon: "messages" };
-const PROFILE: TabSlot = { name: "profile", label: "Profile", icon: "profile" };
-
-export function tabsFor(role: TabRole): TabSlot[] {
-  return [HOME, role === "creative" ? BRIEFS : DISCOVER, WORK, MESSAGES, PROFILE];
-}
+export const TAB_SLOTS: readonly TabSlot[] = [
+  { name: "index", label: "Home", icon: "home" },
+  { name: "discover", label: "Discover", icon: "discover" },
+  { name: "work", label: "Work", icon: "work" },
+  { name: "messages", label: "Messages", icon: "messages" },
+  { name: "profile", label: "Profile", icon: "profile" },
+] as const;
 
 /**
- * Routes that exist in the tab navigator but must never draw a tab button:
- * the notification centre (reached from the header bell), the role's unused
- * slot-2 sibling, and the account routes.
+ * Routes that live in the tab navigator but must never draw a tab button:
+ * the notification centre (reached from the header bell everywhere), the
+ * briefs stack (reached from the Feed opportunities module and from Work),
+ * and the account routes.
  */
-export function hiddenTabsFor(role: TabRole): string[] {
-  return [role === "creative" ? DISCOVER.name : BRIEFS.name, "notifications", "account"];
-}
+export const HIDDEN_TABS: readonly string[] = ["briefs", "notifications", "account"] as const;

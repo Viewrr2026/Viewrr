@@ -59,10 +59,16 @@ function describe(error: unknown): ResourceFailure {
  * @param loader  Receives an AbortSignal — pass it to every request so an
  *                unmount or a rapid re-fetch cancels the previous round-trip.
  * @param enabled Skip loading entirely (e.g. before a user id exists).
+ * @param deps    Values the loader reads. The loader itself is held in a ref so
+ *                callers can pass an inline arrow without re-running on every
+ *                render — which also means a change of closure alone will NOT
+ *                refetch. Any screen whose loader depends on state the user can
+ *                change (filters, a search term) must list that state here, or
+ *                its first response is the only one it will ever show.
  */
 export function useAsyncResource<T>(
   loader: (signal: AbortSignal) => Promise<T>,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled = true, deps = [] }: { enabled?: boolean; deps?: readonly unknown[] } = {},
 ): AsyncResource<T> {
   const [resource, setResource] = useState<Resource<T>>({ phase: "loading" });
   const [refreshing, setRefreshing] = useState(false);
@@ -111,9 +117,11 @@ export function useAsyncResource<T>(
     [enabled],
   );
 
+  // Serialised so a fresh array literal on each render does not retrigger.
+  const depKey = JSON.stringify(deps);
   useEffect(() => {
     void run("initial");
-  }, [run]);
+  }, [run, depKey]);
 
   const mutate = useCallback((update: (current: T) => T) => {
     setResource((current) =>
