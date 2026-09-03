@@ -23,7 +23,6 @@
         "gradleCommand": ":app:assembleDebug"
       }
     },
-
     "development-simulator": {
       "extends": "development",
       "ios": {
@@ -32,13 +31,13 @@
         "simulator": true
       }
     },
-
     "preview": {
       "developmentClient": false,
       "distribution": "internal",
       "autoIncrement": true,
       "env": {
-        "APP_ENV": "staging"
+        "APP_ENV": "staging",
+        "EXPO_PUBLIC_API_BASE_URL": "https://viewrr-staging.onrender.com"
       },
       "ios": {
         "resourceClass": "m-medium",
@@ -49,7 +48,6 @@
         "buildType": "apk"
       }
     },
-
     "production": {
       "developmentClient": false,
       "distribution": "store",
