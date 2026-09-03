@@ -36,6 +36,8 @@ import { radii, spacing, typography, useTheme } from "@/theme";
  * Appearance is local-only and stays that way: the theme override lives in
  * ThemeProvider for the session, exactly as the web toggle does.
  */
+const COMMUNITY_GUIDELINES_URL = "https://www.viewrr.co.uk/#/community-guidelines";
+
 export default function SettingsScreen() {
   const router = useRouter();
   const { colors, scheme, isSystem, toggle, useSystem } = useTheme();
@@ -120,6 +122,13 @@ export default function SettingsScreen() {
         <Card>
           <CardLabel>Help and legal</CardLabel>
           <View>
+            <ListRow
+              title="Community Guidelines"
+              subtitle="Rules for content, conduct, reporting and moderation"
+              leading={glyph(FileText)}
+              onPress={() => void Linking.openURL(COMMUNITY_GUIDELINES_URL)}
+            />
+            <Divider />
             <ListRow
               title="Contact support"
               subtitle={`Email the Viewrr team at ${SUPPORT_EMAIL}`}

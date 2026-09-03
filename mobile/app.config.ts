@@ -168,6 +168,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // PRD-019 native auth: the Bearer token is held in the iOS Keychain /
     // Android Keystore via expo-secure-store. Never AsyncStorage.
     "expo-secure-store",
+    "expo-image",
     [
       // Native push (Decision 15). The plugin only configures the native
       // notification presentation; permission is requested at runtime, from a

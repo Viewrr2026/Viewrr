@@ -18,6 +18,7 @@ import PayoutsEarnings from "@/pages/PayoutsEarnings";
 import NotFound from "@/pages/not-found";
 import Terms from "@/pages/Terms";
 import Privacy from "@/pages/Privacy";
+import CommunityGuidelines from "@/pages/CommunityGuidelines";
 import Briefs from "@/pages/Briefs";
 import PostBrief from "@/pages/PostBrief";
 import Workspace from "@/pages/Workspace";
@@ -66,6 +67,7 @@ export default function App() {
               <Route path="/payouts" component={PayoutsEarnings} />
               <Route path="/terms" component={Terms} />
               <Route path="/privacy" component={Privacy} />
+              <Route path="/community-guidelines" component={CommunityGuidelines} />
               <Route path="/briefs" component={Briefs} />
               <Route path="/briefs/new" component={PostBrief} />
               <Route path="/workspace" component={Workspace} />

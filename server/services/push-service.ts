@@ -510,6 +510,15 @@ export function deriveTargeting(
   if ((head === "project" || head === "projects" || head === "invoice") && pathId) {
     return { targetType: "project", targetId: pathId };
   }
+
+  // Generic system notices can still carry a meaningful web destination.
+  // /your-work has no id, but explicitly mapping it to the project/work
+  // neighbourhood prevents native taps (e.g. declined invitations) falling
+  // all the way back to Home.
+  if (head === "your-work") {
+    return { targetType: "project", targetId: null };
+  }
+
   if (key === "pushSocial" && (t === "profile_view" || t.startsWith("connection_"))) {
     return { targetType: "profile", targetId: actorNum };
   }
