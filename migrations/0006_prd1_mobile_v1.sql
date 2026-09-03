@@ -23,35 +23,32 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified    BOOLEAN NOT NULL DE
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP NULL;
 
 -- GRANDFATHERING BACKFILL — Decision 4.
--- Every account that existed before this migration is marked verified so that
--- turning on verification enforcement can NEVER lock out an existing user.
--- `users.created_at` is TEXT in this database, so it is cast before comparison.
--- Rows with an unparseable/NULL created_at are ALSO grandfathered (fail-open):
--- an existing account with bad data must not be locked out either.
-UPDATE users
-SET    email_verified    = TRUE,
-       email_verified_at = NOW()
-WHERE  email_verified = FALSE
-  -- fail-open: an existing row with unparseable/absent created_at is still an
-  -- EXISTING account and must be grandfathered, not locked out.
-  --
-  -- CASE, not OR: SQL boolean operators have no guaranteed evaluation order, so
-  -- an `OR created_at::timestamptz < ...` form can still evaluate the cast on a
-  -- row the regex was meant to exclude and abort the whole migration. CASE is
-  -- the only construct Postgres guarantees to evaluate in written order, so the
-  -- cast is provably unreachable for a malformed value.
-  AND CASE
-        WHEN created_at IS NULL THEN TRUE
-        WHEN created_at !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN TRUE
-        ELSE created_at::timestamptz < '2026-09-02T00:00:00Z'::timestamptz
-      END;
--- Verified read-only against production on 2026-09-02 before authoring: 30 user
--- rows, 0 NULL created_at, 0 unparseable, all between 2026-05-01 and 2026-08-31.
--- Every existing account is therefore grandfathered by this statement.
--- (No post-backfill assertion here on purpose: this file must stay re-runnable,
--- and on a second run legitimately-unverified NEW signups would exist.)
--- Verify manually after the first run:
---   SELECT COUNT(*) FROM users WHERE email_verified = FALSE;  -- expect 0
+-- On the FIRST application of Mobile V1, every account that already exists is
+-- considered verified. Email verification applies only to accounts created
+-- after this migration is in place.
+--
+-- Guarding the backfill with schema_migrations keeps the file safely
+-- re-runnable: a later re-run must never accidentally verify genuinely new,
+-- still-unverified accounts.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM schema_migrations
+    WHERE migration_name = '0006_prd1_mobile_v1'
+  ) THEN
+    UPDATE users
+    SET email_verified = TRUE,
+        email_verified_at = NOW()
+    WHERE email_verified = FALSE;
+  END IF;
+END
+$$;
+
+-- After the first run, verify manually:
+--   SELECT COUNT(*) FROM users WHERE email_verified = FALSE;
+-- Existing users should be verified. New registrations made after migration
+-- remain subject to the normal verification flow.
 
 -- ─── account_deletion_requests: scheduled deferral (Decision 6) ─────────────
 ALTER TABLE account_deletion_requests ADD COLUMN IF NOT EXISTS scheduled_for   TIMESTAMP NULL;
