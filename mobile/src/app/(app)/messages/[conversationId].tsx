@@ -1,4 +1,5 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MessageCircle } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -71,6 +72,7 @@ let pendingSeq = 0;
 export default function Conversation() {
   const params = useLocalSearchParams<{ conversationId?: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { user } = useSession();
   const { colors } = useTheme();
 
@@ -357,6 +359,7 @@ export default function Conversation() {
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? insets.bottom : 0}
       >
         <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={6}>
           {() =>
