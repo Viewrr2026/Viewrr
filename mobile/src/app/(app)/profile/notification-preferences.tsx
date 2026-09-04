@@ -1,6 +1,6 @@
 import { Mail, Smartphone } from "lucide-react-native";
 import { useCallback, useState } from "react";
-import { StyleSheet, Switch, Text, View } from "react-native";
+import { Linking, Pressable, StyleSheet, Switch, Text, View } from "react-native";
 
 import {
   fetchEmailPreferences,
@@ -18,6 +18,7 @@ import { Card, CardBody, CardLabel } from "@/components/Card";
 import { DataState } from "@/components/DataState";
 import { Screen } from "@/components/Screen";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
+import { usePush } from "@/push";
 import { useSession } from "@/session/SessionProvider";
 import { spacing, typography, useTheme } from "@/theme";
 
@@ -123,6 +124,7 @@ const PUSH_ROWS: { key: PushPreferenceKey; label: string; description: string }[
 export default function NotificationPreferences() {
   const { user } = useSession();
   const { colors } = useTheme();
+  const pushDevice = usePush();
   const userId = user?.id ?? null;
 
   const [pending, setPending] = useState<string | null>(null);
@@ -203,6 +205,26 @@ export default function NotificationPreferences() {
     [mutate],
   );
 
+  const handleDevicePushAction = async () => {
+    setError(null);
+
+    if (pushDevice.enabled || pushDevice.permission === "denied") {
+      try {
+        await Linking.openSettings();
+      } catch {
+        setError("Open your device settings and allow notifications for Viewrr.");
+      }
+      return;
+    }
+
+    const enabled = await pushDevice.enable();
+    if (!enabled) {
+      setError(
+        "Push notifications could not be enabled. If you declined permission, allow notifications for Viewrr in iPhone Settings and try again.",
+      );
+    }
+  };
+
   return (
     <Screen
       scroll
@@ -247,6 +269,56 @@ export default function NotificationPreferences() {
                 These control push notifications on your devices. They are stored separately from
                 your email settings above.
               </CardBody>
+
+              <View style={[styles.devicePanel, { borderColor: colors.border }]}>
+                <View style={styles.deviceCopy}>
+                  <Text style={[styles.deviceTitle, { color: colors.foreground }]}>
+                    {pushDevice.enabled
+                      ? "Enabled on this device"
+                      : pushDevice.permission === "denied"
+                        ? "Notifications are off in device settings"
+                        : pushDevice.permission === "granted"
+                          ? "Finish notification setup"
+                          : "Notifications on this device"}
+                  </Text>
+
+                  <Text style={[styles.deviceBody, { color: colors.mutedForeground }]}>
+                    {pushDevice.enabled
+                      ? "This iPhone is registered with Viewrr and can receive push notifications."
+                      : pushDevice.permission === "denied"
+                        ? "Allow notifications for Viewrr in your iPhone settings to receive alerts."
+                        : pushDevice.permission === "granted"
+                          ? (pushDevice.error ??
+                            "Permission is allowed, but this iPhone still needs to register for push.")
+                          : "Allow Viewrr to send notifications to this iPhone. You can change this later in Settings."}
+                  </Text>
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={pushDevice.busy}
+                  onPress={() => void handleDevicePushAction()}
+                  style={({ pressed }) => [
+                    styles.deviceAction,
+                    {
+                      borderColor: colors.primary,
+                      opacity: pressed || pushDevice.busy ? 0.6 : 1,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.deviceActionText, { color: colors.primary }]}>
+                    {pushDevice.enabled
+                      ? "Device settings"
+                      : pushDevice.permission === "denied"
+                        ? "Open device settings"
+                        : pushDevice.permission === "granted"
+                          ? "Try again"
+                          : pushDevice.busy
+                            ? "Enabling…"
+                            : "Enable notifications"}
+                  </Text>
+                </Pressable>
+              </View>
 
               {snapshot.push ? (
                 <View style={styles.rows}>
@@ -329,6 +401,31 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing[2],
+  },
+  devicePanel: {
+    gap: spacing[3],
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: spacing[3],
+  },
+  deviceCopy: {
+    gap: spacing[1],
+  },
+  deviceTitle: {
+    ...typography.smallBold,
+  },
+  deviceBody: {
+    ...typography.caption,
+  },
+  deviceAction: {
+    alignSelf: "flex-start",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: spacing[3],
+    paddingVertical: spacing[2],
+  },
+  deviceActionText: {
+    ...typography.smallBold,
   },
   rows: {
     gap: spacing[1],
