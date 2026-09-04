@@ -91,6 +91,7 @@ export default function App() {
               <Route path="/invoice/:projectId" component={Invoice} />
               <Route path="/settings/notifications" component={NotificationPreferences} />
               <Route path="/reset-password" component={ResetPassword} />
+              <Route path="/resetpassword" component={ResetPassword} />
               <Route path="/help" component={HelpCentre} />
               <Route path="/help/:category" component={HelpCentre} />
               <Route path="/retainer/new" component={RetainerBuilder} />
