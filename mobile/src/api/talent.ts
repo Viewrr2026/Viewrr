@@ -4,8 +4,8 @@ import type { TalentDetail, TalentItem } from "@/api/types";
 /**
  * Browse Talent, natively.
  *
- * ⚠ NO SERVER PAGINATION. `GET /api/profiles` reads exactly three query params
- * and no others — `const { specialism, availability, search } = req.query`
+ * ⚠ NO SERVER PAGINATION. `GET /api/profiles` reads the three talent filters
+ * plus a surface hint — `specialism`, `availability`, `search`, and `surface`
  * (`server/routes.ts:949`) — and `storage.getProfiles` does an unbounded
  * `SELECT *` over both `profiles` and `users` before filtering in Node
  * (`storage.ts:391-393`). There is no `limit`, `offset`, `page` or cursor to
@@ -43,6 +43,7 @@ export async function loadTalent({
       specialism: specialism && specialism !== "all" ? specialism : undefined,
       availability: availability && availability !== "all" ? availability : undefined,
       search: search?.trim() ? search.trim() : undefined,
+      surface: "ios",
     },
     signal,
   });

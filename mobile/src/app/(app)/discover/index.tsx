@@ -110,11 +110,6 @@ export default function DiscoverScreen() {
   const sorted = useMemo(() => {
     const copy = [...rows];
     copy.sort((a, b) => {
-      // Pro creatives lead every ordering, exactly as storage.getProfiles does
-      // server-side, so re-sorting locally does not silently demote them.
-      const proDelta = (b.profile.isPro ?? 0) - (a.profile.isPro ?? 0);
-      if (proDelta !== 0) return proDelta;
-
       switch (sort) {
         case "projects":
           return (b.profile.projectCount ?? 0) - (a.profile.projectCount ?? 0);

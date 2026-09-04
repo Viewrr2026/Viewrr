@@ -50,7 +50,7 @@ export interface IStorage {
   >;
 
   // Profiles
-  getProfiles(filters?: { specialism?: string; availability?: string; search?: string }): Promise<ProfileWithUser[]>;
+  getProfiles(filters?: { specialism?: string; availability?: string; search?: string; boostPro?: boolean }): Promise<ProfileWithUser[]>;
   getProfile(id: number): Promise<ProfileWithUser | undefined>;
   getProfileByUserId(userId: number): Promise<schema.Profile | undefined>;
   getOrCreateProfileForUser(userId: number): Promise<schema.Profile>;
@@ -493,7 +493,7 @@ class Storage implements IStorage {
     return safeUser(r[0]) as schema.User;
   }
 
-  async getProfiles(filters?: { specialism?: string; availability?: string; search?: string }): Promise<ProfileWithUser[]> {
+  async getProfiles(filters?: { specialism?: string; availability?: string; search?: string; boostPro?: boolean }): Promise<ProfileWithUser[]> {
     const allProfiles = await db.select().from(schema.profiles);
     const allUsers = await db.select().from(schema.users);
     const userMap = new Map(allUsers.map(u => [u.id, u]));
@@ -528,11 +528,17 @@ class Storage implements IStorage {
       });
     }
 
-    // Pro Viewrrs always sort to top, then by rating
+    // Web keeps the Viewrr Pro ranking benefit. Native iOS V1 explicitly
+    // opts out until Pro entitlements are offered through the appropriate
+    // App Store purchase model.
+    const boostPro = filters?.boostPro !== false;
+
     return results.sort((a, b) => {
-      const proA = a.profile.isPro || 0;
-      const proB = b.profile.isPro || 0;
-      if (proB !== proA) return proB - proA;
+      if (boostPro) {
+        const proA = a.profile.isPro || 0;
+        const proB = b.profile.isPro || 0;
+        if (proB !== proA) return proB - proA;
+      }
       return (b.profile.rating || 0) - (a.profile.rating || 0);
     });
   }

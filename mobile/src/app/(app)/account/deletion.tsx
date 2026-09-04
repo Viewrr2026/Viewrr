@@ -1,6 +1,7 @@
+import { useRouter } from "expo-router";
 import { AlertTriangle, CalendarClock, Clock, ShieldCheck, Trash2 } from "lucide-react-native";
 import { useCallback, useState } from "react";
-import { Linking, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
 import {
   confirmDeletion,
@@ -18,7 +19,7 @@ import { Card, CardBody, CardLabel, CardTitle } from "@/components/Card";
 import { DataState } from "@/components/DataState";
 import { Screen } from "@/components/Screen";
 import { TextField } from "@/components/TextField";
-import { SUPPORT_EMAIL, supportMailto } from "@/config/support";
+import { SUPPORT_EMAIL } from "@/config/support";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { useSession } from "@/session/SessionProvider";
 import { radii, spacing, typography, useTheme } from "@/theme";
@@ -46,6 +47,7 @@ import { radii, spacing, typography, useTheme } from "@/theme";
 type Step = "review" | "confirm";
 
 export default function AccountDeletion() {
+  const router = useRouter();
   const { colors } = useTheme();
   const { signOut } = useSession();
 
@@ -125,7 +127,7 @@ export default function AccountDeletion() {
     <Screen
       scroll
       keyboard
-      edges={["top", "left", "right"]}
+      edges={["top", "bottom", "left", "right"]}
       refreshing={refreshing}
       onRefresh={resource.phase === "ready" ? refresh : undefined}
     >
@@ -144,9 +146,9 @@ export default function AccountDeletion() {
                   <CardTitle>Permanent deletion</CardTitle>
                 </View>
                 <CardBody>
-                  Deleting removes your Viewrr account for good. It is not a pause and not a
-                  deactivation — you cannot sign back in afterwards, and your profile, posts,
-                  messages and saved work are removed or anonymised as set out below.
+                  Deleting permanently removes your Viewrr account. It is not a pause or
+                  deactivation. Once deletion is completed, you will no longer be able to sign in.
+                  Your profile, posts, messages and saved work are removed or anonymised as set out below.
                 </CardBody>
               </Card>
 
@@ -183,11 +185,12 @@ export default function AccountDeletion() {
                 <Card>
                   <View style={styles.headRow}>
                     <Clock size={18} color={colors.primary} strokeWidth={2.2} />
-                    <CardLabel>Why deletion is scheduled, not immediate</CardLabel>
+                    <CardLabel>Why deletion may be delayed</CardLabel>
                   </View>
                   <CardBody>
-                    Viewrr still has obligations tied to this account, so erasure runs on a
-                    schedule instead of straight away. Your request is never refused.
+                    You can submit your deletion request now. Viewrr still has obligations tied to
+                    this account, so deletion may be delayed until the outstanding items below
+                    are resolved. The request itself is not refused because of these obligations.
                   </CardBody>
                   <View style={styles.rows}>
                     {status.blockers.map((blocker) => (
@@ -264,8 +267,8 @@ export default function AccountDeletion() {
                   <Button
                     label="Keep my account"
                     variant="ghost"
-                    onPress={() => void Linking.openURL(supportMailto("Account question"))}
-                    accessibilityHint={`Opens an email to ${SUPPORT_EMAIL} instead of deleting`}
+                    onPress={() => router.back()}
+                    accessibilityHint="Leaves account deletion without submitting a request"
                   />
                 </View>
               ) : (
@@ -277,7 +280,7 @@ export default function AccountDeletion() {
                         (scheduleDate
                           ? `Your request is recorded. If you confirm it, deletion will be scheduled for ${formatDate(scheduleDate)} unless the outstanding obligations clear sooner.`
                           : deferred
-                            ? "Your request is recorded. Enter your password to confirm it. Because obligations remain, deletion will be scheduled rather than performed immediately."
+                            ? "Your request is recorded. Enter your password to confirm it. Because obligations remain, completion may be delayed until they are resolved."
                             : "Your request is recorded. Enter your password to delete the account.")}
                     </CardBody>
                     <TextField
@@ -322,7 +325,7 @@ export default function AccountDeletion() {
                   deferred
                     ? scheduleDate
                       ? `Confirming makes this deletion request final. Because obligations remain, deletion is scheduled for ${formatDate(scheduleDate)} unless they clear sooner.`
-                      : "Confirming makes this deletion request final. Because obligations remain, deletion will be scheduled and will run automatically once they clear."
+                      : "Confirming makes this deletion request final. Because obligations remain, completion will be delayed and will run automatically once they clear."
                     : "Confirming deletes the account now. This cannot be undone."
                 }
                 onClose={() => setSheetOpen(false)}
@@ -406,8 +409,8 @@ function plainAction(entry: RetentionEntry): string {
   }
   if (action === "retained") {
     return days > 0
-      ? `Kept for ${days} days because Viewrr is legally required to, then removed.`
-      : "Kept because Viewrr is legally required to.";
+      ? `Retained for ${days} days under Viewrr's retention policy, then removed.`
+      : "Retained under Viewrr's retention policy.";
   }
   return days > 0 ? `${entry.action} — ${days} days.` : entry.action;
 }

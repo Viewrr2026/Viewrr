@@ -1429,8 +1429,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
     // ─── Profiles ──────────────────────────────────────────────────────────────
   app.get("/api/profiles", async (req, res) => {
-    const { specialism, availability, search } = req.query as Record<string, string>;
-    const profiles = await storage.getProfiles({ specialism, availability, search });
+    const { specialism, availability, search, surface } = req.query as Record<string, string>;
+    const profiles = await storage.getProfiles({
+      specialism,
+      availability,
+      search,
+      boostPro: surface !== "ios",
+    });
     // PRD-018 E5: override stale projectCount with DB-authoritative completed-project count
     const userIds = profiles.map((p: any) => p.profile.userId as number);
     const countMap = await storage.getCompletedProjectCountsBulk(userIds);
