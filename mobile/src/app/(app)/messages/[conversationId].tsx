@@ -90,9 +90,12 @@ export default function Conversation() {
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [counterparty, setCounterparty] = useState<{ name: string; avatar: string | null } | null>(
-    null,
-  );
+  const [counterparty, setCounterparty] = useState<{
+    name: string;
+    avatar: string | null;
+    bio: string | null;
+    headline: string | null;
+  } | null>(null);
 
   const loadFirstPage = useCallback(
     (signal: AbortSignal) => {
@@ -127,7 +130,12 @@ export default function Conversation() {
         if (controller.signal.aborted) return;
         const name = detail.user?.name;
         if (typeof name === "string" && name.length > 0) {
-          setCounterparty({ name, avatar: detail.user?.avatar ?? null });
+          setCounterparty({
+            name,
+            avatar: detail.user?.avatar ?? null,
+            bio: detail.user?.bio ?? null,
+            headline: detail.user?.headline ?? null,
+          });
         }
       } catch {
         // The header falls back to "Conversation". A missing or forbidden
@@ -404,7 +412,9 @@ export default function Conversation() {
                 ]}
                 numberOfLines={1}
               >
-                Viewrr member
+                {counterparty.bio?.trim() ||
+                  counterparty.headline?.trim() ||
+                  "Viewrr member"}
               </Text>
             </View>
           </Pressable>
