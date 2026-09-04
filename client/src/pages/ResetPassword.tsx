@@ -7,9 +7,12 @@ import { Label } from "@/components/ui/label";
 
 export default function ResetPassword() {
   const token = useMemo(() => {
+    const queryToken = new URLSearchParams(window.location.search).get("resetToken");
+    if (queryToken) return queryToken;
+
     const hash = window.location.hash;
-    const query = hash.includes("?") ? hash.split("?", 2)[1] : "";
-    return new URLSearchParams(query).get("token") ?? "";
+    const hashQuery = hash.includes("?") ? hash.split("?", 2)[1] : "";
+    return new URLSearchParams(hashQuery).get("token") ?? "";
   }, []);
 
   const [password, setPassword] = useState("");

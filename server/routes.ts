@@ -1102,7 +1102,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
       await storage.createPasswordResetToken(user.id, tokenHash, expiresAt);
 
-      const resetUrl = `${APP_BASE_URL}/#/reset-password?token=${rawToken}`;
+      const resetUrl = `${APP_BASE_URL}/?resetToken=${rawToken}#/reset-password`;
       if (resend) {
         await resend.emails.send({
           from: "Viewrr <noreply@viewrr.co.uk>",
