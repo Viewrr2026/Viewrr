@@ -1578,7 +1578,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           skills: "[]",
           hourlyRate: null,
           dayRate: null,
-          availability: null,
+          availability: "available",
           yearsExperience: null,
           reelUrl: null,
           portfolioItems: "[]",

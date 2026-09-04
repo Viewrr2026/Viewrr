@@ -182,3 +182,16 @@ export function looksLikeEmail(email: string): boolean {
   const value = email.trim();
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
 }
+
+
+export type ForgotPasswordResponse = {
+  message?: string;
+};
+
+export async function requestPasswordReset(
+  email: string,
+): Promise<ForgotPasswordResponse> {
+  return api.post<ForgotPasswordResponse>("/api/auth/forgot-password", {
+    email: email.trim().toLowerCase(),
+  });
+}

@@ -116,6 +116,12 @@ export default function SignIn() {
             helperText="Minimum 8 characters."
             errorText={fieldError}
           />
+
+          <Button
+            label="Forgot password?"
+            variant="ghost"
+            onPress={() => router.push("/(auth)/forgot-password")}
+          />
         </View>
 
         {bannerFailure ? (

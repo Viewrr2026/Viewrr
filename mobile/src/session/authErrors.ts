@@ -39,7 +39,7 @@ export function describeAuthFailure(error: unknown): AuthFailure {
         // before passwords existed — it needs its own instruction.
         message:
           error.serverCode === "NO_PASSWORD_SET"
-            ? "This account has no password yet. Use 'Forgot password' on viewrr.co.uk to set one."
+            ? "This account has no password yet. Use 'Forgot password' on the sign-in screen to set one."
             : (error.serverMessage ?? "Invalid email or password."),
         fieldLevel: error.serverCode !== "NO_PASSWORD_SET",
       };
@@ -202,7 +202,14 @@ export function describeVerificationFailure(error: unknown): AuthFailure {
       return OFFLINE;
 
     case "server":
-      return SERVER;
+      return {
+        reason: "server",
+        title: "Verification unavailable",
+        message:
+          error.serverMessage ??
+          "We couldn't complete email verification right now. Please try again shortly.",
+        fieldLevel: false,
+      };
 
     default:
       return VERIFY_FALLBACK;

@@ -32,6 +32,7 @@ export default function AuthLayout() {
       <Stack.Screen name="sign-in" options={{ presentation: "card" }} />
       <Stack.Screen name="sign-up" options={{ presentation: "card" }} />
       {/* No back gesture: a verified email is the exit, not a swipe. */}
+      <Stack.Screen name="forgot-password" />
       <Stack.Screen name="verify-email" options={{ gestureEnabled: false }} />
     </Stack>
   );

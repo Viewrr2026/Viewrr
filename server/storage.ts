@@ -567,7 +567,7 @@ class Storage implements IStorage {
       skills: "[]",
       hourlyRate: null,
       dayRate: null,
-      availability: null,
+      availability: "available",
       yearsExperience: null,
       reelUrl: null,
       portfolioItems: "[]",
