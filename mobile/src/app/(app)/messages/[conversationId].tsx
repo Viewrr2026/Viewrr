@@ -1,6 +1,6 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { MessageCircle } from "lucide-react-native";
+import { ChevronLeft, MessageCircle } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -8,7 +8,9 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
+  Text,
   View,
   type AppStateStatus,
 } from "react-native";
@@ -32,7 +34,7 @@ import { MessageComposer } from "@/components/messages/MessageComposer";
 import { refreshDmUnread } from "@/components/messages/useDmUnread";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { useSession } from "@/session/SessionProvider";
-import { spacing, useTheme } from "@/theme";
+import { hitSlop, spacing, typography, useTheme } from "@/theme";
 
 /**
  * One conversation.
@@ -345,16 +347,78 @@ export default function Conversation() {
 
   return (
     <Screen edges={["top", "left", "right"]}>
-      <AppHeader
-        title={title}
-        back
-        onBackPress={() => router.replace("/(app)/messages")}
-        action={
-          counterparty ? (
-            <Avatar name={counterparty.name} uri={counterparty.avatar} size="sm" />
-          ) : undefined
-        }
-      />
+      <View
+        style={[
+          styles.threadHeader,
+          {
+            backgroundColor: colors.background,
+            borderBottomColor: colors.border,
+          },
+        ]}
+      >
+        <Pressable
+          onPress={() => router.replace("/(app)/messages")}
+          hitSlop={hitSlop}
+          accessibilityRole="button"
+          accessibilityLabel="Back to Messages"
+          style={({ pressed }) => [
+            styles.threadBack,
+            pressed && styles.threadPressed,
+          ]}
+        >
+          <ChevronLeft
+            size={25}
+            color={colors.foreground}
+            strokeWidth={2.25}
+          />
+        </Pressable>
+
+        {counterparty ? (
+          <Pressable
+            onPress={() => router.push(`/(app)/discover/${otherUserId}`)}
+            accessibilityRole="button"
+            accessibilityLabel={`View ${counterparty.name}'s profile`}
+            style={({ pressed }) => [
+              styles.threadIdentity,
+              pressed && styles.threadPressed,
+            ]}
+          >
+            <Avatar
+              name={counterparty.name}
+              uri={counterparty.avatar}
+              size="sm"
+            />
+
+            <View style={styles.threadCopy}>
+              <Text
+                style={[styles.threadName, { color: colors.foreground }]}
+                numberOfLines={1}
+              >
+                {counterparty.name}
+              </Text>
+
+              <Text
+                style={[
+                  styles.threadSubtitle,
+                  { color: colors.mutedForeground },
+                ]}
+                numberOfLines={1}
+              >
+                Viewrr member
+              </Text>
+            </View>
+          </Pressable>
+        ) : (
+          <View style={styles.threadCopy}>
+            <Text
+              style={[styles.threadName, { color: colors.foreground }]}
+              numberOfLines={1}
+            >
+              {title}
+            </Text>
+          </View>
+        )}
+      </View>
 
       <KeyboardAvoidingView
         style={styles.fill}
@@ -417,6 +481,42 @@ export default function Conversation() {
 const styles = StyleSheet.create({
   fill: {
     flex: 1,
+  },
+  threadHeader: {
+    minHeight: 62,
+    flexDirection: "row",
+    alignItems: "center",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: spacing[2],
+  },
+  threadBack: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  threadIdentity: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[3],
+    paddingVertical: spacing[2],
+    paddingRight: spacing[3],
+  },
+  threadCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  threadName: {
+    ...typography.body,
+    fontWeight: "700",
+  },
+  threadSubtitle: {
+    ...typography.caption,
+    marginTop: 1,
+  },
+  threadPressed: {
+    opacity: 0.62,
   },
   list: {
     paddingTop: spacing[3],
