@@ -95,6 +95,7 @@ export default function Conversation() {
     avatar: string | null;
     bio: string | null;
     headline: string | null;
+    location: string | null;
   } | null>(null);
 
   const loadFirstPage = useCallback(
@@ -135,6 +136,7 @@ export default function Conversation() {
             avatar: detail.user?.avatar ?? null,
             bio: detail.user?.bio ?? null,
             headline: detail.user?.headline ?? null,
+            location: detail.user?.location ?? null,
           });
         }
       } catch {
@@ -336,6 +338,66 @@ export default function Conversation() {
 
   const title = counterparty?.name ?? "Conversation";
 
+  const profileIntro = counterparty ? (
+    <Pressable
+      onPress={() => router.push(`/(app)/discover/${otherUserId}`)}
+      accessibilityRole="button"
+      accessibilityLabel={`View ${counterparty.name}'s profile`}
+      style={({ pressed }) => [
+        styles.profileIntro,
+        { borderBottomColor: colors.border },
+        pressed && styles.threadPressed,
+      ]}
+    >
+      <Avatar
+        name={counterparty.name}
+        uri={counterparty.avatar}
+        size="md"
+      />
+
+      <View style={styles.profileIntroCopy}>
+        <Text
+          style={[styles.profileIntroName, { color: colors.foreground }]}
+          numberOfLines={1}
+        >
+          {counterparty.name}
+        </Text>
+
+        {counterparty.headline?.trim() ? (
+          <Text
+            style={[styles.profileIntroHeadline, { color: colors.foreground }]}
+            numberOfLines={2}
+          >
+            {counterparty.headline.trim()}
+          </Text>
+        ) : null}
+
+        {counterparty.location?.trim() ? (
+          <Text
+            style={[styles.profileIntroMeta, { color: colors.mutedForeground }]}
+            numberOfLines={1}
+          >
+            {counterparty.location.trim()}
+          </Text>
+        ) : null}
+
+        {counterparty.bio?.trim() &&
+        counterparty.bio.trim() !== counterparty.headline?.trim() ? (
+          <Text
+            style={[styles.profileIntroBio, { color: colors.mutedForeground }]}
+            numberOfLines={3}
+          >
+            {counterparty.bio.trim()}
+          </Text>
+        ) : null}
+
+        <Text style={[styles.profileIntroLink, { color: colors.primary }]}>
+          View profile
+        </Text>
+      </View>
+    </Pressable>
+  ) : null;
+
   if (!valid) {
     return (
       <Screen edges={["top", "left", "right"]}>
@@ -438,11 +500,29 @@ export default function Conversation() {
         <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={6}>
           {() =>
             rows.length === 0 ? (
-              <EmptyState
-                icon={MessageCircle}
-                title="No messages yet"
-                body={`Say hello. ${counterparty?.name ?? "They"} will see your message in their inbox.`}
-              />
+              <View style={styles.emptyThread}>
+                {profileIntro}
+
+                <View style={styles.emptyPrompt}>
+                  <MessageCircle
+                    size={30}
+                    color={colors.mutedForeground}
+                    strokeWidth={1.8}
+                  />
+
+                  <Text
+                    style={[styles.emptyTitle, { color: colors.foreground }]}
+                  >
+                    No messages yet
+                  </Text>
+
+                  <Text
+                    style={[styles.emptyBody, { color: colors.mutedForeground }]}
+                  >
+                    {`Say hello. ${counterparty?.name ?? "They"} will see your message in their inbox.`}
+                  </Text>
+                </View>
+              </View>
             ) : (
               <FlatList
                 // Inverted: newest at the bottom, and scrolling up loads history.
@@ -471,6 +551,8 @@ export default function Conversation() {
                     <View style={styles.olderSpinner}>
                       <ActivityIndicator size="small" color={colors.mutedForeground} />
                     </View>
+                  ) : !hasMore ? (
+                    profileIntro
                   ) : null
                 }
               />
@@ -527,6 +609,52 @@ const styles = StyleSheet.create({
   },
   threadPressed: {
     opacity: 0.62,
+  },
+  profileIntro: {
+    paddingVertical: spacing[5],
+    gap: spacing[3],
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  profileIntroCopy: {
+    gap: spacing[1],
+  },
+  profileIntroName: {
+    ...typography.body,
+    fontWeight: "700",
+  },
+  profileIntroHeadline: {
+    ...typography.body,
+  },
+  profileIntroMeta: {
+    ...typography.caption,
+  },
+  profileIntroBio: {
+    ...typography.body,
+    marginTop: spacing[2],
+  },
+  profileIntroLink: {
+    ...typography.caption,
+    fontWeight: "700",
+    marginTop: spacing[2],
+  },
+  emptyThread: {
+    flex: 1,
+  },
+  emptyPrompt: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing[2],
+    paddingHorizontal: spacing[5],
+    paddingVertical: spacing[5],
+  },
+  emptyTitle: {
+    ...typography.body,
+    fontWeight: "700",
+  },
+  emptyBody: {
+    ...typography.body,
+    textAlign: "center",
   },
   list: {
     paddingTop: spacing[3],
