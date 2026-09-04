@@ -1,4 +1,5 @@
-import { useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { MessageCircle } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -70,6 +71,8 @@ let pendingSeq = 0;
 
 export default function Conversation() {
   const params = useLocalSearchParams<{ conversationId?: string }>();
+  const router = useRouter();
+  const tabBarHeight = useBottomTabBarHeight();
   const { user } = useSession();
   const { colors } = useTheme();
 
@@ -326,7 +329,11 @@ export default function Conversation() {
   if (!valid) {
     return (
       <Screen edges={["top", "left", "right"]}>
-        <AppHeader title="Conversation" back />
+        <AppHeader
+          title="Conversation"
+          back
+          onBackPress={() => router.replace("/(app)/messages")}
+        />
         <EmptyState
           icon={MessageCircle}
           title="Conversation not found"
@@ -341,6 +348,7 @@ export default function Conversation() {
       <AppHeader
         title={title}
         back
+        onBackPress={() => router.replace("/(app)/messages")}
         action={
           counterparty ? (
             <Avatar name={counterparty.name} uri={counterparty.avatar} size="sm" />
@@ -351,6 +359,7 @@ export default function Conversation() {
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? -tabBarHeight : 0}
       >
         <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={6}>
           {() =>

@@ -29,6 +29,8 @@ type AppHeaderProps = {
   brand?: boolean;
   /** Show a back chevron instead of the mark. Detail screens. */
   back?: boolean;
+  /** Override navigation history when a detail screen has a canonical parent. */
+  onBackPress?: () => void;
   /** Hide the bell — the notification centre itself does not need one. */
   bell?: boolean;
   /** One optional contextual control on the right, beside the bell. */
@@ -40,6 +42,7 @@ export function AppHeader({
   eyebrow,
   brand = false,
   back = false,
+  onBackPress,
   bell = true,
   action,
 }: AppHeaderProps) {
@@ -52,7 +55,13 @@ export function AppHeader({
       <View style={styles.left}>
         {back ? (
           <Pressable
-            onPress={() => (router.canGoBack() ? router.back() : router.replace("/(app)"))}
+            onPress={() => {
+              if (onBackPress) {
+                onBackPress();
+                return;
+              }
+              router.canGoBack() ? router.back() : router.replace("/(app)");
+            }}
             hitSlop={hitSlop}
             accessibilityRole="button"
             accessibilityLabel="Go back"
