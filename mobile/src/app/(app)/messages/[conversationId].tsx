@@ -1,4 +1,3 @@
-import { useBottomTabBarHeight } from "expo-router/js-tabs";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { MessageCircle } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -72,7 +71,6 @@ let pendingSeq = 0;
 export default function Conversation() {
   const params = useLocalSearchParams<{ conversationId?: string }>();
   const router = useRouter();
-  const tabBarHeight = useBottomTabBarHeight();
   const { user } = useSession();
   const { colors } = useTheme();
 
@@ -359,7 +357,6 @@ export default function Conversation() {
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? -tabBarHeight : 0}
       >
         <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={6}>
           {() =>

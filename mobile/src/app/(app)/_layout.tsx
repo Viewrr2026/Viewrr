@@ -91,6 +91,7 @@ export default function AppLayout() {
               },
             ],
             tabBarShowLabel: false,
+            tabBarHideOnKeyboard: true,
             tabBarItemStyle: styles.tabItem,
           }}
         >
