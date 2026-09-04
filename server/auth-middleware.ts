@@ -46,8 +46,21 @@ import {
 import { storage } from "./storage";
 
 // ─── CSRF Origin allowlist ─────────────────────────────────────────────────────
+const configuredAppOrigin = (() => {
+  const value = process.env.APP_BASE_URL;
+  if (!value) return null;
+
+  try {
+    return new URL(value).origin;
+  } catch {
+    console.warn("[auth] Ignoring invalid APP_BASE_URL while building CSRF origin allowlist.");
+    return null;
+  }
+})();
+
 const ALLOWED_WEB_ORIGINS: string[] = [
   "https://www.viewrr.co.uk",
+  ...(configuredAppOrigin ? [configuredAppOrigin] : []),
   ...(process.env.NODE_ENV !== "production" ? ["http://localhost:5000"] : []),
 ];
 
