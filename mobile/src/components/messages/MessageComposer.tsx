@@ -100,15 +100,14 @@ export function MessageComposer({
                   MAX_INPUT_HEIGHT,
                   Math.max(
                     MIN_INPUT_HEIGHT,
-                    Math.ceil(
-                      event.nativeEvent.contentSize.height + spacing[2] * 2,
-                    ),
+                    Math.ceil(event.nativeEvent.contentSize.height),
                   ),
                 ),
               )
             }
             editable={!disabled}
             multiline
+            scrollEnabled={height >= MAX_INPUT_HEIGHT}
             maxLength={MAX_LENGTH}
             placeholder={placeholder}
             placeholderTextColor={colors.mutedForeground}
@@ -171,14 +170,14 @@ const styles = StyleSheet.create({
     minHeight: control.minTouchTarget,
     borderRadius: radii.md,
     paddingHorizontal: spacing[3],
-    paddingVertical: spacing[1],
+    paddingVertical: spacing[2],
     justifyContent: "center",
   },
   input: {
     flex: 1,
     minWidth: 0,
     paddingHorizontal: 0,
-    paddingVertical: spacing[2],
+    paddingVertical: 0,
     ...typography.body,
   },
   send: {
