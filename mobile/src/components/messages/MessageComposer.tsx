@@ -1,32 +1,33 @@
 import { SendHorizontal } from "lucide-react-native";
 import { useState } from "react";
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  ActivityIndicator,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
 import { control, hitSlop, radii, spacing, typography, useTheme } from "@/theme";
 
 /**
- * The thread composer.
+ * Compact conversation composer.
  *
- * Multiline and auto-growing up to a ceiling, so a long message is visible
- * while typing without the input eating the conversation. `blurOnSubmit` is off
- * and Enter inserts a newline: on a phone, a send key that fires on return is a
- * reliable way to send half a sentence.
+ * The field starts as a single, low-profile messaging bar and grows only as
+ * the message grows. Return inserts a newline; Send remains an explicit action
+ * so a user cannot accidentally submit half a message.
  *
- * Send is disabled while the field is blank or a send is in flight, so a double
- * tap cannot post twice. Failures are surfaced here, immediately above the
- * input, because that is where the user is looking — a send that silently fails
- * is the one thing a messaging surface must never do (Decision 3: a block error
- * is told honestly rather than swallowed).
+ * Failed sends deliberately retain the draft.
  */
-
-const MAX_HEIGHT = 120;
+const MIN_INPUT_HEIGHT = 36;
+const MAX_INPUT_HEIGHT = 92;
 const MAX_LENGTH = 4000;
 
 type MessageComposerProps = {
   onSend: (body: string) => Promise<boolean>;
-  /** Shown above the input. Cleared by the screen on the next attempt. */
   error?: string | null;
-  /** Blocks input entirely — e.g. a thread that cannot accept messages. */
   disabled?: boolean;
   placeholder?: string;
 };
@@ -39,7 +40,7 @@ export function MessageComposer({
 }: MessageComposerProps) {
   const { colors } = useTheme();
   const [value, setValue] = useState("");
-  const [height, setHeight] = useState<number>(control.height);
+  const [height, setHeight] = useState(MIN_INPUT_HEIGHT);
   const [sending, setSending] = useState(false);
 
   const trimmed = value.trim();
@@ -47,13 +48,15 @@ export function MessageComposer({
 
   const submit = async () => {
     if (!canSend) return;
+
     setSending(true);
+
     try {
       const sent = await onSend(trimmed);
-      // The text is kept on failure so nothing the user wrote is thrown away.
+
       if (sent) {
         setValue("");
-        setHeight(control.height);
+        setHeight(MIN_INPUT_HEIGHT);
       }
     } finally {
       setSending(false);
@@ -61,20 +64,45 @@ export function MessageComposer({
   };
 
   return (
-    <View style={[styles.container, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
+    <View
+      style={[
+        styles.container,
+        {
+          borderTopColor: colors.border,
+          backgroundColor: colors.background,
+        },
+      ]}
+    >
       {error ? (
-        <Text style={[styles.error, { color: colors.destructive }]} accessibilityRole="alert">
+        <Text
+          style={[styles.error, { color: colors.destructive }]}
+          accessibilityRole="alert"
+        >
           {error}
         </Text>
       ) : null}
 
-      <View style={styles.row}>
+      <View
+        style={[
+          styles.inputShell,
+          {
+            backgroundColor: colors.card,
+            borderColor: colors.input,
+          },
+        ]}
+      >
         <TextInput
           value={value}
           onChangeText={setValue}
           onContentSizeChange={(event) =>
             setHeight(
-              Math.min(MAX_HEIGHT, Math.max(control.height, event.nativeEvent.contentSize.height + spacing[3])),
+              Math.min(
+                MAX_INPUT_HEIGHT,
+                Math.max(
+                  MIN_INPUT_HEIGHT,
+                  Math.ceil(event.nativeEvent.contentSize.height + spacing[1]),
+                ),
+              ),
             )
           }
           editable={!disabled}
@@ -86,11 +114,11 @@ export function MessageComposer({
           submitBehavior="newline"
           style={[
             styles.input,
-            Platform.OS === "web" ? ({ outlineStyle: "none" } as object) : null,
+            Platform.OS === "web"
+              ? ({ outlineStyle: "none" } as object)
+              : null,
             {
               height,
-              backgroundColor: colors.card,
-              borderColor: colors.input,
               color: colors.foreground,
             },
           ]}
@@ -105,16 +133,15 @@ export function MessageComposer({
           accessibilityState={{ disabled: !canSend }}
           style={({ pressed }) => [
             styles.send,
-            { backgroundColor: canSend ? colors.primary : colors.muted },
             pressed && canSend && styles.pressed,
           ]}
         >
           {sending ? (
-            <ActivityIndicator size="small" color={colors.primaryForeground} />
+            <ActivityIndicator size="small" color={colors.primary} />
           ) : (
             <SendHorizontal
-              size={20}
-              color={canSend ? colors.primaryForeground : colors.mutedForeground}
+              size={21}
+              color={canSend ? colors.primary : colors.mutedForeground}
               strokeWidth={2.2}
             />
           )}
@@ -127,35 +154,38 @@ export function MessageComposer({
 const styles = StyleSheet.create({
   container: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: spacing[3],
+    paddingTop: spacing[2],
     paddingBottom: spacing[2],
-    gap: spacing[2],
+    gap: spacing[1],
   },
-  row: {
+  inputShell: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: spacing[2],
+    minHeight: control.minTouchTarget,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radii.xl,
+    paddingLeft: spacing[3],
+    paddingRight: spacing[1],
+    paddingVertical: spacing[1],
   },
   input: {
     flex: 1,
-    borderWidth: 1,
-    borderRadius: radii.xl,
-    paddingHorizontal: spacing[4],
-    paddingTop: spacing[3],
-    paddingBottom: spacing[3],
+    minWidth: 0,
+    paddingHorizontal: 0,
+    paddingVertical: spacing[2],
     ...typography.body,
   },
   send: {
     width: control.minTouchTarget,
     height: control.minTouchTarget,
-    borderRadius: radii.full,
     alignItems: "center",
     justifyContent: "center",
   },
   pressed: {
-    opacity: 0.75,
+    opacity: 0.6,
   },
   error: {
     ...typography.caption,
+    paddingHorizontal: spacing[1],
   },
 });
