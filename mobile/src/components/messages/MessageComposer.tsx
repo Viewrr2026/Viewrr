@@ -82,47 +82,50 @@ export function MessageComposer({
         </Text>
       ) : null}
 
-      <View
-        style={[
-          styles.inputShell,
-          {
-            backgroundColor: colors.card,
-            borderColor: colors.input,
-          },
-        ]}
-      >
-        <TextInput
-          value={value}
-          onChangeText={setValue}
-          onContentSizeChange={(event) =>
-            setHeight(
-              Math.min(
-                MAX_INPUT_HEIGHT,
-                Math.max(
-                  MIN_INPUT_HEIGHT,
-                  Math.ceil(event.nativeEvent.contentSize.height + spacing[1]),
-                ),
-              ),
-            )
-          }
-          editable={!disabled}
-          multiline
-          maxLength={MAX_LENGTH}
-          placeholder={placeholder}
-          placeholderTextColor={colors.mutedForeground}
-          accessibilityLabel="Message"
-          submitBehavior="newline"
+      <View style={styles.row}>
+        <View
           style={[
-            styles.input,
-            Platform.OS === "web"
-              ? ({ outlineStyle: "none" } as object)
-              : null,
+            styles.inputShell,
             {
-              height,
-              color: colors.foreground,
+              backgroundColor: colors.card,
             },
           ]}
-        />
+        >
+          <TextInput
+            value={value}
+            onChangeText={setValue}
+            onContentSizeChange={(event) =>
+              setHeight(
+                Math.min(
+                  MAX_INPUT_HEIGHT,
+                  Math.max(
+                    MIN_INPUT_HEIGHT,
+                    Math.ceil(
+                      event.nativeEvent.contentSize.height + spacing[2] * 2,
+                    ),
+                  ),
+                ),
+              )
+            }
+            editable={!disabled}
+            multiline
+            maxLength={MAX_LENGTH}
+            placeholder={placeholder}
+            placeholderTextColor={colors.mutedForeground}
+            accessibilityLabel="Message"
+            submitBehavior="newline"
+            style={[
+              styles.input,
+              Platform.OS === "web"
+                ? ({ outlineStyle: "none" } as object)
+                : null,
+              {
+                height,
+                color: colors.foreground,
+              },
+            ]}
+          />
+        </View>
 
         <Pressable
           onPress={() => void submit()}
@@ -140,7 +143,7 @@ export function MessageComposer({
             <ActivityIndicator size="small" color={colors.primary} />
           ) : (
             <SendHorizontal
-              size={21}
+              size={25}
               color={canSend ? colors.primary : colors.mutedForeground}
               strokeWidth={2.2}
             />
@@ -158,15 +161,18 @@ const styles = StyleSheet.create({
     paddingBottom: spacing[2],
     gap: spacing[1],
   },
-  inputShell: {
+  row: {
     flexDirection: "row",
     alignItems: "flex-end",
+    gap: spacing[2],
+  },
+  inputShell: {
+    flex: 1,
     minHeight: control.minTouchTarget,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: radii.xl,
-    paddingLeft: spacing[3],
-    paddingRight: spacing[1],
+    borderRadius: radii.md,
+    paddingHorizontal: spacing[3],
     paddingVertical: spacing[1],
+    justifyContent: "center",
   },
   input: {
     flex: 1,
