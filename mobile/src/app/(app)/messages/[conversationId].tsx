@@ -1,5 +1,4 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ChevronLeft, MessageCircle } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -74,7 +73,6 @@ let pendingSeq = 0;
 export default function Conversation() {
   const params = useLocalSearchParams<{ conversationId?: string }>();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const { user } = useSession();
   const { colors } = useTheme();
 
@@ -495,9 +493,12 @@ export default function Conversation() {
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? insets.bottom : 0}
+        // This tab screen already ends above the tab bar. Adding the safe-area
+        // inset again double-counts that space and shifts the composer too far.
+        keyboardVerticalOffset={0}
       >
-        <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={6}>
+        <View style={styles.conversationRegion}>
+          <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={6}>
           {() =>
             rows.length === 0 ? (
               <View style={styles.emptyThread}>
@@ -525,6 +526,7 @@ export default function Conversation() {
               </View>
             ) : (
               <FlatList
+                style={styles.messageList}
                 // Inverted: newest at the bottom, and scrolling up loads history.
                 inverted
                 data={rows}
@@ -558,7 +560,8 @@ export default function Conversation() {
               />
             )
           }
-        </DataState>
+          </DataState>
+        </View>
 
         <MessageComposer
           onSend={send}
@@ -573,6 +576,15 @@ export default function Conversation() {
 const styles = StyleSheet.create({
   fill: {
     flex: 1,
+  },
+  conversationRegion: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "hidden",
+  },
+  messageList: {
+    flex: 1,
+    minHeight: 0,
   },
   threadHeader: {
     minHeight: 62,
