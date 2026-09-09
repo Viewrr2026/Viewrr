@@ -97,6 +97,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   version: "0.1.0",
   orientation: "portrait",
   scheme: IS_DEV ? "viewrr-dev" : IS_STAGING ? "viewrr-staging" : "viewrr",
+  updates: {
+    url: "https://u.expo.dev/1d650340-9486-46f3-894f-86b4f4d9eb5e",
+  },
+  runtimeVersion: {
+    policy: "appVersion",
+  },
   userInterfaceStyle: "automatic",
   icon: "./assets/images/icon.png",
   owner: EXPO_OWNER,

@@ -21,7 +21,8 @@
         "resourceClass": "medium",
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
-      }
+      },
+      "channel": "development"
     },
     "development-simulator": {
       "extends": "development",
@@ -46,7 +47,8 @@
       "android": {
         "resourceClass": "medium",
         "buildType": "apk"
-      }
+      },
+      "channel": "staging"
     },
     "production": {
       "developmentClient": false,
@@ -62,7 +64,8 @@
       "android": {
         "resourceClass": "medium",
         "buildType": "app-bundle"
-      }
+      },
+      "channel": "production"
     }
   }
 }
