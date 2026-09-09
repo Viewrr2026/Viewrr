@@ -495,9 +495,9 @@ export default function Conversation() {
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
-        // This tab screen already ends above the tab bar. Adding the safe-area
-        // inset again double-counts that space and shifts the composer too far.
-        keyboardVerticalOffset={Platform.OS === "ios" ? insets.bottom : 0}
+        // Keyboard coordinates are screen-relative while this screen starts
+        // below the iOS top safe area, so compensate by that top inset.
+        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top : 0}
       >
         <View style={styles.conversationRegion}>
           <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={6}>
