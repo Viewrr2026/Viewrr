@@ -77,7 +77,7 @@ import {
 import { createVerificationCode, verifyCode, type VerificationPurpose } from "./verification-service";
 import { compileUserExport, checkDeletionBlockers, anonymiseUserAccount, getDeletionStatus } from "./services/privacy-service";
 import { createReport, resolveReport, suspendUser, unsuspendUser, blockUser, unblockUser, getBlockList,
-  isBlockedEitherWay, isBlockedEitherWaySafe, getBlockedUserIds, sharesActiveEngagement, blocksMessaging,
+  isBlockedEitherWay, isBlockedEitherWaySafe, getBlockedUserIds, sharesActiveEngagement,
 } from "./services/trust-service";
 import {
   moderateContent, recordContentFlags, listContentFlags, resolveContentFlag,
@@ -307,11 +307,10 @@ async function notify(
   //    notification-producing action.
   //
   //    Decision 3 exemption: a block must NEVER break an in-flight project.
-  //    blocksMessaging() returns true only when the pair is blocked in either
-  //    direction AND they do not share an active engagement, so notifications
-  //    about a live project, its stages, its payments and its invoices still
-  //    get through. System notifications (no actor, or self-notification) are
-  //    never suppressed.
+  //    Only explicitly project-scoped notifications may cross a block, and
+  //    only while the pair still shares a protected engagement. Social,
+  //    profile, brief and ordinary-message notifications remain suppressed.
+  //    System notifications are never suppressed.
   try {
     const actorId = Number((data as any).actorId ?? 0);
     // Platform notifications ('system') are never suppressed: a user must not
@@ -319,7 +318,22 @@ async function notify(
     // the admin who issued it.
     const isPlatformNotice = data.type === "system";
     if (!isPlatformNotice && actorId > 0 && actorId !== data.recipientId) {
-      if (await blocksMessaging(actorId, data.recipientId)) return;
+      if (await isBlockedEitherWay(actorId, data.recipientId)) {
+        const hasProtectedEngagement = await sharesActiveEngagement(
+          actorId,
+          data.recipientId,
+        );
+
+        // Only explicitly project-scoped notifications may cross a block.
+        // We intentionally do not use derived targeting here: a new invitation
+        // or another general action must not gain the exemption merely because
+        // its navigation destination happens to resolve to the Work surface.
+        const isProjectFulfilmentNotice =
+          hasProtectedEngagement &&
+          asTargetType((data as any).targetType) === "project";
+
+        if (!isProjectFulfilmentNotice) return;
+      }
     }
   } catch (blockErr: any) {
     // Fail OPEN: a trust-service outage must not silently stop all platform
@@ -1819,6 +1833,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
       // A0: caller must be the sender
       if (req.auth!.userId !== Number(fromId)) return res.status(403).json({ error: "Forbidden." });
+      // Interest messaging is pre-project interaction. Blocking closes this
+      // surface in both directions with no project exemption.
+      if (await isBlockedEitherWay(Number(fromId), Number(toId))) {
+        return res.status(403).json({
+          error: "Messaging is unavailable because one of you has blocked the other.",
+          code: "USER_BLOCKED",
+        });
+      }
+
       const msg = await storage.createMessage({ fromId, toId, content, interestId });
       // Notify recipient
       const actor = await storage.getUser(fromId);
@@ -2003,6 +2026,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
       const recipient = await storage.getUser(toId);
       if (!recipient) return res.status(404).json({ error: "Recipient not found" });
+
+      // Blocking closes normal direct messaging in both directions.
+      // Existing projects remain accessible through the Work/project surfaces;
+      // a project relationship must not silently reopen the ordinary DM inbox.
+      // Rejected messages are stopped before they can enter the conversation.
+      if (await isBlockedEitherWay(fromId, toId)) {
+        return res.status(403).json({
+          error: "Messaging is unavailable because one of you has blocked the other.",
+          code: "USER_BLOCKED",
+        });
+      }
 
       const msg = await storage.createMessage({ fromId, toId, content, interestId, read: 0 });
       // Notify recipient of new message.
