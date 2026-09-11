@@ -75,6 +75,28 @@ export default function Conversation() {
   const params = useLocalSearchParams<{ conversationId?: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const keyboardHostRef = useRef<View>(null);
+  const [keyboardOffset, setKeyboardOffset] = useState(insets.top);
+
+  const measureKeyboardHost = useCallback(() => {
+    if (Platform.OS !== "ios") return;
+
+    requestAnimationFrame(() => {
+      keyboardHostRef.current?.measureInWindow((_x, y) => {
+        if (!Number.isFinite(y)) return;
+
+        const nextOffset = Math.max(0, y);
+
+        setKeyboardOffset((current) =>
+          Math.abs(current - nextOffset) > 0.5 ? nextOffset : current
+        );
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    measureKeyboardHost();
+  }, [measureKeyboardHost]);
   const { user } = useSession();
   const { colors } = useTheme();
 
@@ -492,13 +514,18 @@ export default function Conversation() {
         )}
       </View>
 
-      <KeyboardAvoidingView
+      <View
+        ref={keyboardHostRef}
         style={styles.fill}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        // Keyboard coordinates are screen-relative while this screen starts
-        // below the iOS top safe area, so compensate by that top inset.
-        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top : 0}
+        onLayout={() => measureKeyboardHost()}
       >
+        <KeyboardAvoidingView
+          style={styles.fill}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          // Measure this screen's real vertical position instead of assuming
+          // one safe-area value will fit every iPhone/display geometry.
+          keyboardVerticalOffset={Platform.OS === "ios" ? keyboardOffset : 0}
+        >
         <View style={styles.conversationRegion}>
           <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={6}>
           {() =>
@@ -570,7 +597,8 @@ export default function Conversation() {
           error={sendError}
           placeholder={counterparty ? `Message ${counterparty.name.split(" ")[0]}` : "Write a message"}
         />
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+      </View>
     </Screen>
   );
 }
