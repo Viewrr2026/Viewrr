@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import {
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/components/AuthProvider";
+import { useToast } from "@/hooks/use-toast";
 import { isFounderPanelUser } from "@/lib/permissions";
 
 const NAV_ITEMS = [
@@ -41,9 +43,48 @@ interface AdminLayoutProps {
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
   const { user, logout } = useAuth();
+  const { toast } = useToast();
   const [location, navigate] = useHashLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const previousOpenReports = useRef<number | null>(null);
+
+  const { data: moderationSummary } = useQuery<{ total: number }>({
+    queryKey: ["founder-open-reports-summary"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/reports?status=open&limit=1");
+
+      if (!res.ok) {
+        throw new Error("Could not load moderation report count");
+      }
+
+      return res.json();
+    },
+    enabled: isFounderPanelUser(user),
+    refetchInterval: 30_000,
+  });
+
+  const openReportTotal = moderationSummary?.total ?? 0;
+
+  useEffect(() => {
+    const current = moderationSummary?.total;
+
+    if (typeof current !== "number") return;
+
+    if (
+      previousOpenReports.current !== null &&
+      current > previousOpenReports.current
+    ) {
+      const added = current - previousOpenReports.current;
+
+      toast({
+        title: added === 1 ? "New moderation report" : `${added} new moderation reports`,
+        description: "Open Community in the Founder Panel to review.",
+      });
+    }
+
+    previousOpenReports.current = current;
+  }, [moderationSummary?.total, toast]);
 
   // Auth guard: client-side check
   useEffect(() => {
@@ -121,8 +162,21 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                       )}
                     />
                     {!collapsed && <span>{label}</span>}
+
+                    {label === "Community" && openReportTotal > 0 && (
+                      <span
+                        className={cn(
+                          "ml-auto flex min-w-5 h-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white",
+                          collapsed && "absolute -right-1 -top-1 ml-0",
+                        )}
+                        aria-label={`${openReportTotal} open moderation reports`}
+                      >
+                        {openReportTotal > 99 ? "99+" : openReportTotal}
+                      </span>
+                    )}
+
                     {/* Active dot */}
-                    {active && (
+                    {active && !(label === "Community" && openReportTotal > 0) && (
                       <span className="ml-auto w-1.5 h-1.5 rounded-full bg-[#FF5A1F] dark:bg-orange-400 flex-shrink-0" />
                     )}
                   </a>

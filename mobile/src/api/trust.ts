@@ -55,17 +55,28 @@ function asUserId(value: unknown): number | null {
 }
 
 /**
- * Accepts the contract shape (an array of hydrated rows) and also the legacy
- * `{ blockedIds: number[] }` body that production still returns until the
- * backend agent lands the hydration. In the legacy case the row keeps a null
- * name — the screen then shows the account id rather than inventing a person.
+ * Accepts the current server envelope `{ blocks, blockedIds }`, a bare hydrated
+ * array from older builds, and the legacy `{ blockedIds }` response.
+ *
+ * Prefer hydrated `blocks` whenever present so Settings → Blocked accounts can
+ * show the real name/avatar/headline instead of falling back to an account id.
  */
 function normaliseBlocks(raw: unknown): BlockedUser[] {
+  const record =
+    raw && typeof raw === "object"
+      ? (raw as Record<string, unknown>)
+      : null;
+
+  const hydrated = record?.blocks;
+  const legacyIds = record?.blockedIds;
+
   const rows: unknown[] = Array.isArray(raw)
     ? raw
-    : Array.isArray((raw as { blockedIds?: unknown })?.blockedIds)
-      ? ((raw as { blockedIds: unknown[] }).blockedIds)
-      : [];
+    : Array.isArray(hydrated)
+      ? hydrated
+      : Array.isArray(legacyIds)
+        ? legacyIds
+        : [];
 
   return rows.flatMap((entry) => {
     if (typeof entry === "number") {

@@ -4,22 +4,28 @@ import {
   Bookmark,
   Crown,
   ExternalLink,
+  Flag,
   MapPin,
+  MoreHorizontal,
   Play,
   Star,
   UserRound,
+  UserX,
 } from "lucide-react-native";
 import { useCallback, useMemo, useState } from "react";
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { loadSavedProfiles, loadTalentDetail, toggleSaved } from "@/api/talent";
+import { blockUser } from "@/api/trust";
 import type { PortfolioItem, Review, TalentDetail } from "@/api/types";
+import { ActionSheet } from "@/components/ActionSheet";
 import { AppHeader } from "@/components/AppHeader";
 import { Avatar } from "@/components/Avatar";
 import { Button } from "@/components/Button";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { Pill } from "@/components/Pill";
+import { ReportDialog } from "@/components/ReportDialog";
 import { Screen } from "@/components/Screen";
 import { ScreenSkeleton } from "@/components/Skeleton";
 import { SectionHeader } from "@/components/SectionHeader";
@@ -142,6 +148,7 @@ export default function TalentProfileScreen() {
       colors={colors}
       shadows={shadows}
       onMessage={() => router.push(`/(app)/messages/${detail.user.id}`)}
+      onBlocked={() => router.back()}
     />
   );
 }
@@ -155,6 +162,7 @@ type ProfileBodyProps = {
   colors: ReturnType<typeof useTheme>["colors"];
   shadows: ReturnType<typeof useTheme>["shadows"];
   onMessage: () => void;
+  onBlocked: () => void;
 };
 
 function ProfileBody({
@@ -166,6 +174,7 @@ function ProfileBody({
   colors,
   shadows,
   onMessage,
+  onBlocked,
 }: ProfileBodyProps) {
   const { profile, user, reviews } = detail;
   const profileId = profile.id as number;
@@ -319,9 +328,12 @@ function ProfileBody({
       {!isSelf ? (
         <ProfileActions
           profileId={profileId}
+          subjectUserId={user.id}
+          subjectName={user.name}
           viewerId={viewerId}
           viewerIsClient={viewerIsClient}
           onMessage={onMessage}
+          onBlocked={onBlocked}
         />
       ) : null}
 
@@ -393,37 +405,54 @@ function ProfileBody({
  */
 function ProfileActions({
   profileId,
+  subjectUserId,
+  subjectName,
   viewerId,
   viewerIsClient,
   onMessage,
+  onBlocked,
 }: {
   profileId: number;
+  subjectUserId: number;
+  subjectName: string;
   viewerId: number | undefined;
   viewerIsClient: boolean;
   onMessage: () => void;
+  onBlocked: () => void;
 }) {
   const { colors } = useTheme();
+
   const [saved, setSaved] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
+  const [trustMenuOpen, setTrustMenuOpen] = useState(false);
+  const [reporting, setReporting] = useState(false);
+  const [blocking, setBlocking] = useState(false);
 
   const canSave = viewerIsClient && viewerId != null;
+  const canUseTrustActions = viewerId != null;
 
   const loadSaved = useCallback(
     (signal: AbortSignal) =>
-      canSave ? loadSavedProfiles(viewerId, signal) : Promise.resolve([]),
+      canSave && viewerId != null
+        ? loadSavedProfiles(viewerId, signal)
+        : Promise.resolve([]),
     [canSave, viewerId],
   );
 
-  const { resource } = useAsyncResource(loadSaved, { deps: [canSave, viewerId] });
+  const { resource } = useAsyncResource(loadSaved, {
+    deps: [canSave, viewerId],
+  });
 
   const initial =
     resource.phase === "ready"
       ? resource.data.some((entry) => entry.profile?.id === profileId)
       : false;
+
   const isSaved = saved ?? initial;
 
   const onToggle = useCallback(() => {
     if (busy) return;
+
     const next = !isSaved;
     setSaved(next);
     setBusy(true);
@@ -432,40 +461,173 @@ function ProfileActions({
       .then((result) => setSaved(result.saved))
       .catch(() => {
         setSaved(!next);
-        Alert.alert("Couldn't update", "We couldn't save that just now. Try again.");
+        Alert.alert(
+          "Couldn't update",
+          "We couldn't save that just now. Try again.",
+        );
       })
       .finally(() => setBusy(false));
   }, [busy, isSaved, profileId]);
 
-  return (
-    <View style={styles.actions}>
-      <Button label="Message" onPress={onMessage} variant="primary" block={!canSave} />
+  const confirmBlock = useCallback(() => {
+    if (blocking) return;
 
-      {canSave ? (
-        <Pressable
-          onPress={onToggle}
-          disabled={busy}
-          accessibilityRole="button"
-          accessibilityLabel={isSaved ? "Remove from saved" : "Save creative"}
-          accessibilityState={{ selected: isSaved, disabled: busy }}
-          style={({ pressed }) => [
-            styles.saveButton,
-            {
-              backgroundColor: isSaved ? colors.primaryWash : colors.card,
-              borderColor: isSaved ? colors.primaryWashBorder : colors.border,
+    setTrustMenuOpen(false);
+
+    Alert.alert(
+      `Block ${subjectName}?`,
+      "You won't see each other's profiles, posts or normal direct messages. Existing Viewrr projects remain available so active work and payment obligations can still be completed.",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Block",
+          style: "destructive",
+          onPress: () => {
+            setBlocking(true);
+
+            void blockUser(subjectUserId)
+              .then(() => {
+                Alert.alert(
+                  "Account blocked",
+                  `${subjectName} has been blocked. You can undo this later in Settings → Blocked accounts.`,
+                  [
+                    {
+                      text: "OK",
+                      onPress: onBlocked,
+                    },
+                  ],
+                );
+              })
+              .catch(() => {
+                Alert.alert(
+                  "Couldn't block account",
+                  "We couldn't block this account just now. Please try again.",
+                );
+              })
+              .finally(() => setBlocking(false));
+          },
+        },
+      ],
+    );
+  }, [blocking, onBlocked, subjectName, subjectUserId]);
+
+  return (
+    <>
+      <View style={styles.actions}>
+        <Button
+          label="Message"
+          onPress={onMessage}
+          variant="primary"
+          block={!canSave && !canUseTrustActions}
+          style={canSave || canUseTrustActions ? styles.messageButton : undefined}
+        />
+
+        {canSave ? (
+          <Pressable
+            onPress={onToggle}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel={isSaved ? "Remove from saved" : "Save creative"}
+            accessibilityState={{
+              selected: isSaved,
+              disabled: busy,
+            }}
+            style={({ pressed }) => [
+              styles.saveButton,
+              {
+                backgroundColor: isSaved
+                  ? colors.primaryWash
+                  : colors.card,
+                borderColor: isSaved
+                  ? colors.primaryWashBorder
+                  : colors.border,
+              },
+              pressed && styles.pressed,
+            ]}
+          >
+            <Bookmark
+              size={18}
+              color={
+                isSaved
+                  ? colors.primary
+                  : colors.mutedForeground
+              }
+              fill={isSaved ? colors.primary : "transparent"}
+              strokeWidth={2.2}
+            />
+          </Pressable>
+        ) : null}
+
+        {canUseTrustActions ? (
+          <Pressable
+            onPress={() => setTrustMenuOpen(true)}
+            disabled={blocking}
+            accessibilityRole="button"
+            accessibilityLabel={`More options for ${subjectName}`}
+            accessibilityHint="Report or block this account"
+            accessibilityState={{
+              disabled: blocking,
+            }}
+            style={({ pressed }) => [
+              styles.saveButton,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+              },
+              pressed && styles.pressed,
+            ]}
+          >
+            <MoreHorizontal
+              size={19}
+              color={colors.mutedForeground}
+              strokeWidth={2.2}
+            />
+          </Pressable>
+        ) : null}
+      </View>
+
+      <ActionSheet
+        visible={trustMenuOpen}
+        title={subjectName}
+        message="Choose how you want to manage this account."
+        onClose={() => setTrustMenuOpen(false)}
+        actions={[
+          {
+            label: "Report to Viewrr",
+            icon: Flag,
+            description:
+              "Send this account to the Viewrr moderation team for review",
+            disabled: blocking,
+            onPress: () => {
+              setTrustMenuOpen(false);
+              setReporting(true);
             },
-            pressed && styles.pressed,
-          ]}
-        >
-          <Bookmark
-            size={18}
-            color={isSaved ? colors.primary : colors.mutedForeground}
-            fill={isSaved ? colors.primary : "transparent"}
-            strokeWidth={2.2}
-          />
-        </Pressable>
+          },
+          {
+            label: `Block ${subjectName}`,
+            icon: UserX,
+            tone: "destructive",
+            description:
+              "Hide each other and stop normal social and direct-message contact",
+            disabled: blocking,
+            onPress: confirmBlock,
+          },
+        ]}
+      />
+
+      {reporting ? (
+        <ReportDialog
+          visible
+          subjectType="user"
+          subjectId={subjectUserId}
+          subjectLabel={subjectName}
+          onClose={() => setReporting(false)}
+        />
       ) : null}
-    </View>
+    </>
   );
 }
 
@@ -650,6 +812,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing[2],
     marginTop: spacing[5],
+  },
+  messageButton: {
+    flex: 1,
   },
   saveButton: {
     width: 48,
