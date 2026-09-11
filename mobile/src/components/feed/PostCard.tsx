@@ -1,11 +1,21 @@
-import { Heart, MessageCircle, Trash2 } from "lucide-react-native";
+import {
+  Flag,
+  Heart,
+  MessageCircle,
+  MoreHorizontal,
+  Trash2,
+  UserX,
+} from "lucide-react-native";
 import { memo, useCallback, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { FeedItem } from "@/api/types";
+import { blockUser } from "@/api/trust";
+import { ActionSheet } from "@/components/ActionSheet";
 import { Avatar } from "@/components/Avatar";
 import { CommentThread } from "@/components/feed/CommentThread";
 import { PostMediaView } from "@/components/feed/PostMedia";
+import { ReportDialog } from "@/components/ReportDialog";
 import { SignInPrompt } from "@/components/SignInPrompt";
 import { parseJsonArray } from "@/lib/format";
 import { relativeTime } from "@/lib/time";
@@ -54,6 +64,7 @@ type PostCardProps = {
   onToggleLike: (postId: number) => void;
   onCommentAdded: (postId: number) => void;
   onDelete: (postId: number) => void;
+  onAuthorBlocked: (userId: number) => void;
 };
 
 function PostCardBase({
@@ -63,11 +74,15 @@ function PostCardBase({
   onToggleLike,
   onCommentAdded,
   onDelete,
+  onAuthorBlocked,
 }: PostCardProps) {
   const { colors, shadows } = useTheme();
   const { status } = useSession();
   const [showComments, setShowComments] = useState(false);
   const [gatePrompt, setGatePrompt] = useState<string | null>(null);
+  const [trustMenuOpen, setTrustMenuOpen] = useState(false);
+  const [reporting, setReporting] = useState(false);
+  const [blocking, setBlocking] = useState(false);
 
   const signedIn = status === "signed-in";
   const { post, user, liked } = item;
@@ -85,6 +100,46 @@ function PostCardBase({
       { text: "Delete", style: "destructive", onPress: () => onDelete(post.id) },
     ]);
   }, [onDelete, post.id]);
+
+  const confirmBlockAuthor = useCallback(() => {
+    if (blocking) return;
+
+    setTrustMenuOpen(false);
+
+    Alert.alert(
+      `Block ${user.name}?`,
+      "You won't see each other's profiles, posts or normal direct messages. Existing Viewrr projects remain available so active work and payment obligations can still be completed.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Block",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              setBlocking(true);
+
+              try {
+                await blockUser(user.id);
+                setBlocking(false);
+                onAuthorBlocked(user.id);
+
+                Alert.alert(
+                  "Account blocked",
+                  `${user.name} has been blocked. You can undo this later in Settings → Blocked accounts.`,
+                );
+              } catch {
+                setBlocking(false);
+                Alert.alert(
+                  "Couldn't block account",
+                  "We couldn't block this account just now. Please try again.",
+                );
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [blocking, onAuthorBlocked, user.id, user.name]);
 
   const onLikePress = useCallback(() => {
     if (!signedIn) {
@@ -136,6 +191,23 @@ function PostCardBase({
               style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
             >
               <Trash2 size={16} color={colors.mutedForeground} strokeWidth={2} />
+            </Pressable>
+          ) : signedIn ? (
+            <Pressable
+              onPress={() => setTrustMenuOpen(true)}
+              disabled={blocking}
+              hitSlop={hitSlop}
+              accessibilityRole="button"
+              accessibilityLabel={`More options for ${user.name}'s post`}
+              accessibilityHint="Report this post or block its author"
+              accessibilityState={{ disabled: blocking }}
+              style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+            >
+              <MoreHorizontal
+                size={18}
+                color={colors.mutedForeground}
+                strokeWidth={2}
+              />
             </Pressable>
           ) : null}
         </View>
@@ -203,6 +275,42 @@ function PostCardBase({
       {showComments ? (
         <CommentThread postId={post.id} onCommentAdded={() => onCommentAdded(post.id)} />
       ) : null}
+
+      <ActionSheet
+        visible={trustMenuOpen}
+        title={`Post by ${user.name}`}
+        message="Choose how you want to manage this content."
+        onClose={() => setTrustMenuOpen(false)}
+        actions={[
+          {
+            label: "Report post",
+            icon: Flag,
+            description: "Send this specific post to the Viewrr moderation team",
+            disabled: blocking,
+            onPress: () => {
+              setTrustMenuOpen(false);
+              setReporting(true);
+            },
+          },
+          {
+            label: `Block ${user.name}`,
+            icon: UserX,
+            tone: "destructive",
+            description:
+              "Hide this person's social content and stop normal direct-message contact",
+            disabled: blocking,
+            onPress: confirmBlockAuthor,
+          },
+        ]}
+      />
+
+      <ReportDialog
+        visible={reporting}
+        subjectType="post"
+        subjectId={post.id}
+        subjectLabel={`this post by ${user.name}`}
+        onClose={() => setReporting(false)}
+      />
 
       <SignInPrompt
         visible={gatePrompt !== null}

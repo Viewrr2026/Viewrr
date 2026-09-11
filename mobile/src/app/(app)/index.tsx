@@ -285,6 +285,11 @@ export default function FeedScreen() {
             onToggleLike={onToggleLike}
             onCommentAdded={onCommentAdded}
             onDelete={onDelete}
+            onAuthorBlocked={(blockedUserId) =>
+              setItems((current) =>
+                current.filter((entry) => entry.user.id !== blockedUserId),
+              )
+            }
           />
         )}
         ListHeaderComponent={header}

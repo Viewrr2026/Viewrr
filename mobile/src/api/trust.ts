@@ -10,7 +10,7 @@ import { api } from "@/api/client";
  *   POST   /api/reports            -> { reportId }
  *
  * The report vocabulary is the server's own enum, transcribed rather than
- * guessed: subject types user | profile | post | message | brief | project and
+ * guessed: subject types user | profile | post | comment | message | brief | project and
  * reasons spam | harassment | fake | inappropriate | other.
  */
 
@@ -32,7 +32,14 @@ export const REPORT_REASON_LABELS: Record<ReportReason, string> = {
   other: "Something else",
 };
 
-export type ReportSubjectType = "user" | "profile" | "post" | "message" | "brief" | "project";
+export type ReportSubjectType =
+  | "user"
+  | "profile"
+  | "post"
+  | "comment"
+  | "message"
+  | "brief"
+  | "project";
 
 /** One row of GET /api/me/blocks after the additive hydration. */
 export type BlockedUser = {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   Pressable,
   StyleSheet,
@@ -8,12 +9,20 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SendHorizontal } from "lucide-react-native";
+import {
+  Flag,
+  MoreHorizontal,
+  SendHorizontal,
+  UserX,
+} from "lucide-react-native";
 
 import { addComment, loadComments } from "@/api/feed";
 import { ApiError } from "@/api/errors";
+import { blockUser } from "@/api/trust";
 import type { CommentItem } from "@/api/types";
+import { ActionSheet } from "@/components/ActionSheet";
 import { Avatar } from "@/components/Avatar";
+import { ReportDialog } from "@/components/ReportDialog";
 import { SignInPrompt } from "@/components/SignInPrompt";
 import { relativeTime } from "@/lib/time";
 import { useSession } from "@/session/SessionProvider";
@@ -46,7 +55,7 @@ export function CommentThread({
   onCommentAdded: () => void;
 }) {
   const { colors } = useTheme();
-  const { status } = useSession();
+  const { status, user: viewer } = useSession();
   const signedIn = status === "signed-in";
 
   const [gateOpen, setGateOpen] = useState(false);
@@ -54,6 +63,9 @@ export function CommentThread({
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [selectedComment, setSelectedComment] = useState<CommentItem | null>(null);
+  const [reportingComment, setReportingComment] = useState<CommentItem | null>(null);
+  const [blockingUserId, setBlockingUserId] = useState<number | null>(null);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -108,6 +120,57 @@ export function CommentThread({
     }
   }, [draft, onCommentAdded, postId, sending, signedIn]);
 
+  const confirmBlockCommentAuthor = useCallback(
+    (item: CommentItem) => {
+      if (blockingUserId !== null) return;
+
+      const target = item.user;
+      setSelectedComment(null);
+
+      Alert.alert(
+        `Block ${target.name}?`,
+        "You won't see each other's profiles, posts or normal direct messages. Existing Viewrr projects remain available so active work and payment obligations can still be completed.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Block",
+            style: "destructive",
+            onPress: () => {
+              void (async () => {
+                setBlockingUserId(target.id);
+
+                try {
+                  await blockUser(target.id);
+
+                  if (!mounted.current) return;
+
+                  setItems((current) =>
+                    (current ?? []).filter((entry) => entry.user.id !== target.id),
+                  );
+                  setBlockingUserId(null);
+
+                  Alert.alert(
+                    "Account blocked",
+                    `${target.name} has been blocked. You can undo this later in Settings → Blocked accounts.`,
+                  );
+                } catch {
+                  if (!mounted.current) return;
+
+                  setBlockingUserId(null);
+                  Alert.alert(
+                    "Couldn't block account",
+                    "We couldn't block this account just now. Please try again.",
+                  );
+                }
+              })();
+            },
+          },
+        ],
+      );
+    },
+    [blockingUserId],
+  );
+
   const canSend = draft.trim().length > 0 && !sending;
 
   return (
@@ -119,25 +182,100 @@ export function CommentThread({
           No comments yet. Be the first to reply.
         </Text>
       ) : (
-        items.map(({ comment, user }) => (
-          <View key={comment.id} style={styles.comment}>
-            <Avatar name={user.name} uri={user.avatar} size="sm" />
-            <View style={styles.commentBody}>
-              <View style={styles.commentHead}>
-                <Text style={[styles.commentName, { color: colors.foreground }]} numberOfLines={1}>
-                  {user.name}
-                </Text>
-                <Text style={[styles.commentTime, { color: colors.mutedForeground }]}>
-                  {relativeTime(comment.createdAt)}
+        items.map((item) => {
+          const { comment, user } = item;
+          const canModerate =
+            signedIn && viewer?.id != null && user.id !== viewer.id;
+
+          return (
+            <View key={comment.id} style={styles.comment}>
+              <Avatar name={user.name} uri={user.avatar} size="sm" />
+
+              <View style={styles.commentBody}>
+                <View style={styles.commentHead}>
+                  <Text
+                    style={[styles.commentName, { color: colors.foreground }]}
+                    numberOfLines={1}
+                  >
+                    {user.name}
+                  </Text>
+
+                  <Text style={[styles.commentTime, { color: colors.mutedForeground }]}>
+                    {relativeTime(comment.createdAt)}
+                  </Text>
+
+                  {canModerate ? (
+                    <Pressable
+                      onPress={() => setSelectedComment(item)}
+                      disabled={blockingUserId !== null}
+                      hitSlop={hitSlop}
+                      accessibilityRole="button"
+                      accessibilityLabel={`More options for ${user.name}'s comment`}
+                      accessibilityHint="Report this comment or block its author"
+                      accessibilityState={{ disabled: blockingUserId !== null }}
+                      style={({ pressed }) => [
+                        styles.commentMore,
+                        pressed && styles.gatePressed,
+                      ]}
+                    >
+                      <MoreHorizontal
+                        size={17}
+                        color={colors.mutedForeground}
+                        strokeWidth={2}
+                      />
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                <Text style={[styles.commentText, { color: colors.foreground }]}>
+                  {comment.content}
                 </Text>
               </View>
-              <Text style={[styles.commentText, { color: colors.foreground }]}>
-                {comment.content}
-              </Text>
             </View>
-          </View>
-        ))
+          );
+        })
       )}
+
+      {selectedComment ? (
+        <ActionSheet
+          visible
+          title={`Comment by ${selectedComment.user.name}`}
+          message="Choose how you want to manage this content."
+          onClose={() => setSelectedComment(null)}
+          actions={[
+            {
+              label: "Report comment",
+              icon: Flag,
+              description: "Send this specific comment to the Viewrr moderation team",
+              disabled: blockingUserId !== null,
+              onPress: () => {
+                const item = selectedComment;
+                setSelectedComment(null);
+                setReportingComment(item);
+              },
+            },
+            {
+              label: `Block ${selectedComment.user.name}`,
+              icon: UserX,
+              tone: "destructive",
+              description:
+                "Hide this person's social content and stop normal direct-message contact",
+              disabled: blockingUserId !== null,
+              onPress: () => confirmBlockCommentAuthor(selectedComment),
+            },
+          ]}
+        />
+      ) : null}
+
+      {reportingComment ? (
+        <ReportDialog
+          visible
+          subjectType="comment"
+          subjectId={reportingComment.comment.id}
+          subjectLabel={`this comment by ${reportingComment.user.name}`}
+          onClose={() => setReportingComment(null)}
+        />
+      ) : null}
 
       {error ? <Text style={[styles.error, { color: colors.destructive }]}>{error}</Text> : null}
 
@@ -240,10 +378,18 @@ const styles = StyleSheet.create({
   },
   commentName: {
     ...typography.smallBold,
-    flexShrink: 1,
+    flex: 1,
+    minWidth: 0,
   },
   commentTime: {
     ...typography.caption,
+  },
+  commentMore: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    marginVertical: -6,
   },
   commentText: {
     ...typography.small,
