@@ -582,6 +582,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const { valid, wasLegacy } = await verifyPassword(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: "Invalid email or password." });
 
+    if ((user as any).accountStatus === "suspended") {
+      return res.status(403).json({
+        error: "Your account has been suspended. Contact support if you believe this is a mistake.",
+        code: "ACCOUNT_SUSPENDED",
+      });
+    }
+
     // PRD-019: Opportunistic Argon2id migration (fire-and-forget; never blocks login)
     if (wasLegacy) {
       migratePasswordIfLegacy(user.id, password).catch((e: any) =>
@@ -631,6 +638,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
     const { valid, wasLegacy } = await verifyPassword(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: "Invalid email or password." });
+
+    if ((user as any).accountStatus === "suspended") {
+      return res.status(403).json({
+        error: "Your account has been suspended. Contact support if you believe this is a mistake.",
+        code: "ACCOUNT_SUSPENDED",
+      });
+    }
 
     if (wasLegacy) {
       migratePasswordIfLegacy(user.id, password).catch((e: any) =>
@@ -2321,8 +2335,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     // blocked user cannot even register-then-unregister a like as a ping.
     const likeTarget = await storage.getPost(Number(req.params.id));
     if (likeTarget && likeTarget.post.userId !== userId) {
-      if (await blocksMessaging(userId, likeTarget.post.userId)) {
-        return res.status(403).json({ error: "You cannot interact with this post.", code: "BLOCKED" });
+      if (await isBlockedEitherWay(userId, likeTarget.post.userId)) {
+        return res.status(403).json({
+          error: "You cannot interact with this post.",
+          code: "BLOCKED",
+        });
       }
     }
     const liked = await storage.toggleLike(Number(req.params.id), userId);
@@ -2385,9 +2402,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const targetPost = await storage.getPost(Number(req.params.id));
       if (targetPost && targetPost.post.userId !== req.auth!.userId) {
-        if (await blocksMessaging(req.auth!.userId, targetPost.post.userId)) {
+        if (await isBlockedEitherWay(req.auth!.userId, targetPost.post.userId)) {
           // Same wording in both directions — do not reveal who blocked whom.
-          return res.status(403).json({ error: "You cannot comment on this post.", code: "BLOCKED" });
+          // Project relationships preserve project fulfilment only; they do not
+          // reopen social interaction after either party has blocked the other.
+          return res.status(403).json({
+            error: "You cannot comment on this post.",
+            code: "BLOCKED",
+          });
         }
       }
 

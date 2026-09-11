@@ -217,7 +217,15 @@ export async function blocksMessaging(a: number, b: number): Promise<boolean> {
 
 // ─── Reports ─────────────────────────────────────────────────────────────────
 
-const VALID_SUBJECT_TYPES = ["user", "profile", "post", "message", "brief", "project"] as const;
+const VALID_SUBJECT_TYPES = [
+  "user",
+  "profile",
+  "post",
+  "comment",
+  "message",
+  "brief",
+  "project",
+] as const;
 const VALID_REASONS = ["spam", "harassment", "fake", "inappropriate", "other"] as const;
 
 type ValidSubjectType = typeof VALID_SUBJECT_TYPES[number];
