@@ -1,9 +1,16 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ChevronLeft, MessageCircle } from "lucide-react-native";
+import {
+  ChevronLeft,
+  Flag,
+  MessageCircle,
+  MoreHorizontal,
+  UserX,
+} from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   KeyboardAvoidingView,
@@ -24,10 +31,13 @@ import {
   type MessagePage,
 } from "@/api/messages";
 import { loadTalentDetail } from "@/api/talent";
+import { blockUser } from "@/api/trust";
+import { ActionSheet } from "@/components/ActionSheet";
 import { AppHeader } from "@/components/AppHeader";
 import { Avatar } from "@/components/Avatar";
 import { DataState } from "@/components/DataState";
 import { EmptyState } from "@/components/EmptyState";
+import { ReportDialog } from "@/components/ReportDialog";
 import { Screen } from "@/components/Screen";
 import { MessageBubble } from "@/components/messages/MessageBubble";
 import { MessageComposer } from "@/components/messages/MessageComposer";
@@ -112,6 +122,11 @@ export default function Conversation() {
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+
+  const [trustMenuOpen, setTrustMenuOpen] = useState(false);
+  const [reporting, setReporting] = useState(false);
+  const [blocking, setBlocking] = useState(false);
+
   const [counterparty, setCounterparty] = useState<{
     name: string;
     avatar: string | null;
@@ -351,6 +366,53 @@ export default function Conversation() {
     [meId, otherUserId, valid],
   );
 
+  const confirmBlock = useCallback(() => {
+    if (!valid || blocking) return;
+
+    const name = counterparty?.name ?? "this account";
+
+    setTrustMenuOpen(false);
+
+    Alert.alert(
+      `Block ${name}?`,
+      "You won't see each other's profiles, posts or normal direct messages. Existing Viewrr projects remain available so active work and payment obligations can still be completed.",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Block",
+          style: "destructive",
+          onPress: () => {
+            setBlocking(true);
+
+            void blockUser(otherUserId)
+              .then(() => {
+                Alert.alert(
+                  "Account blocked",
+                  `${name} has been blocked. You can undo this later in Settings → Blocked accounts.`,
+                  [
+                    {
+                      text: "OK",
+                      onPress: () => router.replace("/(app)/messages"),
+                    },
+                  ],
+                );
+              })
+              .catch(() => {
+                Alert.alert(
+                  "Couldn't block account",
+                  "We couldn't block this account just now. Please try again.",
+                );
+              })
+              .finally(() => setBlocking(false));
+          },
+        },
+      ],
+    );
+  }, [blocking, counterparty?.name, otherUserId, router, valid]);
+
   /* ── Render ────────────────────────────────────────────────────────────── */
 
   const rows = useMemo(
@@ -512,7 +574,68 @@ export default function Conversation() {
             </Text>
           </View>
         )}
+
+        {counterparty && meId != null ? (
+          <Pressable
+            onPress={() => setTrustMenuOpen(true)}
+            disabled={blocking}
+            hitSlop={hitSlop}
+            accessibilityRole="button"
+            accessibilityLabel={`More options for ${counterparty.name}`}
+            accessibilityHint="Report or block this account"
+            accessibilityState={{ disabled: blocking }}
+            style={({ pressed }) => [
+              styles.threadMore,
+              pressed && styles.threadPressed,
+            ]}
+          >
+            <MoreHorizontal
+              size={22}
+              color={colors.foreground}
+              strokeWidth={2.1}
+            />
+          </Pressable>
+        ) : null}
       </View>
+
+      <ActionSheet
+        visible={trustMenuOpen}
+        title={counterparty?.name ?? "Conversation"}
+        message="Choose how you want to manage this account."
+        onClose={() => setTrustMenuOpen(false)}
+        actions={[
+          {
+            label: "Report to Viewrr",
+            icon: Flag,
+            description:
+              "Send this account to the Viewrr moderation team for review",
+            disabled: blocking,
+            onPress: () => {
+              setTrustMenuOpen(false);
+              setReporting(true);
+            },
+          },
+          {
+            label: `Block ${counterparty?.name ?? "account"}`,
+            icon: UserX,
+            tone: "destructive",
+            description:
+              "Stop normal social and direct-message contact with this account",
+            disabled: blocking,
+            onPress: confirmBlock,
+          },
+        ]}
+      />
+
+      {reporting && counterparty ? (
+        <ReportDialog
+          visible
+          subjectType="user"
+          subjectId={otherUserId}
+          subjectLabel={`${counterparty.name} from Messages`}
+          onClose={() => setReporting(false)}
+        />
+      ) : null}
 
       <View
         ref={keyboardHostRef}
@@ -628,6 +751,13 @@ const styles = StyleSheet.create({
     height: 42,
     alignItems: "center",
     justifyContent: "center",
+  },
+  threadMore: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
   },
   threadIdentity: {
     flex: 1,
