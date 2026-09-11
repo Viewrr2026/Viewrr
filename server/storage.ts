@@ -500,7 +500,9 @@ class Storage implements IStorage {
 
     let results: ProfileWithUser[] = allProfiles
       .map(p => ({ profile: p, user: safeUser(userMap.get(p.userId)!) as schema.User }))
-      .filter(pw => pw.user);
+      // Public marketplace rule: only active accounts are discoverable.
+      // Suspended/anonymised accounts remain internally retained but invisible.
+      .filter(pw => pw.user && pw.user.accountStatus === "active");
 
     if (filters?.specialism && filters.specialism !== "all") {
       results = results.filter(pw => {
@@ -600,7 +602,7 @@ class Storage implements IStorage {
     return allProfiles
       .filter(p => p.featured === 1)
       .map(p => ({ profile: p, user: safeUser(userMap.get(p.userId)!) as schema.User }))
-      .filter(pw => pw.user)
+      .filter(pw => pw.user && pw.user.accountStatus === "active")
       .slice(0, 8);
   }
 
@@ -848,7 +850,7 @@ class Storage implements IStorage {
     const results: ProfileWithUser[] = [];
     for (const s of savedRows) {
       const pw = await this.getProfile(s.profileId);
-      if (pw) results.push(pw);
+      if (pw && pw.user.accountStatus === "active") results.push(pw);
     }
     return results;
   }
@@ -867,6 +869,9 @@ class Storage implements IStorage {
   }
 
   async isSaved(clientId: number, profileId: number): Promise<boolean> {
+    const target = await this.getProfile(profileId);
+    if (!target || target.user.accountStatus !== "active") return false;
+
     const r = await db.select().from(schema.saved)
       .where(and(eq(schema.saved.clientId, clientId), eq(schema.saved.profileId, profileId)));
     return !!r[0];

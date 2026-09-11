@@ -1504,11 +1504,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       let profileOwnerId = rawId;
       const profileRow = await storage.getProfile(rawId);
       if (profileRow) {
+        if (profileRow.user.accountStatus !== "active") {
+          return res.json({ ok: true, notFound: true });
+        }
         profileOwnerId = profileRow.user.id;
       } else {
-        // Might already be a user ID — verify the user exists
+        // Might already be a user ID — verify the user exists and is public.
         const userRow = await storage.getUser(rawId);
-        if (!userRow) return res.json({ ok: true, notFound: true });
+        if (!userRow || userRow.accountStatus !== "active") {
+          return res.json({ ok: true, notFound: true });
+        }
         profileOwnerId = userRow.id;
       }
 
@@ -1575,7 +1580,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // Quick lookup: get or create a profile by user ID (used by ReviewModal)
   app.get("/api/profile-by-user/:userId", async (req, res) => {
     try {
-      const profile = await storage.getOrCreateProfileForUser(Number(req.params.userId));
+      const userId = Number(req.params.userId);
+      const user = await storage.getUser(userId);
+      if (!user || user.accountStatus !== "active") {
+        return res.status(404).json({ error: "Profile not found" });
+      }
+
+      const profile = await storage.getOrCreateProfileForUser(userId);
       // PRD-018 E1: strip internal accreditation fields
       res.json(profile ? safePublicProfile(profile) : profile);
     } catch (e: any) {
@@ -1592,10 +1603,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const profileByUser = await storage.getProfileByUserId(idNum);
       if (profileByUser) pw = await storage.getProfile(profileByUser.id);
     }
-    // 3. If still nothing — check if it's a valid user (e.g. a client with no profile row)
+    // Public profile visibility is server-authoritative.
+    if (pw && pw.user.accountStatus !== "active") {
+      return res.status(404).json({ error: "Profile not found" });
+    }
+
+    // 3. If still nothing — check if it's a valid public user
+    // (e.g. an active client with no profile row).
     if (!pw) {
       const userOnly = await storage.getUser(idNum);
-      if (!userOnly) return res.status(404).json({ error: "Profile not found" });
+      if (!userOnly || userOnly.accountStatus !== "active") {
+        return res.status(404).json({ error: "Profile not found" });
+      }
       // Return a synthetic profile stub so the frontend can render a client card
       return res.json({
         isClientStub: true,
@@ -2075,7 +2094,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.post("/api/saved/toggle", requireAuth, async (req, res) => {
     const { profileId } = req.body;
     const clientId = req.auth!.userId;
-    const saved = await storage.toggleSaved(clientId, Number(profileId));
+    const profileIdNum = Number(profileId);
+
+    const target = Number.isFinite(profileIdNum)
+      ? await storage.getProfile(profileIdNum)
+      : undefined;
+
+    if (!target || target.user.accountStatus !== "active") {
+      return res.status(404).json({ error: "Profile not found" });
+    }
+
+    const saved = await storage.toggleSaved(clientId, profileIdNum);
     res.json({ saved });
   });
 
