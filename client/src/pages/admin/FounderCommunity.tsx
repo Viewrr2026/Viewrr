@@ -10,6 +10,7 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  UserCheck,
   UserRound,
 } from "lucide-react";
 
@@ -56,6 +57,22 @@ type ReportsResponse = {
   total: number;
   limit: number;
   offset: number;
+};
+
+type SuspendedUser = {
+  id: number;
+  name: string;
+  email: string | null;
+  role: string | null;
+  account_status: string;
+  suspended_at: string | null;
+  suspended_reason: string | null;
+  suspended_by: number | null;
+};
+
+type SuspendedUsersResponse = {
+  users: SuspendedUser[];
+  total: number;
 };
 
 type ModeratorAction =
@@ -146,6 +163,8 @@ export default function FounderCommunity() {
     action: ModeratorAction;
   } | null>(null);
   const [note, setNote] = useState("");
+  const [unsuspendTarget, setUnsuspendTarget] = useState<SuspendedUser | null>(null);
+  const [unsuspendNote, setUnsuspendNote] = useState("");
 
   const reportsQuery = useQuery<ReportsResponse>({
     queryKey: ["founder-open-reports"],
@@ -157,6 +176,19 @@ export default function FounderCommunity() {
         throw new Error(body?.error ?? "Could not load moderation reports.");
       }
 
+      return res.json();
+    },
+    refetchInterval: 15_000,
+  });
+
+  const suspendedUsersQuery = useQuery<SuspendedUsersResponse>({
+    queryKey: ["founder-suspended-users"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/suspended-users");
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? "Could not load suspended accounts.");
+      }
       return res.json();
     },
     refetchInterval: 15_000,
@@ -255,8 +287,70 @@ export default function FounderCommunity() {
     },
   });
 
+  const unsuspendMutation = useMutation({
+    mutationFn: async ({
+      userId,
+      note,
+    }: {
+      userId: number;
+      note: string;
+    }) => {
+      const cleanNote = note.trim();
+
+      if (!cleanNote) {
+        throw new Error("A moderator note is required to unsuspend an account.");
+      }
+
+      const res = await fetch(`/api/admin/users/${userId}/unsuspend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: cleanNote }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? "Could not unsuspend this account.");
+      }
+
+      return { userId };
+    },
+
+    onSuccess: () => {
+      toast({
+        title: "Account unsuspended",
+        description:
+          "The account is active again. Previously revoked sessions remain revoked, so the user must sign in again.",
+      });
+
+      setUnsuspendTarget(null);
+      setUnsuspendNote("");
+
+      void Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["founder-suspended-users"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["founder-open-reports"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["founder-open-reports-summary"],
+        }),
+      ]);
+    },
+
+    onError: (error: Error) => {
+      toast({
+        title: "Could not unsuspend account",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const reports = reportsQuery.data?.reports ?? [];
   const total = reportsQuery.data?.total ?? 0;
+  const suspendedUsers = suspendedUsersQuery.data?.users ?? [];
+  const suspendedTotal = suspendedUsersQuery.data?.total ?? 0;
 
   return (
     <AdminLayout>
@@ -266,7 +360,7 @@ export default function FounderCommunity() {
       />
 
       <div className="space-y-5">
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
@@ -305,6 +399,126 @@ export default function FounderCommunity() {
               Founder decisions remain manual.
             </p>
           </div>
+
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+                Suspended accounts
+              </span>
+              <Ban size={16} className="text-red-500" />
+            </div>
+            <p className="mt-2 text-3xl font-semibold text-zinc-900 dark:text-zinc-100">
+              {suspendedTotal}
+            </p>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex flex-col gap-3 border-b border-zinc-200 p-5 dark:border-zinc-800 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+                Suspended accounts
+              </h2>
+              <p className="mt-1 text-xs text-zinc-500">
+                Account enforcement is managed independently from individual reports.
+              </p>
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void suspendedUsersQuery.refetch()}
+              disabled={suspendedUsersQuery.isFetching}
+            >
+              <RefreshCw
+                size={14}
+                className={cn(
+                  "mr-2",
+                  suspendedUsersQuery.isFetching && "animate-spin",
+                )}
+              />
+              Refresh
+            </Button>
+          </div>
+
+          {suspendedUsersQuery.isLoading ? (
+            <div className="flex justify-center py-10">
+              <Loader2 size={22} className="animate-spin text-zinc-400" />
+            </div>
+          ) : suspendedUsersQuery.isError ? (
+            <div className="p-5">
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-950/30">
+                <p className="text-sm font-semibold text-red-700 dark:text-red-300">
+                  Could not load suspended accounts
+                </p>
+                <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                  {suspendedUsersQuery.error instanceof Error
+                    ? suspendedUsersQuery.error.message
+                    : "Try refreshing the page."}
+                </p>
+              </div>
+            </div>
+          ) : suspendedUsers.length === 0 ? (
+            <div className="px-5 py-8 text-center">
+              <ShieldCheck size={24} className="mx-auto text-green-500" />
+              <p className="mt-2 text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                No suspended accounts
+              </p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Suspended users will remain visible here until they are reinstated.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {suspendedUsers.map((user) => (
+                <div
+                  key={user.id}
+                  className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold text-zinc-900 dark:text-zinc-100">
+                        {user.name}
+                      </p>
+                      <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-600 dark:bg-red-950/40 dark:text-red-400">
+                        Suspended
+                      </span>
+                    </div>
+
+                    <p className="mt-1 text-xs text-zinc-500">
+                      User #{user.id}
+                      {user.email ? ` · ${user.email}` : ""}
+                      {user.role ? ` · ${user.role}` : ""}
+                    </p>
+
+                    <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+                      {user.suspended_reason ?? "No suspension reason recorded."}
+                    </p>
+
+                    <p className="mt-1 text-xs text-zinc-500">
+                      Suspended {formatDate(user.suspended_at)}
+                      {user.suspended_by
+                        ? ` · by admin #${user.suspended_by}`
+                        : ""}
+                    </p>
+                  </div>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="justify-start"
+                    onClick={() => {
+                      setUnsuspendNote("");
+                      setUnsuspendTarget(user);
+                    }}
+                  >
+                    <UserCheck size={14} className="mr-2" />
+                    Unsuspend account
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-3">
@@ -549,6 +763,89 @@ export default function FounderCommunity() {
           </div>
         )}
       </div>
+
+      <Dialog
+        open={unsuspendTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !unsuspendMutation.isPending) {
+            setUnsuspendTarget(null);
+            setUnsuspendNote("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Unsuspend account</DialogTitle>
+          </DialogHeader>
+
+          {unsuspendTarget && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+                <p className="text-sm font-semibold">
+                  {unsuspendTarget.name}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">
+                  User #{unsuspendTarget.id}
+                  {unsuspendTarget.email
+                    ? ` · ${unsuspendTarget.email}`
+                    : ""}
+                </p>
+              </div>
+
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Restore this account to active status. Existing revoked sessions
+                will stay revoked, so the user must sign in again.
+              </p>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-zinc-600 dark:text-zinc-400">
+                  Moderator note
+                </label>
+                <Textarea
+                  rows={4}
+                  value={unsuspendNote}
+                  onChange={(event) => setUnsuspendNote(event.target.value)}
+                  placeholder="Why is this account being reinstated?"
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setUnsuspendTarget(null);
+                setUnsuspendNote("");
+              }}
+              disabled={unsuspendMutation.isPending}
+            >
+              Cancel
+            </Button>
+
+            <Button
+              disabled={
+                !unsuspendTarget ||
+                !unsuspendNote.trim() ||
+                unsuspendMutation.isPending
+              }
+              onClick={() => {
+                if (!unsuspendTarget) return;
+
+                unsuspendMutation.mutate({
+                  userId: unsuspendTarget.id,
+                  note: unsuspendNote,
+                });
+              }}
+            >
+              {unsuspendMutation.isPending && (
+                <Loader2 size={14} className="mr-2 animate-spin" />
+              )}
+              Unsuspend account
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={selected !== null}

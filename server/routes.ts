@@ -7626,6 +7626,51 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── PRD-021 WS-F: Suspension ──────────────────────────────────────────────
+
+  // GET /api/admin/suspended-users
+  //
+  // Recovery must not depend on an open report: suspending an account resolves
+  // the report that triggered the action, so the Founder control plane needs a
+  // durable account-level view of every currently suspended user.
+  app.get("/api/admin/suspended-users", requireAdminGuard, async (_req: any, res: any) => {
+    try {
+      const sql = neon(process.env.DATABASE_URL!);
+
+      const rows = await sql`
+        SELECT
+          id,
+          name,
+          email,
+          role,
+          account_status,
+          suspended_at,
+          suspended_reason,
+          suspended_by
+        FROM users
+        WHERE account_status = 'suspended'
+        ORDER BY suspended_at DESC NULLS LAST, id DESC
+      `;
+
+      res.json({
+        users: rows.map((row: any) => ({
+          id: Number(row.id),
+          name: row.name ?? `User #${row.id}`,
+          email: row.email ?? null,
+          role: row.role ?? null,
+          account_status: row.account_status,
+          suspended_at: row.suspended_at ?? null,
+          suspended_reason: row.suspended_reason ?? null,
+          suspended_by:
+            row.suspended_by == null ? null : Number(row.suspended_by),
+        })),
+        total: rows.length,
+      });
+    } catch (e: any) {
+      console.error("[admin/suspended-users] Failed:", e?.message);
+      res.status(500).json({ error: "Could not load suspended accounts." });
+    }
+  });
+
   // POST /api/admin/users/:id/suspend
   app.post("/api/admin/users/:id/suspend", requireAdminGuard, async (req: any, res: any) => {
     try {
