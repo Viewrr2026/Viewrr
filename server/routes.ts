@@ -1504,14 +1504,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       let profileOwnerId = rawId;
       const profileRow = await storage.getProfile(rawId);
       if (profileRow) {
-        if (profileRow.user.accountStatus !== "active" || profileRow.user.isAdmin) {
+        if (profileRow.user.accountStatus !== "active" || profileRow.user.isAdmin || profileRow.user.role !== "freelancer") {
           return res.json({ ok: true, notFound: true });
         }
         profileOwnerId = profileRow.user.id;
       } else {
         // Might already be a user ID — verify the user exists and is public.
         const userRow = await storage.getUser(rawId);
-        if (!userRow || userRow.accountStatus !== "active" || userRow.isAdmin) {
+        if (!userRow || userRow.accountStatus !== "active" || userRow.isAdmin || userRow.role !== "freelancer") {
           return res.json({ ok: true, notFound: true });
         }
         profileOwnerId = userRow.id;
@@ -1582,7 +1582,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     try {
       const userId = Number(req.params.userId);
       const user = await storage.getUser(userId);
-      if (!user || user.accountStatus !== "active" || user.isAdmin) {
+      if (!user || user.accountStatus !== "active" || user.isAdmin || user.role !== "freelancer") {
         return res.status(404).json({ error: "Profile not found" });
       }
 
@@ -1604,7 +1604,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (profileByUser) pw = await storage.getProfile(profileByUser.id);
     }
     // Public profile visibility is server-authoritative.
-    if (pw && (pw.user.accountStatus !== "active" || pw.user.isAdmin)) {
+    if (pw && (pw.user.accountStatus !== "active" || pw.user.isAdmin || pw.user.role !== "freelancer")) {
       return res.status(404).json({ error: "Profile not found" });
     }
 
@@ -1612,7 +1612,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     // (e.g. an active client with no profile row).
     if (!pw) {
       const userOnly = await storage.getUser(idNum);
-      if (!userOnly || userOnly.accountStatus !== "active" || userOnly.isAdmin) {
+      if (!userOnly || userOnly.accountStatus !== "active" || userOnly.isAdmin || userOnly.role !== "freelancer") {
         return res.status(404).json({ error: "Profile not found" });
       }
       // Return a synthetic profile stub so the frontend can render a client card
@@ -2100,7 +2100,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       ? await storage.getProfile(profileIdNum)
       : undefined;
 
-    if (!target || target.user.accountStatus !== "active" || target.user.isAdmin) {
+    if (!target || target.user.accountStatus !== "active" || target.user.isAdmin || target.user.role !== "freelancer") {
       return res.status(404).json({ error: "Profile not found" });
     }
 
