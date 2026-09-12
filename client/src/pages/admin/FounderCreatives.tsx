@@ -10,6 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/components/AuthProvider";
 import AdminLayout from "@/components/dashboard/AdminLayout";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
+import FounderRemoveAccount from "@/components/dashboard/FounderRemoveAccount";
 import {
   Search, Filter, X, ChevronRight, Loader2,
   Shield, ShieldCheck, Star, Briefcase, Calendar,
@@ -135,6 +136,13 @@ function DetailPanel({ userId, onClose }: { userId: number; onClose: () => void 
               <p className="text-xs text-zinc-500">{data.user.email}</p>
             </div>
           </div>
+
+          <FounderRemoveAccount
+            userId={userId}
+            userName={data.user.name}
+            isAdmin={Boolean(data.user.isAdmin)}
+            onRemoved={() => window.location.reload()}
+          />
 
           {/* Account fields */}
           <div className="grid grid-cols-2 gap-3">

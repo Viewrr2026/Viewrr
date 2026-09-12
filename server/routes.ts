@@ -80,7 +80,7 @@ import { createReport, resolveReport, suspendUser, unsuspendUser, blockUser, unb
   isBlockedEitherWay, isBlockedEitherWaySafe, getBlockedUserIds, sharesActiveEngagement,
 } from "./services/trust-service";
 import {
-  moderateContent, recordContentFlags, listContentFlags, resolveContentFlag,
+  moderateContent, recordContentFlags, listContentFlags, resolveContentFlag, recordModerationAudit,
   POST_BODY_MAX, COMMENT_BODY_MAX, MEDIA_URL_MAX, TAGS_JSON_MAX, MEDIA_TYPES,
   GUIDELINES_URL,
 } from "./services/moderation-service";
@@ -5815,7 +5815,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         }
       }
 
-      let creatives = allUsers.filter((u: any) => u.role === 'freelancer');
+      let creatives = allUsers.filter((u: any) => u.role === 'freelancer' && u.accountStatus !== 'anonymised');
 
       // Search: name or email
       if (search.trim()) {
@@ -5886,7 +5886,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         projectsByClient.get(proj.clientId)!.push(proj);
       }
 
-      let clients = allUsers.filter((u: any) => u.role === 'client');
+      let clients = allUsers.filter((u: any) => u.role === 'client' && u.accountStatus !== 'anonymised');
 
       // Search: name or email
       if (search.trim()) {
@@ -7731,6 +7731,112 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) {
       console.error("[admin/suspended-users] Failed:", e?.message);
       res.status(500).json({ error: "Could not load suspended accounts." });
+    }
+  });
+
+  // POST /api/admin/users/:id/remove
+  // Founder/admin account removal. This deliberately anonymises rather than
+  // hard-deleting the users row so contractual, financial and audit records
+  // retain referential integrity.
+  app.post("/api/admin/users/:id/remove", requireAdminGuard, async (req: any, res: any) => {
+    try {
+      const targetId = Number(req.params.id);
+      const adminId = req.auth!.userId;
+      const { confirmation, reason } = req.body ?? {};
+
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        return res.status(400).json({ error: "Invalid user ID." });
+      }
+
+      // Server-side confirmation is mandatory — the UI check alone is not a
+      // security boundary.
+      if (confirmation !== "REMOVE") {
+        return res.status(400).json({
+          error: 'Type "REMOVE" to confirm account removal.',
+        });
+      }
+
+      if (targetId === adminId) {
+        return res.status(400).json({
+          error: "You cannot remove your own founder account.",
+        });
+      }
+
+      const target = await storage.getUser(targetId);
+
+      if (!target) {
+        return res.status(404).json({ error: "User not found." });
+      }
+
+      // Founder/admin identities are protected from this destructive control.
+      if ((target as any).isAdmin) {
+        return res.status(403).json({
+          error: "Founder/admin accounts cannot be removed from this control.",
+        });
+      }
+
+      if ((target as any).accountStatus === "anonymised") {
+        return res.json({
+          ok: true,
+          alreadyRemoved: true,
+          userId: targetId,
+          status: "anonymised",
+        });
+      }
+
+      // Founder-initiated removal is stricter than a user's statutory deletion
+      // flow: obligations must be resolved first rather than silently scheduling
+      // an administrative removal.
+      const assessment = await checkDeletionBlockers(targetId);
+
+      if (assessment.blocked) {
+        return res.status(409).json({
+          error:
+            "This account has outstanding project, payment or contractual obligations and cannot be removed yet.",
+          code: "ACCOUNT_REMOVAL_BLOCKED",
+          scheduledFor: assessment.scheduledFor,
+          blockers: assessment.blockers,
+        });
+      }
+
+      const report = await anonymiseUserAccount(targetId);
+
+      let auditRecorded = true;
+      try {
+        await recordModerationAudit({
+          actorType: "admin",
+          actorId: adminId,
+          action: "user_removed",
+          subjectType: "user",
+          subjectId: targetId,
+          reason:
+            String(reason ?? "").trim().slice(0, 500) ||
+            "Founder account removal",
+          detail: "Account anonymised through the Founder user directory.",
+        });
+      } catch (auditError: any) {
+        // Do not claim the destructive action failed after anonymisation has
+        // already succeeded. Surface this in logs for immediate follow-up.
+        auditRecorded = false;
+        console.error(
+          "[admin/users/remove] Account removed but audit write failed:",
+          auditError?.message,
+        );
+      }
+
+      return res.json({
+        ok: true,
+        userId: targetId,
+        status: "anonymised",
+        auditRecorded,
+        completedSteps: report.completedSteps,
+        skippedSteps: report.skippedSteps,
+      });
+    } catch (e: any) {
+      console.error("[admin/users/remove] Failed:", e?.message);
+      return res.status(500).json({
+        error: "Could not remove this account. No further action should be taken until this is reviewed.",
+      });
     }
   });
 
