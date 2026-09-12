@@ -440,6 +440,11 @@ export default function Marketplace() {
       const res = await apiRequest("GET", `/api/profiles?${q.toString()}`);
       return res.json();
     },
+    // Public talent visibility can change through suspension, deletion or
+    // moderation. Never inherit the app-wide staleTime: Infinity here.
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   });
 
   // Client-side filtering
