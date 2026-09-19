@@ -40,6 +40,7 @@ const TABS: { key: Tab; label: string; icon: any }[] = [
 const STATUS_LABELS: Record<string, string> = {
   draft: "Draft",
   proposed: "Proposal Sent",
+  awaiting_client_acceptance: "Awaiting Client",
   accepted: "Accepted",
   active: "Active",
   active_cycle: "Active Cycle",
@@ -51,12 +52,14 @@ const STATUS_LABELS: Record<string, string> = {
   ending: "Ending",
   ended: "Ended",
   cancelled: "Cancelled",
+  declined: "Declined",
   expired: "Expired",
 };
 
 const STATUS_COLOURS: Record<string, string> = {
   draft: "bg-zinc-100 text-zinc-600",
   proposed: "bg-blue-100 text-blue-800",
+  awaiting_client_acceptance: "bg-amber-100 text-amber-800",
   accepted: "bg-blue-100 text-blue-800",
   active: "bg-green-100 text-green-800",
   active_cycle: "bg-green-100 text-green-800",
@@ -68,6 +71,7 @@ const STATUS_COLOURS: Record<string, string> = {
   ending: "bg-orange-100 text-orange-800",
   ended: "bg-zinc-100 text-zinc-500",
   cancelled: "bg-red-100 text-red-700",
+  declined: "bg-red-100 text-red-700",
   expired: "bg-zinc-100 text-zinc-500",
 };
 
@@ -127,9 +131,106 @@ export default function RetainerWorkspace() {
   const tasks: any[] = data?.tasks ?? [];
   const amendments: any[] = data?.amendments ?? [];
 
-  const isClient = agreement && user?.id === agreement.clientUserId;
+  const isClient =
+    agreement &&
+    Number(user?.id) === Number(agreement.clientUserId);
+
+  const isPendingProposal =
+    agreement?.status === "awaiting_client_acceptance";
+
+  const isDeclined =
+    agreement?.status === "declined";
+
+  const {
+    data: submissions = [],
+  } = useQuery<any[]>({
+    queryKey: [
+      "retainer-submissions",
+      publicId,
+    ],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/retainer/${publicId}/submissions`,
+      );
+
+      if (!res.ok) {
+        throw new Error(
+          "Failed to load work submissions",
+        );
+      }
+
+      return res.json();
+    },
+    enabled:
+      !!publicId &&
+      !!user?.id &&
+      !isPendingProposal &&
+      !isDeclined,
+    staleTime: 0,
+  });
+
+  const {
+    data: stageUpdates = [],
+  } = useQuery<any[]>({
+    queryKey: [
+      "retainer-stage-updates",
+      publicId,
+    ],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/retainer/${publicId}/stage-updates`,
+      );
+
+      if (!res.ok) {
+        throw new Error(
+          "Failed to load stage updates",
+        );
+      }
+
+      return res.json();
+    },
+    enabled:
+      !!publicId &&
+      !!user?.id &&
+      !isPendingProposal &&
+      !isDeclined,
+    staleTime: 0,
+  });
 
   // ── Mutations ──
+
+  const acceptRetainerMutation = useMutation({
+    mutationFn: async () =>
+      apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/accept`,
+        {},
+      ),
+
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["retainer-workspace", publicId],
+      });
+    },
+  });
+
+  const declineRetainerMutation = useMutation({
+    mutationFn: async () =>
+      apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/decline`,
+        {},
+      ),
+
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["retainer-workspace", publicId],
+      });
+    },
+  });
+
   const submitRequestMutation = useMutation({
     mutationFn: async (payload: any) => apiRequest("POST", `/api/retainer/${publicId}/requests`, { userId: user?.id, ...payload }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }); setRequestModalOpen(false); },
@@ -141,14 +242,39 @@ export default function RetainerWorkspace() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }),
   });
 
-  const taskCompleteMutation = useMutation({
-    mutationFn: async (taskId: string) => apiRequest("POST", `/api/retainer/${publicId}/tasks/${taskId}/complete`, { userId: user?.id }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }),
+  const taskAdvanceMutation = useMutation({
+    mutationFn: async (taskPublicId: string) =>
+      apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/tasks/${taskPublicId}/advance`,
+        { userId: user?.id },
+      ),
+
+    onSuccess: () =>
+      qc.invalidateQueries({
+        queryKey: ["retainer-workspace", publicId],
+      }),
   });
 
   const cycleReviewMutation = useMutation({
-    mutationFn: async (payload: any) => apiRequest("POST", `/api/retainer/${publicId}/cycles/${currentCycle?.publicId}/review`, { userId: user?.id, ...payload }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }); setReviewModalOpen(false); },
+    mutationFn: async (payload: any) =>
+      apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/cycle-review`,
+        {
+          userId: user?.id,
+          cycleId: currentCycle?.id,
+          ...payload,
+        },
+      ),
+
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["retainer-workspace", publicId],
+      });
+
+      setReviewModalOpen(false);
+    },
   });
 
   const payCycleMutation = useMutation({
@@ -168,9 +294,54 @@ export default function RetainerWorkspace() {
 
   // ── Derived metrics ──
   const healthScore = agreement?.healthScore ?? computeHealthScore(currentCycle, deliverables);
-  const cycleDeliverablesTotal = currentCycle?.deliverablesTotal ?? deliverables.length;
-  const cycleDeliverablesDone = currentCycle?.deliverablesDone ?? tasks.filter(t => t.status === "done").length;
-  const cycleProgressPct = cycleDeliverablesTotal > 0 ? Math.round((cycleDeliverablesDone / cycleDeliverablesTotal) * 100) : 0;
+  const currentCycleTasks = currentCycle
+    ? tasks.filter(
+        (task) =>
+          Number(task.retainerCycleId) ===
+          Number(currentCycle.id),
+      )
+    : [];
+
+  const cycleDeliverablesTotal =
+    currentCycleTasks.length;
+
+  const cycleDeliverablesDone =
+    currentCycleTasks.filter(
+      (task) =>
+        task.status === "complete" ||
+        task.status === "done",
+    ).length;
+
+  const cycleProgressPct =
+    cycleDeliverablesTotal > 0
+      ? Math.round(
+          (cycleDeliverablesDone /
+            cycleDeliverablesTotal) *
+            100,
+        )
+      : 0;
+
+  const workItemGroups = deliverables
+    .map((deliverable) => {
+      const items = currentCycleTasks.filter(
+        (task) =>
+          Number(task.deliverableId) ===
+          Number(deliverable.id),
+      );
+
+      const done = items.filter(
+        (task) =>
+          task.status === "complete" ||
+          task.status === "done",
+      ).length;
+
+      return {
+        deliverable,
+        items,
+        done,
+      };
+    })
+    .filter((group) => group.items.length > 0);
 
   const primaryAction = useMemo(() => getPrimaryAction(agreement?.status, currentCycle), [agreement?.status, currentCycle]);
 
@@ -227,7 +398,9 @@ export default function RetainerWorkspace() {
                   <p className="text-sm font-bold">{fmtDate(agreement.nextInvoiceDate)}</p>
                 </div>
               </div>
-              {primaryAction && (
+              {primaryAction &&
+                !isPendingProposal &&
+                !isDeclined && (
                 <button
                   type="button"
                   onClick={primaryAction.onClick}
@@ -241,6 +414,178 @@ export default function RetainerWorkspace() {
           </div>
         </div>
       </div>
+
+      {/* ── Retainer proposal decision ── */}
+      {isPendingProposal && (
+        <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50/60 dark:bg-amber-950/10 overflow-hidden">
+          <div className="p-5 sm:p-6">
+            <div className="flex items-start gap-3 mb-5">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                <FileText size={18} />
+              </div>
+
+              <div>
+                <h2 className="text-base font-bold">
+                  Retainer proposal awaiting your decision
+                </h2>
+
+                <p className="text-sm text-muted-foreground mt-1">
+                  Review the agreement before accepting.
+                  Cycle 1 will only begin after acceptance.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+              <div className="p-3 rounded-xl bg-background border border-border">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Value / cycle
+                </p>
+                <p className="text-sm font-bold mt-1">
+                  {fmtGBP(agreement.amountPerCyclePence ?? 0)}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-background border border-border">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Billing
+                </p>
+                <p className="text-sm font-bold mt-1 capitalize">
+                  {(agreement.billingFrequency ?? "—").replace(/_/g, " ")}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-background border border-border">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Minimum term
+                </p>
+                <p className="text-sm font-bold mt-1">
+                  {agreement.minimumTermCycles
+                    ? `${agreement.minimumTermCycles} cycle${agreement.minimumTermCycles === 1 ? "" : "s"}`
+                    : "—"}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-background border border-border">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Proposed by
+                </p>
+                <p className="text-sm font-bold mt-1 truncate">
+                  {agreement.freelancerName}
+                </p>
+              </div>
+            </div>
+
+            {agreement.goal && (
+              <div className="mb-5">
+                <p className="text-xs font-semibold text-muted-foreground mb-1">
+                  Goal
+                </p>
+                <p className="text-sm">{agreement.goal}</p>
+              </div>
+            )}
+
+            <div className="mb-5">
+              <p className="text-xs font-semibold text-muted-foreground mb-2">
+                Deliverables
+              </p>
+
+              <div className="space-y-2">
+                {deliverables.map((deliverable: any) => (
+                  <div
+                    key={deliverable.id}
+                    className="flex items-center justify-between gap-3 p-3 rounded-xl bg-background border border-border"
+                  >
+                    <span className="text-sm font-medium">
+                      {deliverable.name}
+                    </span>
+
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      {deliverable.quantityIncluded}
+                      {" × "}
+                      {(deliverable.frequency ?? "per cycle").replace(/_/g, " ")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {isClient ? (
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    acceptRetainerMutation.isPending ||
+                    declineRetainerMutation.isPending
+                  }
+                  onClick={() => acceptRetainerMutation.mutate()}
+                  className="flex-1 px-4 py-2.5 rounded-full text-sm font-semibold text-white disabled:opacity-50"
+                  style={{
+                    background:
+                      "linear-gradient(135deg,#FF5A1F,#FF8C42)",
+                  }}
+                >
+                  {acceptRetainerMutation.isPending
+                    ? "Accepting…"
+                    : "Accept Retainer"}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={
+                    acceptRetainerMutation.isPending ||
+                    declineRetainerMutation.isPending
+                  }
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        "Decline this retainer proposal? The freelancer will be notified.",
+                      )
+                    ) {
+                      declineRetainerMutation.mutate();
+                    }
+                  }}
+                  className="flex-1 px-4 py-2.5 rounded-full text-sm font-semibold border border-red-300 text-red-700 bg-background hover:bg-red-50 disabled:opacity-50"
+                >
+                  {declineRetainerMutation.isPending
+                    ? "Declining…"
+                    : "Decline"}
+                </button>
+              </div>
+            ) : (
+              <div className="p-3 rounded-xl bg-background border border-border text-sm text-muted-foreground">
+                Waiting for {agreement.clientName} to review this proposal.
+              </div>
+            )}
+
+            {(acceptRetainerMutation.isError ||
+              declineRetainerMutation.isError) && (
+              <p className="text-xs text-red-600 mt-3">
+                We couldn't update this retainer. Please try again.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isDeclined && (
+        <div className="mb-6 p-5 rounded-2xl border border-red-200 bg-red-50/60 dark:bg-red-950/10">
+          <div className="flex items-start gap-3">
+            <XCircle
+              size={18}
+              className="text-red-600 mt-0.5 shrink-0"
+            />
+            <div>
+              <p className="text-sm font-semibold">
+                This retainer proposal was declined
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                No cycle has been started and no work items have been created.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* FR-12: Cycle review banner */}
       {agreement.status === "cycle_review_due" && (
@@ -262,6 +607,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Tabs ── */}
+      {!isPendingProposal && !isDeclined && (
       <div className="flex gap-1 mb-6 border-b border-border overflow-x-auto">
         {TABS.map(t => {
           const Icon = t.icon;
@@ -279,8 +625,9 @@ export default function RetainerWorkspace() {
         })}
       </div>
 
+      )}
       {/* ── Overview ── */}
-      {tab === "overview" && (
+      {!isPendingProposal && !isDeclined && tab === "overview" && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-5 rounded-2xl border border-border bg-card flex items-center gap-4">
@@ -331,61 +678,258 @@ export default function RetainerWorkspace() {
         </div>
       )}
 
-      {/* ── Current Cycle (Kanban) ── */}
-      {tab === "current_cycle" && (
-        <div className="overflow-x-auto pb-4">
-          <div className="flex gap-4 min-w-max">
-            {(agreement.workflowStages ?? ["Brief / Requests", "Production", "Client Review", "Revisions", "Approved", "Cycle Complete"]).map((stage: string) => {
-              const stageTasks = tasks.filter(t => t.stage === stage);
-              return (
-                <div key={stage} className="w-64 shrink-0">
-                  <div className="flex items-center justify-between mb-2 px-1">
-                    <p className="text-xs font-semibold">{stage}</p>
-                    <span className="text-[10px] text-muted-foreground bg-zinc-100 dark:bg-zinc-800 rounded-full px-2 py-0.5">{stageTasks.length}</span>
+      {/* ── Current Cycle: individual work items ── */}
+      {!isPendingProposal && !isDeclined && tab === "current_cycle" && (
+        <div className="space-y-4">
+          {!currentCycle ? (
+            <div className="py-16 text-center rounded-2xl border border-dashed border-border">
+              <Package
+                size={24}
+                className="mx-auto mb-2 text-muted-foreground"
+              />
+
+              <p className="text-sm font-semibold">
+                No active cycle yet
+              </p>
+
+              <p className="text-xs text-muted-foreground mt-1">
+                Work items will appear here when the
+                retainer cycle starts.
+              </p>
+            </div>
+          ) : workItemGroups.length === 0 ? (
+            <div className="py-16 text-center rounded-2xl border border-dashed border-border">
+              <Package
+                size={24}
+                className="mx-auto mb-2 text-muted-foreground"
+              />
+
+              <p className="text-sm font-semibold">
+                No work items in this cycle
+              </p>
+
+              <p className="text-xs text-muted-foreground mt-1">
+                This cycle does not have any included
+                deliverables yet.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="p-4 rounded-2xl border border-border bg-card">
+                <div className="flex items-center justify-between gap-4 mb-2">
+                  <div>
+                    <p className="text-sm font-semibold">
+                      Cycle {currentCycle.cycleNumber}
+                    </p>
+
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {fmtDate(currentCycle.periodStart)}
+                      {" → "}
+                      {fmtDate(currentCycle.periodEnd)}
+                    </p>
                   </div>
-                  <div className="space-y-2">
-                    {stageTasks.map(task => {
-                      const overdue = task.dueDate && new Date(task.dueDate) < new Date() && task.status !== "done";
-                      return (
-                        <div
-                          key={task.id}
-                          className={`p-3 rounded-xl border bg-card text-xs space-y-1.5 ${overdue ? "border-red-300 bg-red-50 dark:bg-red-950/10" : "border-border"}`}
-                        >
-                          <div className="flex items-start gap-1.5">
-                            <span className={`w-2 h-2 rounded-full mt-1 shrink-0 ${
-                              task.status === "done" ? "bg-green-500" : overdue ? "bg-red-500" : "bg-zinc-300"
-                            }`} />
-                            <p className="font-medium flex-1">{task.title}</p>
-                          </div>
-                          <div className="flex items-center justify-between text-muted-foreground">
-                            <span>{task.assigneeName ?? "Unassigned"}</span>
-                            <span className={overdue ? "text-red-600 font-semibold" : ""}>{fmtDate(task.dueDate)}</span>
-                          </div>
-                          {task.status !== "done" && (
-                            <button
-                              type="button"
-                              onClick={() => taskCompleteMutation.mutate(task.id)}
-                              className="w-full mt-1 px-2 py-1 rounded-full text-[10px] font-semibold bg-[#FF5A1F]/10 text-[#FF5A1F] hover:bg-[#FF5A1F]/20"
-                            >
-                              Mark complete
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {stageTasks.length === 0 && (
-                      <p className="text-[11px] text-muted-foreground px-1 py-3 text-center border border-dashed border-border rounded-xl">No tasks</p>
-                    )}
-                  </div>
+
+                  <p className="text-sm font-bold tabular-nums whitespace-nowrap">
+                    {cycleDeliverablesDone}
+                    {" / "}
+                    {cycleDeliverablesTotal}
+                    {" complete"}
+                  </p>
                 </div>
-              );
-            })}
-          </div>
+
+                <div className="h-2 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${cycleProgressPct}%`,
+                      background: "#FF5A1F",
+                    }}
+                  />
+                </div>
+              </div>
+
+              {workItemGroups.map(
+                ({ deliverable, items, done }) => {
+                  const progress =
+                    items.length > 0
+                      ? Math.round(
+                          (done / items.length) * 100,
+                        )
+                      : 0;
+
+                  return (
+                    <div
+                      key={deliverable.id}
+                      className="rounded-2xl border border-border bg-card overflow-hidden"
+                    >
+                      <div className="p-4 sm:p-5 border-b border-border">
+                        <div className="flex items-start justify-between gap-4 mb-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold">
+                              {deliverable.name}
+                            </p>
+
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {deliverable.quantityIncluded}
+                              {" "}
+                              {deliverable.frequency
+                                ?.replace(/_/g, " ")}
+                            </p>
+                          </div>
+
+                          <span className="text-xs font-semibold whitespace-nowrap">
+                            {done}
+                            {" / "}
+                            {items.length}
+                            {" complete"}
+                          </span>
+                        </div>
+
+                        <div className="h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${progress}%`,
+                              background: "#FF5A1F",
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="divide-y divide-border">
+                        {items.map((task) => {
+                          const complete =
+                            task.status === "complete" ||
+                            task.status === "done";
+
+                          const stages: string[] =
+                            Array.isArray(task.stages)
+                              ? task.stages
+                              : [];
+
+                          const stageCount =
+                            stages.length;
+
+                          const currentStep =
+                            Math.min(
+                              Number(
+                                task.stageIndex ?? 0,
+                              ) + 1,
+                              Math.max(
+                                stageCount,
+                                1,
+                              ),
+                            );
+
+                          const finalApprovalStageIndex =
+                            Math.max(
+                              0,
+                              stageCount - 1,
+                            );
+
+                          const maxFreelancerIndex =
+                            finalApprovalStageIndex;
+
+                          const taskSubmissions =
+                            submissions.filter(
+                              (submission: any) =>
+                                submission.taskPublicId ===
+                                task.publicId,
+                            );
+
+                          const taskStageUpdates =
+                            stageUpdates.filter(
+                              (update: any) =>
+                                update.taskPublicId ===
+                                task.publicId,
+                            );
+
+                          return (
+                            <div
+                              key={
+                                task.publicId ??
+                                task.id
+                              }
+                              className="p-4 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3"
+                            >
+                              <div className="flex items-start gap-3 flex-1 min-w-0">
+                                <div className="mt-0.5 shrink-0">
+                                  {complete ? (
+                                    <CheckCircle2
+                                      size={18}
+                                      className="text-green-600"
+                                    />
+                                  ) : (
+                                    <Circle
+                                      size={18}
+                                      className="text-zinc-300"
+                                    />
+                                  )}
+                                </div>
+
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium truncate">
+                                    {task.title}
+                                  </p>
+
+                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                    <span
+                                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                        complete
+                                          ? "bg-green-100 text-green-800"
+                                          : "bg-[#FF5A1F]/10 text-[#FF5A1F]"
+                                      }`}
+                                    >
+                                      {complete
+                                        ? "Complete"
+                                        : task.stage ??
+                                          "In progress"}
+                                    </span>
+
+                                    {stageCount > 0 && (
+                                      <span className="text-[10px] text-muted-foreground">
+                                        Stage{" "}
+                                        {currentStep}
+                                        {" of "}
+                                        {stageCount}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+
+
+                              <WorkItemSubmissionPanel
+                                publicId={publicId!}
+                                task={task}
+                                submissions={
+                                  taskSubmissions
+                                }
+                                stageUpdates={
+                                  taskStageUpdates
+                                }
+                                isClient={!!isClient}
+                                complete={complete}
+                                finalApprovalStageIndex={
+                                  finalApprovalStageIndex
+                                }
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                },
+              )}
+            </>
+          )}
         </div>
       )}
 
       {/* ── Requests ── */}
-      {tab === "requests" && (
+      {!isPendingProposal && !isDeclined && tab === "requests" && (
         <div className="space-y-4">
           <div className="p-4 rounded-2xl border border-border bg-card">
             <p className="text-xs font-semibold text-muted-foreground mb-2">Available capacity</p>
@@ -444,7 +988,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Deliverables ── */}
-      {tab === "deliverables" && (
+      {!isPendingProposal && !isDeclined && tab === "deliverables" && (
         <div className="overflow-x-auto rounded-2xl border border-border">
           <table className="w-full text-xs">
             <thead>
@@ -473,7 +1017,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Usage ── */}
-      {tab === "usage" && (
+      {!isPendingProposal && !isDeclined && tab === "usage" && (
         <div className="space-y-4">
           <div className="p-4 rounded-2xl border border-border bg-card flex items-center justify-between">
             <p className="text-xs font-semibold text-muted-foreground">Running total vs allowance</p>
@@ -500,12 +1044,12 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Messages ── */}
-      {tab === "messages" && (
+      {!isPendingProposal && !isDeclined && tab === "messages" && (
         <MessagesPanel retainerId={agreement.id ?? publicId} userId={user?.id} />
       )}
 
       {/* ── Payments ── */}
-      {tab === "payments" && (
+      {!isPendingProposal && !isDeclined && tab === "payments" && (
         <div className="overflow-x-auto rounded-2xl border border-border">
           <table className="w-full text-xs">
             <thead>
@@ -546,7 +1090,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Agreement ── */}
-      {tab === "agreement" && (
+      {!isPendingProposal && !isDeclined && tab === "agreement" && (
         <div className="space-y-6">
           <div className="p-5 rounded-2xl border border-border bg-card space-y-4">
             <div className="flex items-center justify-between">
@@ -610,7 +1154,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── History ── */}
-      {tab === "history" && (
+      {!isPendingProposal && !isDeclined && tab === "history" && (
         <div className="space-y-2">
           {cycles.filter((c: any) => c.status === "completed").length === 0 && (
             <p className="text-center text-xs text-muted-foreground py-12">No completed cycles yet.</p>
@@ -697,7 +1241,10 @@ export default function RetainerWorkspace() {
       />
 
       {/* Floating new-request button (clients) */}
-      {isClient && tab !== "requests" && (
+      {isClient &&
+        !isPendingProposal &&
+        !isDeclined &&
+        tab !== "requests" && (
         <button
           type="button"
           onClick={() => setRequestModalOpen(true)}
@@ -787,6 +1334,821 @@ function QuickActionCard({ icon, label, onClick }: { icon: React.ReactNode; labe
 }
 
 // ─── Messages panel ─────────────────────────────────────────────────────────
+
+function WorkItemSubmissionPanel({
+  publicId,
+  task,
+  submissions,
+  stageUpdates,
+  isClient,
+  complete,
+  finalApprovalStageIndex,
+}: {
+  publicId: string;
+  task: any;
+  submissions: any[];
+  stageUpdates: any[];
+  isClient: boolean;
+  complete: boolean;
+  finalApprovalStageIndex: number;
+}) {
+  const qc = useQueryClient();
+
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [deliverableUrl, setDeliverableUrl] =
+    useState("");
+  const [feedback, setFeedback] =
+    useState("");
+  const [error, setError] =
+    useState("");
+
+  const [busy, setBusy] =
+    useState<
+      "progress" |
+      "submit" |
+      "approve" |
+      "changes" |
+      null
+    >(null);
+
+  const orderedSubmissions =
+    [...submissions].sort(
+      (a, b) =>
+        Number(a.version ?? 0) -
+        Number(b.version ?? 0),
+    );
+
+  const latestSubmission =
+    orderedSubmissions[
+      orderedSubmissions.length - 1
+    ];
+
+  const hasApprovedSubmission =
+    orderedSubmissions.some(
+      (submission: any) =>
+        submission.status === "approved",
+    );
+
+  const awaitingReview =
+    task.status ===
+    "awaiting_client_review";
+
+  const changesRequested =
+    task.status ===
+    "changes_requested";
+
+  const stageIndex =
+    Number(task.stageIndex ?? 0);
+
+  const canProgress =
+    !isClient &&
+    !complete &&
+    !awaitingReview &&
+    stageIndex <
+      finalApprovalStageIndex;
+
+  const canSubmit =
+    !isClient &&
+    !complete &&
+    !awaitingReview &&
+    stageIndex >=
+      finalApprovalStageIndex;
+
+  const orderedStageUpdates =
+    [...stageUpdates].sort(
+      (a, b) =>
+        new Date(
+          a.createdAt ?? 0,
+        ).getTime() -
+        new Date(
+          b.createdAt ?? 0,
+        ).getTime(),
+    );
+
+  const canReview =
+    isClient &&
+    !complete &&
+    awaitingReview &&
+    latestSubmission?.status ===
+      "submitted";
+
+  const nextVersion =
+    Number(
+      latestSubmission?.version ?? 0,
+    ) + 1;
+
+  async function invalidate() {
+    await Promise.all([
+      qc.invalidateQueries({
+        queryKey: [
+          "retainer-workspace",
+          publicId,
+        ],
+      }),
+      qc.invalidateQueries({
+        queryKey: [
+          "retainer-submissions",
+          publicId,
+        ],
+      }),
+      qc.invalidateQueries({
+        queryKey: [
+          "retainer-stage-updates",
+          publicId,
+        ],
+      }),
+    ]);
+  }
+
+  async function progressWork() {
+    setError("");
+
+    if (!note.trim()) {
+      setError(
+        "Add a comment about the work completed at this stage.",
+      );
+      return;
+    }
+
+    if (!deliverableUrl.trim()) {
+      setError(
+        "Add a work link before moving to the next stage.",
+      );
+      return;
+    }
+
+    try {
+      const parsed =
+        new URL(
+          deliverableUrl.trim(),
+        );
+
+      if (
+        parsed.protocol !== "http:" &&
+        parsed.protocol !== "https:"
+      ) {
+        throw new Error();
+      }
+    } catch {
+      setError(
+        "Enter a valid http or https work link.",
+      );
+      return;
+    }
+
+    setBusy("progress");
+
+    try {
+      const res = await apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/tasks/${task.publicId}/progress`,
+        {
+          note:
+            note.trim(),
+          deliverableUrl:
+            deliverableUrl.trim(),
+        },
+      );
+
+      if (!res.ok) {
+        const body =
+          await res
+            .json()
+            .catch(() => ({}));
+
+        throw new Error(
+          body?.error ??
+            "Could not save stage update",
+        );
+      }
+
+      setNote("");
+      setDeliverableUrl("");
+
+      await invalidate();
+    } catch (e: any) {
+      setError(
+        e?.message ??
+          "Could not save stage update",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitWork() {
+    setError("");
+
+    if (!deliverableUrl.trim()) {
+      setError(
+        "Add a deliverable link before submitting.",
+      );
+      return;
+    }
+
+    if (deliverableUrl.trim()) {
+      try {
+        const parsed =
+          new URL(
+            deliverableUrl.trim(),
+          );
+
+        if (
+          parsed.protocol !== "http:" &&
+          parsed.protocol !== "https:"
+        ) {
+          throw new Error();
+        }
+      } catch {
+        setError(
+          "Enter a valid http or https deliverable link.",
+        );
+        return;
+      }
+    }
+
+    setBusy("submit");
+
+    try {
+      const res = await apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/tasks/${task.publicId}/submit`,
+        {
+          note:
+            note.trim() || null,
+          deliverableUrl:
+            deliverableUrl.trim(),
+        },
+      );
+
+      if (!res.ok) {
+        const body =
+          await res
+            .json()
+            .catch(() => ({}));
+
+        throw new Error(
+          body?.error ??
+            "Could not submit work",
+        );
+      }
+
+      setNote("");
+      setDeliverableUrl("");
+
+      await invalidate();
+    } catch (e: any) {
+      setError(
+        e?.message ??
+          "Could not submit work",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function reviewWork(
+    action:
+      | "approve"
+      | "request-changes",
+  ) {
+    setError("");
+
+    if (
+      action === "request-changes" &&
+      !feedback.trim()
+    ) {
+      setError(
+        "Add feedback before requesting changes.",
+      );
+      return;
+    }
+
+    setBusy(
+      action === "approve"
+        ? "approve"
+        : "changes",
+    );
+
+    try {
+      const res = await apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/tasks/${task.publicId}/${action}`,
+        {
+          feedback:
+            feedback.trim() || null,
+        },
+      );
+
+      if (!res.ok) {
+        const body =
+          await res
+            .json()
+            .catch(() => ({}));
+
+        throw new Error(
+          body?.error ??
+            "Could not update work item",
+        );
+      }
+
+      setFeedback("");
+
+      await invalidate();
+    } catch (e: any) {
+      setError(
+        e?.message ??
+          "Could not update work item",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  let summary =
+    "Work submission";
+
+  if (complete) {
+    summary =
+      hasApprovedSubmission
+        ? "Client approved"
+        : "Legacy completion";
+  } else if (awaitingReview) {
+    summary =
+      isClient
+        ? "Review submission"
+        : "Awaiting client review";
+  } else if (changesRequested) {
+    summary =
+      "Changes requested";
+  } else if (canSubmit) {
+    summary =
+      submissions.length > 0
+        ? `Submit final revision v${nextVersion}`
+        : "Submit final work";
+  } else if (canProgress) {
+    summary =
+      `Update ${task.stage ?? "current stage"} & move forward`;
+  } else if (isClient) {
+    summary =
+      orderedStageUpdates.length > 0
+        ? `${orderedStageUpdates.length} stage update${orderedStageUpdates.length === 1 ? "" : "s"}`
+        : "No stage updates yet";
+  }
+
+  return (
+    <div className="w-full basis-full pt-1">
+      <button
+        type="button"
+        onClick={() =>
+          setOpen((value) => !value)
+        }
+        className="w-full flex items-center justify-between gap-3 rounded-xl border border-border bg-secondary/25 px-3 py-2.5 text-left hover:bg-secondary/40 transition-colors"
+      >
+        <div className="min-w-0">
+          <p className="text-xs font-semibold">
+            {summary}
+          </p>
+
+          {latestSubmission && (
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              Version{" "}
+              {latestSubmission.version}
+              {" · "}
+              {String(
+                latestSubmission.status ??
+                  "submitted",
+              ).replace(/_/g, " ")}
+            </p>
+          )}
+        </div>
+
+        {open ? (
+          <ChevronDown
+            size={14}
+            className="shrink-0 text-muted-foreground"
+          />
+        ) : (
+          <ChevronRight
+            size={14}
+            className="shrink-0 text-muted-foreground"
+          />
+        )}
+      </button>
+
+      {open && (
+        <div className="mt-2 rounded-xl border border-border bg-background p-4 space-y-4">
+
+          {orderedStageUpdates.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold">
+                Stage history
+              </p>
+
+              {orderedStageUpdates.map(
+                (update: any) => (
+                  <div
+                    key={
+                      update.publicId ??
+                      update.id
+                    }
+                    className="rounded-xl border border-border p-3 space-y-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold">
+                          Stage{" "}
+                          {Number(
+                            update.stageIndex ?? 0,
+                          ) + 1}
+                          {" — "}
+                          {update.stageName}
+                        </p>
+
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          Progressed to{" "}
+                          {update.nextStageName}
+                        </p>
+                      </div>
+
+                      {update.createdAt && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {new Date(
+                            update.createdAt,
+                          ).toLocaleString(
+                            "en-GB",
+                            {
+                              day: "numeric",
+                              month: "short",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            },
+                          )}
+                        </span>
+                      )}
+                    </div>
+
+                    <p className="text-sm whitespace-pre-wrap">
+                      {update.note}
+                    </p>
+
+                    <a
+                      href={
+                        update.deliverableUrl
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex text-xs font-semibold text-[#FF5A1F] hover:underline"
+                    >
+                      Open work link
+                    </a>
+                  </div>
+                ),
+              )}
+            </div>
+          )}
+
+          {orderedSubmissions.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold">
+                Submission history
+              </p>
+
+              {orderedSubmissions.map(
+                (submission: any) => (
+                  <div
+                    key={
+                      submission.publicId ??
+                      submission.id
+                    }
+                    className="rounded-xl border border-border p-3 space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs font-semibold">
+                        Version{" "}
+                        {submission.version}
+                      </span>
+
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-secondary text-muted-foreground capitalize">
+                        {String(
+                          submission.status ??
+                            "submitted",
+                        ).replace(
+                          /_/g,
+                          " ",
+                        )}
+                      </span>
+                    </div>
+
+                    {submission.note && (
+                      <p className="text-sm whitespace-pre-wrap">
+                        {submission.note}
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap gap-3">
+                      {submission.deliverableUrl && (
+                        <a
+                          href={
+                            submission.deliverableUrl
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-semibold text-[#FF5A1F] hover:underline"
+                        >
+                          Open deliverable link
+                        </a>
+                      )}
+
+                    </div>
+
+                    {submission.clientFeedback && (
+                      <div className="rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 px-3 py-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                          Client feedback
+                        </p>
+
+                        <p className="text-xs mt-1 whitespace-pre-wrap">
+                          {
+                            submission.clientFeedback
+                          }
+                        </p>
+                      </div>
+                    )}
+
+                    {submission.submittedAt && (
+                      <p className="text-[10px] text-muted-foreground">
+                        Submitted{" "}
+                        {new Date(
+                          submission.submittedAt,
+                        ).toLocaleString(
+                          "en-GB",
+                          {
+                            day: "numeric",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          },
+                        )}
+                      </p>
+                    )}
+                  </div>
+                ),
+              )}
+            </div>
+          )}
+
+          {canProgress && (
+            <div className="space-y-3 border-t border-border pt-4">
+              <div>
+                <p className="text-xs font-semibold">
+                  Update Stage{" "}
+                  {stageIndex + 1}
+                  {" — "}
+                  {task.stage ??
+                    "Current stage"}
+                </p>
+
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Share the work completed at
+                  this stage so the client has
+                  a permanent progress record.
+                  Saving the update moves this
+                  item to the next stage.
+                </p>
+              </div>
+
+              <Textarea
+                rows={3}
+                value={note}
+                onChange={(e) =>
+                  setNote(
+                    e.target.value,
+                  )
+                }
+                placeholder="What was completed or changed at this stage?"
+                className="resize-none text-sm"
+              />
+
+              <input
+                type="url"
+                value={deliverableUrl}
+                onChange={(e) =>
+                  setDeliverableUrl(
+                    e.target.value,
+                  )
+                }
+                placeholder="Work link — Drive, Dropbox, Vimeo, Figma, Frame.io…"
+                required
+                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+
+              <button
+                type="button"
+                disabled={
+                  busy === "progress"
+                }
+                onClick={
+                  progressWork
+                }
+                className="w-full sm:w-auto px-4 py-2.5 rounded-full text-xs font-semibold text-white disabled:opacity-50"
+                style={{
+                  background:
+                    "linear-gradient(135deg,#FF5A1F,#FF8C42)",
+                }}
+              >
+                {busy === "progress"
+                  ? "Saving update…"
+                  : "Save update & move forward"}
+              </button>
+            </div>
+          )}
+
+          {canSubmit && (
+            <div className="space-y-3">
+              <div>
+                <p className="text-xs font-semibold">
+                  {changesRequested
+                    ? `Submit revision v${nextVersion}`
+                    : submissions.length > 0
+                      ? `Submit final version ${nextVersion}`
+                      : "Submit final work for approval"}
+                </p>
+
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Add a final comment and the
+                  final work link. The client
+                  will approve or request
+                  changes from this submission.
+                </p>
+              </div>
+
+              <Textarea
+                rows={3}
+                value={note}
+                onChange={(e) =>
+                  setNote(e.target.value)
+                }
+                placeholder="Add your final delivery comment…"
+                className="resize-none text-sm"
+              />
+
+              <input
+                type="url"
+                value={deliverableUrl}
+                onChange={(e) =>
+                  setDeliverableUrl(
+                    e.target.value,
+                  )
+                }
+                placeholder="Deliverable link — Drive, Dropbox, Vimeo, Figma, Frame.io…"
+                required
+                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+
+              <button
+                type="button"
+                disabled={
+                  busy === "submit"
+                }
+                onClick={submitWork}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-full text-xs font-semibold text-white disabled:opacity-50"
+                style={{
+                  background:
+                    "linear-gradient(135deg,#FF5A1F,#FF8C42)",
+                }}
+              >
+                {busy === "submit"
+                  ? "Submitting…"
+                  : changesRequested
+                    ? "Submit revision"
+                    : "Submit for final approval"}
+              </button>
+            </div>
+          )}
+
+          {!isClient &&
+            awaitingReview && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 p-3">
+                <p className="text-xs font-semibold text-blue-800 dark:text-blue-300">
+                  Awaiting client approval
+                </p>
+
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  This item does not count
+                  as complete until the
+                  client approves it.
+                </p>
+              </div>
+            )}
+
+          {canReview && (
+            <div className="space-y-3 border-t border-border pt-4">
+              <div>
+                <p className="text-xs font-semibold">
+                  Review this work
+                </p>
+
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Approval marks this
+                  individual work item as
+                  100% complete.
+                </p>
+              </div>
+
+              <Textarea
+                rows={3}
+                value={feedback}
+                onChange={(e) =>
+                  setFeedback(
+                    e.target.value,
+                  )
+                }
+                placeholder="Optional approval note, or explain what needs changing…"
+                className="resize-none text-sm"
+              />
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    busy === "approve" ||
+                    busy === "changes"
+                  }
+                  onClick={() =>
+                    reviewWork("approve")
+                  }
+                  className="flex-1 px-4 py-2.5 rounded-full text-xs font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                >
+                  {busy === "approve"
+                    ? "Approving…"
+                    : "Approve work"}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={
+                    busy === "approve" ||
+                    busy === "changes"
+                  }
+                  onClick={() =>
+                    reviewWork(
+                      "request-changes",
+                    )
+                  }
+                  className="flex-1 px-4 py-2.5 rounded-full text-xs font-semibold border border-amber-300 text-amber-800 bg-background hover:bg-amber-50 disabled:opacity-50"
+                >
+                  {busy === "changes"
+                    ? "Sending feedback…"
+                    : "Request changes"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isClient &&
+            !canReview &&
+            !complete &&
+            orderedSubmissions.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No work has been submitted
+                for this item yet.
+              </p>
+            )}
+
+          {complete && (
+            <div
+              className={`rounded-xl border p-3 ${
+                hasApprovedSubmission
+                  ? "border-green-200 bg-green-50/60 dark:bg-green-950/20"
+                  : "border-zinc-200 bg-zinc-50 dark:bg-zinc-900/30"
+              }`}
+            >
+              <p
+                className={`text-xs font-semibold ${
+                  hasApprovedSubmission
+                    ? "text-green-800 dark:text-green-300"
+                    : "text-muted-foreground"
+                }`}
+              >
+                {hasApprovedSubmission
+                  ? "Client approved — work item complete"
+                  : "Legacy completion — completed before client approval was introduced"}
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-xs text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function MessagesPanel({ retainerId, userId }: { retainerId: string | number; userId: number | undefined }) {
   const qc = useQueryClient();

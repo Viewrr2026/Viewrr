@@ -2738,6 +2738,38 @@ export default function YourWork() {
   const [reviewTarget, setReviewTarget] = useState<ProjectWithDetails | null>(null);
   const [invitationsOpen, setInvitationsOpen] = useState(true);
 
+  async function openProjectOrRetainer(
+    pw: ProjectWithDetails,
+  ) {
+    const isRetainer =
+      Number((pw.project as any).isRetainer) === 1;
+
+    if (!isRetainer) {
+      setOpenProject(pw);
+      return;
+    }
+
+    try {
+      const res = await fetch(
+        `/api/projects/${pw.project.id}/retainer-agreement`,
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+
+        if (data?.publicId) {
+          window.location.href =
+            `/#/retainer/${data.publicId}`;
+          return;
+        }
+      }
+    } catch {
+      // Legacy retainers fall back to the existing project modal.
+    }
+
+    setOpenProject(pw);
+  }
+
   const { data: projects = [], isLoading, isError, refetch } = useQuery<ProjectWithDetails[]>({
     queryKey: ["/api/projects", user?.id],
     queryFn: async () => {
@@ -3160,7 +3192,7 @@ export default function YourWork() {
                 </h2>
                 <div className="space-y-3">
                   {active.map(pw => (
-                    <ProjectCard key={pw.project.id} pw={pw} currentUserId={user.id} onOpen={() => setOpenProject(pw)} onRefresh={refetch} />
+                    <ProjectCard key={pw.project.id} pw={pw} currentUserId={user.id} onOpen={() => openProjectOrRetainer(pw)} onRefresh={refetch} />
                   ))}
                 </div>
               </section>
@@ -3172,7 +3204,7 @@ export default function YourWork() {
                 </h2>
                 <div className="space-y-3">
                   {completed.map(pw => (
-                    <ProjectCard key={pw.project.id} pw={pw} currentUserId={user.id} onOpen={() => setOpenProject(pw)} onReviewOpen={() => setReviewTarget(pw)} onRefresh={refetch} />
+                    <ProjectCard key={pw.project.id} pw={pw} currentUserId={user.id} onOpen={() => openProjectOrRetainer(pw)} onReviewOpen={() => setReviewTarget(pw)} onRefresh={refetch} />
                   ))}
                 </div>
               </section>

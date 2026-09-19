@@ -53,7 +53,7 @@ type RenewalMode = "rolling" | "fixed" | "trial";
 
 interface DraftState {
   step: number;
-  templateIds: TemplateId[];  // multi-select — merge deliverables from all
+  templateIds: TemplateId[];  // single selected starting template; array retained for API compatibility
   commercialModel: CommercialModel | null;
   goal: string;
   successMeasures: string;
@@ -144,9 +144,9 @@ const TEMPLATE_WORKFLOW: string[] = [
 const CHANNELS = ["Instagram", "TikTok", "YouTube", "Website", "Email", "Other"];
 
 const STEP_TITLES = [
-  "Retainer Type",
+  "Choose your starting point",
+  "What are we producing?",
   "Outcomes & Scope",
-  "Capacity & Deliverables",
   "Schedule & Workflow",
   "Pricing & Commitment",
   "Boundaries & Changes",
@@ -154,7 +154,7 @@ const STEP_TITLES = [
   "Launch & Onboard",
 ];
 
-const STEP_TIMES = ["~1 min", "~2 min", "~3 min", "~2 min", "~2 min", "~2 min", "~1 min", "~1 min"];
+const STEP_TIMES = ["~1 min", "~3 min", "~2 min", "~2 min", "~2 min", "~2 min", "~1 min", "~1 min"];
 
 function defaultDraft(): DraftState {
   return {
@@ -334,8 +334,21 @@ export default function RetainerBuilder() {
     const raw = safeGet(DRAFT_KEY);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as DraftState;
-        setDraft({ ...defaultDraft(), ...parsed });
+        const parsed = JSON.parse(raw) as DraftState & { templateId?: TemplateId };
+        const { templateId: legacyTemplateId, ...rest } = parsed;
+        const savedTemplateIds = Array.isArray(rest.templateIds)
+          ? rest.templateIds.slice(0, 1)
+          : [];
+
+        setDraft({
+          ...defaultDraft(),
+          ...rest,
+          templateIds: savedTemplateIds.length
+            ? savedTemplateIds
+            : legacyTemplateId
+              ? [legacyTemplateId]
+              : [],
+        });
         setMaxReached(Math.max(1, parsed.step ?? 1));
       } catch {
         /* ignore corrupted draft */
@@ -368,11 +381,17 @@ export default function RetainerBuilder() {
   }
 
   function selectTemplate(id: TemplateId) {
-    setDraft(d => ({
-      ...d,
-      templateId: id,
-      deliverables: d.deliverables.length ? d.deliverables : TEMPLATE_DELIVERABLES[id].map(x => ({ ...x, id: uid() })),
-    }));
+    setDraft(d => {
+      const alreadySelected = d.templateIds[0] === id;
+
+      return {
+        ...d,
+        templateIds: [id],
+        deliverables: alreadySelected
+          ? d.deliverables
+          : TEMPLATE_DELIVERABLES[id].map(x => ({ ...x, id: uid() })),
+      };
+    });
   }
 
   function addDeliverable() {
@@ -470,15 +489,17 @@ export default function RetainerBuilder() {
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 pb-24">
       <ProgressBar current={draft.step} onJump={goTo} maxReached={maxReached} />
 
-      {/* ── Step 1: Retainer Type ── */}
+      {/* ── Step 1: Choose your starting point ── */}
       {draft.step === 1 && (
         <div>
-          <StepHeader step={1} title="Retainer Type" time={STEP_TIMES[0]} />
-          <p className="text-sm text-muted-foreground mb-4">Choose a starting template. You can customise everything later.</p>
+          <StepHeader step={1} title="Choose your starting point" time={STEP_TIMES[0]} />
+          <p className="text-sm text-muted-foreground mb-4">
+            Choose the kind of ongoing work you're setting up. We'll suggest a starting structure, and you can customise everything.
+          </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8">
             {TEMPLATES.map(t => {
               const Icon = t.icon;
-              const active = draft.templateIds.includes(t.id);
+              const active = draft.templateIds[0] === t.id;
               return (
                 <button
                   key={t.id}
@@ -498,8 +519,8 @@ export default function RetainerBuilder() {
             })}
           </div>
 
-          <p className="text-sm font-semibold mb-1">Commercial model</p>
-          <p className="text-xs text-muted-foreground mb-4">How will this retainer be structured commercially?</p>
+          <p className="text-sm font-semibold mb-1">How will you work together?</p>
+          <p className="text-xs text-muted-foreground mb-4">Choose how this retainer will be structured commercially.</p>
           <div className="space-y-2">
             {COMMERCIAL_MODELS.map(m => {
               const Icon = m.icon;
@@ -529,10 +550,10 @@ export default function RetainerBuilder() {
         </div>
       )}
 
-      {/* ── Step 2: Outcomes & Scope ── */}
-      {draft.step === 2 && (
+      {/* ── Step 3: Outcomes & Scope ── */}
+      {draft.step === 3 && (
         <div>
-          <StepHeader step={2} title="Outcomes & Scope" time={STEP_TIMES[1]} />
+          <StepHeader step={3} title="Outcomes & Scope" time={STEP_TIMES[2]} />
           <div className="space-y-6">
             <div>
               <label className="text-sm font-semibold block mb-1.5">What will this retainer help the client achieve?</label>
@@ -600,10 +621,14 @@ export default function RetainerBuilder() {
         </div>
       )}
 
-      {/* ── Step 3: Capacity & Deliverables ── */}
-      {draft.step === 3 && (
+      {/* ── Step 2: What are we producing? ── */}
+      {draft.step === 2 && (
         <div>
-          <StepHeader step={3} title="Capacity & Deliverables" time={STEP_TIMES[2]} />
+          <StepHeader step={2} title="What are we producing?" time={STEP_TIMES[1]} />
+
+          <p className="text-sm text-muted-foreground mb-5">
+            Define the recurring work in this retainer. Add each deliverable, how many are needed, and how often they're produced. Everything can be customised.
+          </p>
 
           {draft.commercialModel === "reserved_capacity" ? (
             <div className="grid grid-cols-2 gap-4 mb-6">
@@ -715,7 +740,14 @@ export default function RetainerBuilder() {
             <Plus size={15} /> Add deliverable
           </button>
 
-          <NavButtons onBack={back} onNext={next} />
+          <NavButtons
+            onBack={back}
+            onNext={next}
+            nextDisabled={
+              draft.deliverables.length === 0 ||
+              draft.deliverables.every(item => !item.name.trim())
+            }
+          />
         </div>
       )}
 
