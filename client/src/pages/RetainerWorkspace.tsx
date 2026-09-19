@@ -141,6 +141,35 @@ export default function RetainerWorkspace() {
   const isDeclined =
     agreement?.status === "declined";
 
+  const {
+    data: submissions = [],
+  } = useQuery<any[]>({
+    queryKey: [
+      "retainer-submissions",
+      publicId,
+    ],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/retainer/${publicId}/submissions`,
+      );
+
+      if (!res.ok) {
+        throw new Error(
+          "Failed to load work submissions",
+        );
+      }
+
+      return res.json();
+    },
+    enabled:
+      !!publicId &&
+      !!user?.id &&
+      !isPendingProposal &&
+      !isDeclined,
+    staleTime: 0,
+  });
+
   // ── Mutations ──
 
   const acceptRetainerMutation = useMutation({
@@ -763,13 +792,53 @@ export default function RetainerWorkspace() {
                               ),
                             );
 
+                          const reviewStageIndexRaw =
+                            stages.findIndex(
+                              (stage) => {
+                                const value =
+                                  String(stage)
+                                    .toLowerCase();
+
+                                return (
+                                  value.includes(
+                                    "client review",
+                                  ) ||
+                                  value === "review" ||
+                                  value.includes(
+                                    "client approval",
+                                  )
+                                );
+                              },
+                            );
+
+                          const reviewStageIndex =
+                            reviewStageIndexRaw >= 0
+                              ? reviewStageIndexRaw
+                              : Math.max(
+                                  0,
+                                  stageCount - 2,
+                                );
+
+                          const maxFreelancerIndex =
+                            Math.max(
+                              0,
+                              reviewStageIndex - 1,
+                            );
+
+                          const taskSubmissions =
+                            submissions.filter(
+                              (submission: any) =>
+                                submission.taskPublicId ===
+                                task.publicId,
+                            );
+
                           return (
                             <div
                               key={
                                 task.publicId ??
                                 task.id
                               }
-                              className="p-4 flex flex-col sm:flex-row sm:items-center gap-3"
+                              className="p-4 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3"
                             >
                               <div className="flex items-start gap-3 flex-1 min-w-0">
                                 <div className="mt-0.5 shrink-0">
@@ -818,7 +887,13 @@ export default function RetainerWorkspace() {
                               </div>
 
                               {!complete &&
-                                !isClient && (
+                                !isClient &&
+                                task.status !==
+                                  "awaiting_client_review" &&
+                                Number(
+                                  task.stageIndex ?? 0,
+                                ) <
+                                  maxFreelancerIndex && (
                                   <button
                                     type="button"
                                     disabled={
@@ -837,6 +912,19 @@ export default function RetainerWorkspace() {
                                     />
                                   </button>
                                 )}
+
+                              <WorkItemSubmissionPanel
+                                publicId={publicId!}
+                                task={task}
+                                submissions={
+                                  taskSubmissions
+                                }
+                                isClient={!!isClient}
+                                complete={complete}
+                                reviewStageIndex={
+                                  reviewStageIndex
+                                }
+                              />
                             </div>
                           );
                         })}
@@ -1256,6 +1344,782 @@ function QuickActionCard({ icon, label, onClick }: { icon: React.ReactNode; labe
 }
 
 // ─── Messages panel ─────────────────────────────────────────────────────────
+
+function WorkItemSubmissionPanel({
+  publicId,
+  task,
+  submissions,
+  isClient,
+  complete,
+  reviewStageIndex,
+}: {
+  publicId: string;
+  task: any;
+  submissions: any[];
+  isClient: boolean;
+  complete: boolean;
+  reviewStageIndex: number;
+}) {
+  const qc = useQueryClient();
+
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [deliverableUrl, setDeliverableUrl] =
+    useState("");
+  const [file, setFile] =
+    useState<File | null>(null);
+  const [feedback, setFeedback] =
+    useState("");
+  const [error, setError] =
+    useState("");
+
+  const [busy, setBusy] =
+    useState<
+      "submit" |
+      "approve" |
+      "changes" |
+      "download" |
+      null
+    >(null);
+
+  const orderedSubmissions =
+    [...submissions].sort(
+      (a, b) =>
+        Number(a.version ?? 0) -
+        Number(b.version ?? 0),
+    );
+
+  const latestSubmission =
+    orderedSubmissions[
+      orderedSubmissions.length - 1
+    ];
+
+  const hasApprovedSubmission =
+    orderedSubmissions.some(
+      (submission: any) =>
+        submission.status === "approved",
+    );
+
+  const awaitingReview =
+    task.status ===
+    "awaiting_client_review";
+
+  const changesRequested =
+    task.status ===
+    "changes_requested";
+
+  const stageIndex =
+    Number(task.stageIndex ?? 0);
+
+  const canSubmit =
+    !isClient &&
+    !complete &&
+    !awaitingReview &&
+    (
+      changesRequested ||
+      stageIndex >=
+        Math.max(
+          0,
+          reviewStageIndex - 1,
+        )
+    );
+
+  const canReview =
+    isClient &&
+    !complete &&
+    awaitingReview &&
+    latestSubmission?.status ===
+      "submitted";
+
+  const nextVersion =
+    Number(
+      latestSubmission?.version ?? 0,
+    ) + 1;
+
+  async function invalidate() {
+    await Promise.all([
+      qc.invalidateQueries({
+        queryKey: [
+          "retainer-workspace",
+          publicId,
+        ],
+      }),
+      qc.invalidateQueries({
+        queryKey: [
+          "retainer-submissions",
+          publicId,
+        ],
+      }),
+    ]);
+  }
+
+  async function uploadSelectedFile():
+    Promise<number | null> {
+    if (!file) {
+      return null;
+    }
+
+    if (!file.type) {
+      throw new Error(
+        "This file type could not be identified. Please use a supported image, video, PDF or ZIP file.",
+      );
+    }
+
+    const request = await apiRequest(
+      "POST",
+      "/api/upload/request",
+      {
+        resourceType: "project",
+        mimeType: file.type,
+        fileSizeBytes: file.size,
+        originalFilename: file.name,
+      },
+    );
+
+    if (!request.ok) {
+      const body =
+        await request
+          .json()
+          .catch(() => ({}));
+
+      throw new Error(
+        body?.error ??
+          "Could not prepare file upload",
+      );
+    }
+
+    const {
+      uploadUrl,
+      objectKey,
+      uploadId,
+    } = await request.json();
+
+    const upload = await fetch(
+      uploadUrl,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": file.type,
+        },
+        body: file,
+      },
+    );
+
+    if (!upload.ok) {
+      throw new Error(
+        "File upload failed",
+      );
+    }
+
+    const encodedObjectKey =
+      String(objectKey)
+        .split("/")
+        .map((part) =>
+          encodeURIComponent(part),
+        )
+        .join("/");
+
+    const confirm = await apiRequest(
+      "POST",
+      `/api/upload/confirm/${encodedObjectKey}`,
+      {},
+    );
+
+    if (!confirm.ok) {
+      const body =
+        await confirm
+          .json()
+          .catch(() => ({}));
+
+      throw new Error(
+        body?.error ??
+          "Could not confirm file upload",
+      );
+    }
+
+    return Number(uploadId);
+  }
+
+  async function submitWork() {
+    setError("");
+
+    if (
+      !note.trim() &&
+      !deliverableUrl.trim() &&
+      !file
+    ) {
+      setError(
+        "Add a note, deliverable link or file before submitting.",
+      );
+      return;
+    }
+
+    if (deliverableUrl.trim()) {
+      try {
+        const parsed =
+          new URL(
+            deliverableUrl.trim(),
+          );
+
+        if (
+          parsed.protocol !== "http:" &&
+          parsed.protocol !== "https:"
+        ) {
+          throw new Error();
+        }
+      } catch {
+        setError(
+          "Enter a valid http or https deliverable link.",
+        );
+        return;
+      }
+    }
+
+    setBusy("submit");
+
+    try {
+      const uploadId =
+        await uploadSelectedFile();
+
+      const res = await apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/tasks/${task.publicId}/submit`,
+        {
+          note:
+            note.trim() || null,
+          deliverableUrl:
+            deliverableUrl.trim() ||
+            null,
+          uploadId,
+        },
+      );
+
+      if (!res.ok) {
+        const body =
+          await res
+            .json()
+            .catch(() => ({}));
+
+        throw new Error(
+          body?.error ??
+            "Could not submit work",
+        );
+      }
+
+      setNote("");
+      setDeliverableUrl("");
+      setFile(null);
+
+      await invalidate();
+    } catch (e: any) {
+      setError(
+        e?.message ??
+          "Could not submit work",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function reviewWork(
+    action:
+      | "approve"
+      | "request-changes",
+  ) {
+    setError("");
+
+    if (
+      action === "request-changes" &&
+      !feedback.trim()
+    ) {
+      setError(
+        "Add feedback before requesting changes.",
+      );
+      return;
+    }
+
+    setBusy(
+      action === "approve"
+        ? "approve"
+        : "changes",
+    );
+
+    try {
+      const res = await apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/tasks/${task.publicId}/${action}`,
+        {
+          feedback:
+            feedback.trim() || null,
+        },
+      );
+
+      if (!res.ok) {
+        const body =
+          await res
+            .json()
+            .catch(() => ({}));
+
+        throw new Error(
+          body?.error ??
+            "Could not update work item",
+        );
+      }
+
+      setFeedback("");
+
+      await invalidate();
+    } catch (e: any) {
+      setError(
+        e?.message ??
+          "Could not update work item",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function openUploadedFile(
+    uploadId: number,
+  ) {
+    setError("");
+    setBusy("download");
+
+    try {
+      const res = await apiRequest(
+        "GET",
+        `/api/upload/download/${uploadId}`,
+      );
+
+      if (!res.ok) {
+        const body =
+          await res
+            .json()
+            .catch(() => ({}));
+
+        throw new Error(
+          body?.error ??
+            "Could not open file",
+        );
+      }
+
+      const data =
+        await res.json();
+
+      window.open(
+        data.downloadUrl,
+        "_blank",
+        "noopener,noreferrer",
+      );
+    } catch (e: any) {
+      setError(
+        e?.message ??
+          "Could not open file",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  let summary =
+    "Work submission";
+
+  if (complete) {
+    summary =
+      hasApprovedSubmission
+        ? "Client approved"
+        : "Legacy completion";
+  } else if (awaitingReview) {
+    summary =
+      isClient
+        ? "Review submission"
+        : "Awaiting client review";
+  } else if (changesRequested) {
+    summary =
+      "Changes requested";
+  } else if (canSubmit) {
+    summary =
+      submissions.length > 0
+        ? `Submit revision v${nextVersion}`
+        : "Add work submission";
+  } else if (!isClient) {
+    summary =
+      "Move to Production to submit work";
+  } else {
+    summary =
+      "No work submitted yet";
+  }
+
+  return (
+    <div className="w-full basis-full pt-1">
+      <button
+        type="button"
+        onClick={() =>
+          setOpen((value) => !value)
+        }
+        className="w-full flex items-center justify-between gap-3 rounded-xl border border-border bg-secondary/25 px-3 py-2.5 text-left hover:bg-secondary/40 transition-colors"
+      >
+        <div className="min-w-0">
+          <p className="text-xs font-semibold">
+            {summary}
+          </p>
+
+          {latestSubmission && (
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              Version{" "}
+              {latestSubmission.version}
+              {" · "}
+              {String(
+                latestSubmission.status ??
+                  "submitted",
+              ).replace(/_/g, " ")}
+            </p>
+          )}
+        </div>
+
+        {open ? (
+          <ChevronDown
+            size={14}
+            className="shrink-0 text-muted-foreground"
+          />
+        ) : (
+          <ChevronRight
+            size={14}
+            className="shrink-0 text-muted-foreground"
+          />
+        )}
+      </button>
+
+      {open && (
+        <div className="mt-2 rounded-xl border border-border bg-background p-4 space-y-4">
+
+          {orderedSubmissions.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold">
+                Submission history
+              </p>
+
+              {orderedSubmissions.map(
+                (submission: any) => (
+                  <div
+                    key={
+                      submission.publicId ??
+                      submission.id
+                    }
+                    className="rounded-xl border border-border p-3 space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs font-semibold">
+                        Version{" "}
+                        {submission.version}
+                      </span>
+
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-secondary text-muted-foreground capitalize">
+                        {String(
+                          submission.status ??
+                            "submitted",
+                        ).replace(
+                          /_/g,
+                          " ",
+                        )}
+                      </span>
+                    </div>
+
+                    {submission.note && (
+                      <p className="text-sm whitespace-pre-wrap">
+                        {submission.note}
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap gap-3">
+                      {submission.deliverableUrl && (
+                        <a
+                          href={
+                            submission.deliverableUrl
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-semibold text-[#FF5A1F] hover:underline"
+                        >
+                          Open deliverable link
+                        </a>
+                      )}
+
+                      {submission.uploadId &&
+                        submission.uploadStatus ===
+                          "ready" && (
+                          <button
+                            type="button"
+                            disabled={
+                              busy ===
+                              "download"
+                            }
+                            onClick={() =>
+                              openUploadedFile(
+                                Number(
+                                  submission.uploadId,
+                                ),
+                              )
+                            }
+                            className="text-xs font-semibold text-[#FF5A1F] hover:underline disabled:opacity-50"
+                          >
+                            {submission.originalFilename
+                              ? `Open ${submission.originalFilename}`
+                              : "Open uploaded file"}
+                          </button>
+                        )}
+                    </div>
+
+                    {submission.clientFeedback && (
+                      <div className="rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 px-3 py-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                          Client feedback
+                        </p>
+
+                        <p className="text-xs mt-1 whitespace-pre-wrap">
+                          {
+                            submission.clientFeedback
+                          }
+                        </p>
+                      </div>
+                    )}
+
+                    {submission.submittedAt && (
+                      <p className="text-[10px] text-muted-foreground">
+                        Submitted{" "}
+                        {new Date(
+                          submission.submittedAt,
+                        ).toLocaleString(
+                          "en-GB",
+                          {
+                            day: "numeric",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          },
+                        )}
+                      </p>
+                    )}
+                  </div>
+                ),
+              )}
+            </div>
+          )}
+
+          {canSubmit && (
+            <div className="space-y-3">
+              <div>
+                <p className="text-xs font-semibold">
+                  {changesRequested
+                    ? `Submit revision v${nextVersion}`
+                    : submissions.length > 0
+                      ? `Submit version ${nextVersion}`
+                      : "Submit work for review"}
+                </p>
+
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Add a note, deliverable link,
+                  file, or any combination.
+                </p>
+              </div>
+
+              <Textarea
+                rows={3}
+                value={note}
+                onChange={(e) =>
+                  setNote(e.target.value)
+                }
+                placeholder="Add a short note about this work…"
+                className="resize-none text-sm"
+              />
+
+              <input
+                type="url"
+                value={deliverableUrl}
+                onChange={(e) =>
+                  setDeliverableUrl(
+                    e.target.value,
+                  )
+                }
+                placeholder="https://drive.google.com/... or Vimeo, Figma, Frame.io…"
+                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+
+              <div className="rounded-xl border border-dashed border-border p-3">
+                <label className="block text-xs font-semibold mb-1.5">
+                  Optional file
+                </label>
+
+                <input
+                  type="file"
+                  onChange={(e) =>
+                    setFile(
+                      e.target.files?.[0] ??
+                        null,
+                    )
+                  }
+                  className="block w-full text-xs text-muted-foreground"
+                />
+
+                {file && (
+                  <p className="text-[11px] text-muted-foreground mt-1.5">
+                    {file.name}
+                    {" · "}
+                    {Math.max(
+                      1,
+                      Math.round(
+                        file.size / 1024,
+                      ),
+                    )}
+                    {" KB"}
+                  </p>
+                )}
+              </div>
+
+              <button
+                type="button"
+                disabled={
+                  busy === "submit"
+                }
+                onClick={submitWork}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-full text-xs font-semibold text-white disabled:opacity-50"
+                style={{
+                  background:
+                    "linear-gradient(135deg,#FF5A1F,#FF8C42)",
+                }}
+              >
+                {busy === "submit"
+                  ? file
+                    ? "Uploading & submitting…"
+                    : "Submitting…"
+                  : changesRequested
+                    ? "Submit revision"
+                    : "Submit for review"}
+              </button>
+            </div>
+          )}
+
+          {!isClient &&
+            awaitingReview && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 p-3">
+                <p className="text-xs font-semibold text-blue-800 dark:text-blue-300">
+                  Awaiting client approval
+                </p>
+
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  This item does not count
+                  as complete until the
+                  client approves it.
+                </p>
+              </div>
+            )}
+
+          {canReview && (
+            <div className="space-y-3 border-t border-border pt-4">
+              <div>
+                <p className="text-xs font-semibold">
+                  Review this work
+                </p>
+
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Approval marks this
+                  individual work item as
+                  100% complete.
+                </p>
+              </div>
+
+              <Textarea
+                rows={3}
+                value={feedback}
+                onChange={(e) =>
+                  setFeedback(
+                    e.target.value,
+                  )
+                }
+                placeholder="Optional approval note, or explain what needs changing…"
+                className="resize-none text-sm"
+              />
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    busy === "approve" ||
+                    busy === "changes"
+                  }
+                  onClick={() =>
+                    reviewWork("approve")
+                  }
+                  className="flex-1 px-4 py-2.5 rounded-full text-xs font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                >
+                  {busy === "approve"
+                    ? "Approving…"
+                    : "Approve work"}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={
+                    busy === "approve" ||
+                    busy === "changes"
+                  }
+                  onClick={() =>
+                    reviewWork(
+                      "request-changes",
+                    )
+                  }
+                  className="flex-1 px-4 py-2.5 rounded-full text-xs font-semibold border border-amber-300 text-amber-800 bg-background hover:bg-amber-50 disabled:opacity-50"
+                >
+                  {busy === "changes"
+                    ? "Sending feedback…"
+                    : "Request changes"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isClient &&
+            !canReview &&
+            !complete &&
+            orderedSubmissions.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No work has been submitted
+                for this item yet.
+              </p>
+            )}
+
+          {complete && (
+            <div
+              className={`rounded-xl border p-3 ${
+                hasApprovedSubmission
+                  ? "border-green-200 bg-green-50/60 dark:bg-green-950/20"
+                  : "border-zinc-200 bg-zinc-50 dark:bg-zinc-900/30"
+              }`}
+            >
+              <p
+                className={`text-xs font-semibold ${
+                  hasApprovedSubmission
+                    ? "text-green-800 dark:text-green-300"
+                    : "text-muted-foreground"
+                }`}
+              >
+                {hasApprovedSubmission
+                  ? "Client approved — work item complete"
+                  : "Legacy completion — completed before client approval was introduced"}
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-xs text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function MessagesPanel({ retainerId, userId }: { retainerId: string | number; userId: number | undefined }) {
   const qc = useQueryClient();

@@ -85,6 +85,100 @@ async function insertNotification(
   `;
 }
 
+function parseWorkItemStages(raw: any): string[] {
+  try {
+    const parsed =
+      typeof raw === "string"
+        ? JSON.parse(raw)
+        : raw;
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((stage: any) =>
+        typeof stage === "string"
+          ? stage
+          : stage?.name ??
+            stage?.title ??
+            stage?.label
+      )
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function findClientReviewStageIndex(
+  stages: string[],
+): number {
+  const index = stages.findIndex((stage) => {
+    const value =
+      String(stage).toLowerCase();
+
+    return (
+      value.includes("client review") ||
+      value === "review" ||
+      value.includes("client approval")
+    );
+  });
+
+  if (index >= 0) {
+    return index;
+  }
+
+  return Math.max(
+    0,
+    stages.length - 2,
+  );
+}
+
+function findRevisionStageIndex(
+  stages: string[],
+  reviewIndex: number,
+): number {
+  const index = stages.findIndex((stage) =>
+    String(stage)
+      .toLowerCase()
+      .includes("revision"),
+  );
+
+  if (index >= 0) {
+    return index;
+  }
+
+  return Math.max(
+    0,
+    reviewIndex - 1,
+  );
+}
+
+async function loadRetainerWorkItem(
+  db: any,
+  agreementPublicId: string,
+  taskPublicId: string,
+) {
+  const rows = await db`
+    SELECT
+      rct.*,
+      rc.retainer_agreement_id,
+      ra.client_id,
+      ra.freelancer_id,
+      ra.project_id
+    FROM retainer_cycle_tasks rct
+    JOIN retainer_cycles rc
+      ON rc.id = rct.retainer_cycle_id
+    JOIN retainer_agreements ra
+      ON ra.id = rc.retainer_agreement_id
+    WHERE rct.public_id = ${taskPublicId}
+      AND ra.public_id = ${agreementPublicId}
+    LIMIT 1
+  `;
+
+  return rows[0] ?? null;
+}
+
 async function createCycleWorkItems(
   db: any,
   agreementId: number,
@@ -858,6 +952,784 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   );
 
   // ─── POST /api/retainer/:publicId/tasks/:taskPublicId/advance ──────────────
+  // ─── GET retainer work-item submissions ────────────────────────────────
+  app.get(
+    "/api/retainer/:publicId/submissions",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const { publicId } = req.params;
+        const userId = req.auth!.userId;
+
+        const agreementRows = await db`
+          SELECT
+            id,
+            client_id,
+            freelancer_id
+          FROM retainer_agreements
+          WHERE public_id = ${publicId}
+          LIMIT 1
+        `;
+
+        if (!agreementRows.length) {
+          return res.status(404).json({
+            error: "Retainer agreement not found",
+          });
+        }
+
+        const agreement =
+          agreementRows[0];
+
+        if (
+          Number(userId) !==
+            Number(agreement.client_id) &&
+          Number(userId) !==
+            Number(agreement.freelancer_id)
+        ) {
+          return res.status(403).json({
+            error:
+              "You do not have access to this retainer",
+          });
+        }
+
+        const submissions = await db`
+          SELECT
+            rws.id,
+            rws.public_id AS "publicId",
+            rct.public_id AS "taskPublicId",
+            rws.version,
+            rws.note,
+            rws.deliverable_url
+              AS "deliverableUrl",
+            rws.upload_object_id
+              AS "uploadId",
+            u.original_filename
+              AS "originalFilename",
+            u.mime_type
+              AS "mimeType",
+            u.status
+              AS "uploadStatus",
+            rws.status,
+            rws.client_feedback
+              AS "clientFeedback",
+            rws.submitted_by
+              AS "submittedBy",
+            rws.reviewed_by
+              AS "reviewedBy",
+            rws.submitted_at
+              AS "submittedAt",
+            rws.reviewed_at
+              AS "reviewedAt",
+            rws.created_at
+              AS "createdAt"
+          FROM retainer_work_item_submissions rws
+          JOIN retainer_cycle_tasks rct
+            ON rct.id =
+              rws.retainer_cycle_task_id
+          JOIN retainer_cycles rc
+            ON rc.id =
+              rct.retainer_cycle_id
+          LEFT JOIN upload_objects u
+            ON u.id =
+              rws.upload_object_id
+          WHERE rc.retainer_agreement_id =
+            ${agreement.id}
+          ORDER BY
+            rws.retainer_cycle_task_id ASC,
+            rws.version ASC
+        `;
+
+        res.json(submissions);
+      } catch (e: any) {
+        res.status(e?.status ?? 500).json({
+          error:
+            e.message ??
+            "Failed to load work submissions",
+        });
+      }
+    },
+  );
+
+  // ─── Freelancer submits work for client review ────────────────────────────
+  app.post(
+    "/api/retainer/:publicId/tasks/:taskPublicId/submit",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const {
+          publicId,
+          taskPublicId,
+        } = req.params;
+
+        const userId =
+          req.auth!.userId;
+
+        const task =
+          await loadRetainerWorkItem(
+            db,
+            publicId,
+            taskPublicId,
+          );
+
+        if (!task) {
+          return res.status(404).json({
+            error: "Work item not found",
+          });
+        }
+
+        if (
+          Number(userId) !==
+          Number(task.freelancer_id)
+        ) {
+          return res.status(403).json({
+            error:
+              "Only the freelancer can submit work",
+          });
+        }
+
+        if (
+          task.status === "complete" ||
+          task.status === "done"
+        ) {
+          return res.status(409).json({
+            error:
+              "This work item is already complete",
+          });
+        }
+
+        if (
+          task.status ===
+          "awaiting_client_review"
+        ) {
+          return res.status(409).json({
+            error:
+              "This work item is already awaiting client review",
+          });
+        }
+
+        const note =
+          typeof req.body?.note === "string"
+            ? req.body.note.trim()
+            : "";
+
+        const deliverableUrl =
+          typeof req.body?.deliverableUrl ===
+          "string"
+            ? req.body.deliverableUrl.trim()
+            : "";
+
+        if (deliverableUrl) {
+          try {
+            const parsedUrl =
+              new URL(deliverableUrl);
+
+            if (
+              parsedUrl.protocol !== "http:" &&
+              parsedUrl.protocol !== "https:"
+            ) {
+              throw new Error(
+                "Unsupported protocol",
+              );
+            }
+          } catch {
+            return res.status(400).json({
+              error:
+                "Deliverable link must be a valid http or https URL",
+            });
+          }
+        }
+
+        const rawUploadId =
+          req.body?.uploadId;
+
+        const uploadId =
+          rawUploadId === undefined ||
+          rawUploadId === null ||
+          rawUploadId === ""
+            ? null
+            : Number(rawUploadId);
+
+        if (
+          !note &&
+          !deliverableUrl &&
+          !uploadId
+        ) {
+          return res.status(400).json({
+            error:
+              "Add a work note, deliverable link or file before submitting for review",
+          });
+        }
+
+        if (
+          uploadId !== null &&
+          !Number.isInteger(uploadId)
+        ) {
+          return res.status(400).json({
+            error: "Invalid upload id",
+          });
+        }
+
+        if (uploadId !== null) {
+          const uploadRows = await db`
+            SELECT
+              id,
+              resource_id
+            FROM upload_objects
+            WHERE id = ${uploadId}
+              AND owner_user_id =
+                ${Number(userId)}
+              AND resource_type =
+                'project'
+              AND status = 'ready'
+            LIMIT 1
+          `;
+
+          if (!uploadRows.length) {
+            return res.status(400).json({
+              error:
+                "The selected file is not available for this retainer",
+            });
+          }
+
+          const linkedProjectId =
+            uploadRows[0].resource_id;
+
+          if (
+            linkedProjectId !== null &&
+            Number(linkedProjectId) !==
+              Number(task.project_id)
+          ) {
+            return res.status(400).json({
+              error:
+                "This file belongs to a different project",
+            });
+          }
+
+          await db`
+            UPDATE upload_objects
+            SET resource_id =
+              ${task.project_id}
+            WHERE id = ${uploadId}
+          `;
+        }
+
+        const stages =
+          parseWorkItemStages(
+            task.stages,
+          );
+
+        if (!stages.length) {
+          return res.status(409).json({
+            error:
+              "This work item does not have a workflow",
+          });
+        }
+
+        const reviewIndex =
+          findClientReviewStageIndex(
+            stages,
+          );
+
+        const versionRows = await db`
+          SELECT
+            COALESCE(
+              MAX(version),
+              0
+            )::int + 1 AS next_version
+          FROM retainer_work_item_submissions
+          WHERE retainer_cycle_task_id =
+            ${task.id}
+        `;
+
+        const version =
+          Number(
+            versionRows[0]?.next_version ??
+              1,
+          );
+
+        const nowIso =
+          new Date().toISOString();
+
+        const submissionRows = await db`
+          INSERT INTO
+            retainer_work_item_submissions (
+              public_id,
+              retainer_cycle_task_id,
+              version,
+              submitted_by,
+              note,
+              deliverable_url,
+              upload_object_id,
+              status,
+              submitted_at,
+              created_at
+            )
+          VALUES (
+            ${makePublicId("rws")},
+            ${task.id},
+            ${version},
+            ${Number(userId)},
+            ${note || null},
+            ${deliverableUrl || null},
+            ${uploadId},
+            'submitted',
+            ${nowIso},
+            ${nowIso}
+          )
+          RETURNING *
+        `;
+
+        const updatedTaskRows =
+          await db`
+            UPDATE
+              retainer_cycle_tasks
+            SET
+              stage =
+                ${stages[reviewIndex]},
+              stage_index =
+                ${reviewIndex},
+              status =
+                'awaiting_client_review',
+              completed_at = NULL
+            WHERE id = ${task.id}
+            RETURNING *
+          `;
+
+        const freelancer =
+          await loadUser(
+            db,
+            task.freelancer_id,
+          );
+
+        await insertNotification(
+          db,
+          {
+            recipientId:
+              task.client_id,
+            actorId:
+              Number(userId),
+            actorName:
+              freelancer?.name ??
+              "The freelancer",
+            type:
+              "retainer_work_submitted",
+            message:
+              `${task.title} is ready for your review`,
+            link:
+              `/retainer/${publicId}`,
+          },
+        );
+
+        res.json({
+          submission:
+            submissionRows[0],
+          task:
+            updatedTaskRows[0],
+        });
+      } catch (e: any) {
+        res.status(
+          e?.status ?? 500,
+        ).json({
+          error:
+            e.message ??
+            "Failed to submit work item",
+        });
+      }
+    },
+  );
+
+  // ─── Client requests changes ───────────────────────────────────────────────
+  app.post(
+    "/api/retainer/:publicId/tasks/:taskPublicId/request-changes",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const {
+          publicId,
+          taskPublicId,
+        } = req.params;
+
+        const userId =
+          req.auth!.userId;
+
+        const task =
+          await loadRetainerWorkItem(
+            db,
+            publicId,
+            taskPublicId,
+          );
+
+        if (!task) {
+          return res.status(404).json({
+            error: "Work item not found",
+          });
+        }
+
+        if (
+          Number(userId) !==
+          Number(task.client_id)
+        ) {
+          return res.status(403).json({
+            error:
+              "Only the client can request changes",
+          });
+        }
+
+        if (
+          task.status !==
+          "awaiting_client_review"
+        ) {
+          return res.status(409).json({
+            error:
+              "This work item is not awaiting client review",
+          });
+        }
+
+        const feedback =
+          typeof req.body?.feedback ===
+          "string"
+            ? req.body.feedback.trim()
+            : "";
+
+        if (!feedback) {
+          return res.status(400).json({
+            error:
+              "Please add feedback before requesting changes",
+          });
+        }
+
+        const submissionRows =
+          await db`
+            SELECT *
+            FROM
+              retainer_work_item_submissions
+            WHERE
+              retainer_cycle_task_id =
+                ${task.id}
+              AND status = 'submitted'
+            ORDER BY version DESC
+            LIMIT 1
+          `;
+
+        if (!submissionRows.length) {
+          return res.status(409).json({
+            error:
+              "No submitted work was found for review",
+          });
+        }
+
+        const submission =
+          submissionRows[0];
+
+        const stages =
+          parseWorkItemStages(
+            task.stages,
+          );
+
+        if (!stages.length) {
+          return res.status(409).json({
+            error:
+              "This work item does not have a workflow",
+          });
+        }
+
+        const reviewIndex =
+          findClientReviewStageIndex(
+            stages,
+          );
+
+        const revisionIndex =
+          findRevisionStageIndex(
+            stages,
+            reviewIndex,
+          );
+
+        const nowIso =
+          new Date().toISOString();
+
+        await db`
+          UPDATE
+            retainer_work_item_submissions
+          SET
+            status =
+              'changes_requested',
+            client_feedback =
+              ${feedback},
+            reviewed_by =
+              ${Number(userId)},
+            reviewed_at =
+              ${nowIso}
+          WHERE id = ${submission.id}
+        `;
+
+        const updatedTaskRows =
+          await db`
+            UPDATE
+              retainer_cycle_tasks
+            SET
+              stage =
+                ${stages[revisionIndex]},
+              stage_index =
+                ${revisionIndex},
+              status =
+                'changes_requested',
+              completed_at = NULL
+            WHERE id = ${task.id}
+            RETURNING *
+          `;
+
+        const client =
+          await loadUser(
+            db,
+            task.client_id,
+          );
+
+        await insertNotification(
+          db,
+          {
+            recipientId:
+              task.freelancer_id,
+            actorId:
+              Number(userId),
+            actorName:
+              client?.name ??
+              "The client",
+            type:
+              "retainer_changes_requested",
+            message:
+              `Changes were requested for ${task.title}`,
+            link:
+              `/retainer/${publicId}`,
+          },
+        );
+
+        res.json({
+          status:
+            "changes_requested",
+          task:
+            updatedTaskRows[0],
+        });
+      } catch (e: any) {
+        res.status(
+          e?.status ?? 500,
+        ).json({
+          error:
+            e.message ??
+            "Failed to request changes",
+        });
+      }
+    },
+  );
+
+  // ─── Client approves final work ────────────────────────────────────────────
+  app.post(
+    "/api/retainer/:publicId/tasks/:taskPublicId/approve",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const {
+          publicId,
+          taskPublicId,
+        } = req.params;
+
+        const userId =
+          req.auth!.userId;
+
+        const task =
+          await loadRetainerWorkItem(
+            db,
+            publicId,
+            taskPublicId,
+          );
+
+        if (!task) {
+          return res.status(404).json({
+            error: "Work item not found",
+          });
+        }
+
+        if (
+          Number(userId) !==
+          Number(task.client_id)
+        ) {
+          return res.status(403).json({
+            error:
+              "Only the client can approve this work item",
+          });
+        }
+
+        if (
+          task.status !==
+          "awaiting_client_review"
+        ) {
+          return res.status(409).json({
+            error:
+              "This work item is not awaiting client review",
+          });
+        }
+
+        const submissionRows =
+          await db`
+            SELECT *
+            FROM
+              retainer_work_item_submissions
+            WHERE
+              retainer_cycle_task_id =
+                ${task.id}
+              AND status = 'submitted'
+            ORDER BY version DESC
+            LIMIT 1
+          `;
+
+        if (!submissionRows.length) {
+          return res.status(409).json({
+            error:
+              "No submitted work was found for approval",
+          });
+        }
+
+        const submission =
+          submissionRows[0];
+
+        const stages =
+          parseWorkItemStages(
+            task.stages,
+          );
+
+        if (!stages.length) {
+          return res.status(409).json({
+            error:
+              "This work item does not have a workflow",
+          });
+        }
+
+        const finalIndex =
+          stages.length - 1;
+
+        const feedback =
+          typeof req.body?.feedback ===
+          "string"
+            ? req.body.feedback.trim()
+            : "";
+
+        const nowIso =
+          new Date().toISOString();
+
+        await db`
+          UPDATE
+            retainer_work_item_submissions
+          SET
+            status = 'approved',
+            client_feedback =
+              ${feedback || null},
+            reviewed_by =
+              ${Number(userId)},
+            reviewed_at =
+              ${nowIso}
+          WHERE id = ${submission.id}
+        `;
+
+        const updatedTaskRows =
+          await db`
+            UPDATE
+              retainer_cycle_tasks
+            SET
+              stage =
+                ${stages[finalIndex]},
+              stage_index =
+                ${finalIndex},
+              status = 'complete',
+              completed_at =
+                ${nowIso}
+            WHERE id = ${task.id}
+            RETURNING *
+          `;
+
+        const remainingRows =
+          await db`
+            SELECT
+              COUNT(*)::int
+                AS remaining
+            FROM retainer_cycle_tasks
+            WHERE
+              retainer_cycle_id =
+                ${task.retainer_cycle_id}
+              AND id <> ${task.id}
+              AND status NOT IN (
+                'complete',
+                'done'
+              )
+          `;
+
+        const remaining =
+          Number(
+            remainingRows[0]?.remaining ??
+              0,
+          );
+
+        if (remaining === 0) {
+          await db`
+            UPDATE retainer_agreements
+            SET
+              status =
+                'cycle_review_due',
+              updated_at =
+                ${nowIso}
+            WHERE id =
+              ${task.retainer_agreement_id}
+          `;
+        }
+
+        const client =
+          await loadUser(
+            db,
+            task.client_id,
+          );
+
+        await insertNotification(
+          db,
+          {
+            recipientId:
+              task.freelancer_id,
+            actorId:
+              Number(userId),
+            actorName:
+              client?.name ??
+              "The client",
+            type:
+              "retainer_work_approved",
+            message:
+              `${task.title} has been approved`,
+            link:
+              `/retainer/${publicId}`,
+          },
+        );
+
+        res.json({
+          status: "complete",
+          task:
+            updatedTaskRows[0],
+        });
+      } catch (e: any) {
+        res.status(
+          e?.status ?? 500,
+        ).json({
+          error:
+            e.message ??
+            "Failed to approve work item",
+        });
+      }
+    },
+  );
+
   app.post(
     "/api/retainer/:publicId/tasks/:taskPublicId/advance",
     requireAuth,
@@ -896,77 +1768,83 @@ export function registerRetainerBuilderRoutes(app: Express): void {
           });
         }
 
-        let stages: string[] = [];
-
-        try {
-          const parsed =
-            typeof task.stages === "string"
-              ? JSON.parse(task.stages)
-              : task.stages;
-
-          if (Array.isArray(parsed)) {
-            stages = parsed.filter(Boolean);
-          }
-        } catch {}
+        const stages =
+          parseWorkItemStages(
+            task.stages,
+          );
 
         if (!stages.length) {
           return res.status(409).json({
-            error: "This work item does not have a workflow",
+            error:
+              "This work item does not have a workflow",
           });
         }
 
-        if (task.status === "complete") {
+        if (
+          task.status === "complete" ||
+          task.status === "done"
+        ) {
           return res.json(task);
         }
 
-        const currentIndex = Math.max(
-          0,
-          Number(task.stage_index ?? 0),
-        );
+        if (
+          task.status ===
+          "awaiting_client_review"
+        ) {
+          return res.status(409).json({
+            error:
+              "This work item is awaiting client review",
+          });
+        }
 
-        const nextIndex = Math.min(
-          currentIndex + 1,
-          stages.length - 1,
-        );
+        const currentIndex =
+          Math.max(
+            0,
+            Number(
+              task.stage_index ?? 0,
+            ),
+          );
 
-        const isComplete =
-          nextIndex === stages.length - 1;
+        const reviewIndex =
+          findClientReviewStageIndex(
+            stages,
+          );
 
-        const nowIso = new Date().toISOString();
+        const maxFreelancerIndex =
+          Math.max(
+            0,
+            reviewIndex - 1,
+          );
+
+        if (
+          currentIndex >=
+          maxFreelancerIndex
+        ) {
+          return res.status(409).json({
+            error:
+              "Submit work for client review instead of moving this item forward",
+          });
+        }
+
+        const nextIndex =
+          Math.min(
+            currentIndex + 1,
+            maxFreelancerIndex,
+          );
 
         const updated = await db`
           UPDATE retainer_cycle_tasks
           SET
-            stage = ${stages[nextIndex]},
-            stage_index = ${nextIndex},
-            status = ${isComplete ? "complete" : "in_progress"},
-            completed_at = ${isComplete ? nowIso : null}
+            stage =
+              ${stages[nextIndex]},
+            stage_index =
+              ${nextIndex},
+            status =
+              'in_progress',
+            completed_at = NULL
           WHERE id = ${task.id}
           RETURNING *
         `;
-
-        if (isComplete) {
-          const remainingRows = await db`
-            SELECT COUNT(*)::int AS remaining
-            FROM retainer_cycle_tasks
-            WHERE retainer_cycle_id = ${task.retainer_cycle_id}
-              AND id <> ${task.id}
-              AND status NOT IN ('complete', 'done')
-          `;
-
-          const remaining =
-            Number(remainingRows[0]?.remaining ?? 0);
-
-          if (remaining === 0) {
-            await db`
-              UPDATE retainer_agreements
-              SET
-                status = 'cycle_review_due',
-                updated_at = ${nowIso}
-              WHERE id = ${task.retainer_agreement_id}
-            `;
-          }
-        }
 
         res.json(updated[0]);
       } catch (e: any) {
