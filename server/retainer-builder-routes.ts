@@ -524,10 +524,15 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   );
 
   // ─── GET /api/retainer/:publicId/workspace ────────────────────────────────
-  app.get("/api/retainer/:publicId/workspace", async (req, res) => {
-    const db = getDb();
-    try {
-      const { publicId } = req.params;
+  app.get(
+    "/api/retainer/:publicId/workspace",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const { publicId } = req.params;
+        const userId = req.auth!.userId;
 
       const rows = await db`
         SELECT ra.*, p.title as project_title, p.client_id, p.freelancer_id,
@@ -542,10 +547,32 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         WHERE ra.public_id = ${publicId}
         LIMIT 1
       `;
-      if (!rows.length) return res.status(404).json({ error: "Retainer agreement not found" });
-      const agreement = rows[0];
+        if (!rows.length) {
+          return res.status(404).json({
+            error: "Retainer agreement not found",
+          });
+        }
 
-      const [cycles, deliverables, workstreams, requests, usageEntries, tasks, amendments] = await Promise.all([
+        const agreement = rows[0];
+
+        if (
+          Number(userId) !== Number(agreement.client_id) &&
+          Number(userId) !== Number(agreement.freelancer_id)
+        ) {
+          return res.status(403).json({
+            error: "You do not have access to this retainer",
+          });
+        }
+
+        const [
+          cycles,
+          deliverables,
+          workstreams,
+          requests,
+          usageEntries,
+          tasks,
+          amendments,
+        ] = await Promise.all([
         db`SELECT * FROM retainer_cycles WHERE retainer_agreement_id = ${agreement.id} ORDER BY cycle_number ASC`,
         db`SELECT * FROM retainer_deliverables WHERE retainer_agreement_id = ${agreement.id} ORDER BY id ASC`,
         db`SELECT * FROM retainer_workstreams WHERE retainer_agreement_id = ${agreement.id} ORDER BY id ASC`,
