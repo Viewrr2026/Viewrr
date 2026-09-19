@@ -1143,78 +1143,11 @@ export function registerRetainerBuilderRoutes(app: Express): void {
           }
         }
 
-        const rawUploadId =
-          req.body?.uploadId;
-
-        const uploadId =
-          rawUploadId === undefined ||
-          rawUploadId === null ||
-          rawUploadId === ""
-            ? null
-            : Number(rawUploadId);
-
-        if (
-          !note &&
-          !deliverableUrl &&
-          !uploadId
-        ) {
+        if (!deliverableUrl) {
           return res.status(400).json({
             error:
-              "Add a work note, deliverable link or file before submitting for review",
+              "Add a deliverable link before submitting for review",
           });
-        }
-
-        if (
-          uploadId !== null &&
-          !Number.isInteger(uploadId)
-        ) {
-          return res.status(400).json({
-            error: "Invalid upload id",
-          });
-        }
-
-        if (uploadId !== null) {
-          const uploadRows = await db`
-            SELECT
-              id,
-              resource_id
-            FROM upload_objects
-            WHERE id = ${uploadId}
-              AND owner_user_id =
-                ${Number(userId)}
-              AND resource_type =
-                'project'
-              AND status = 'ready'
-            LIMIT 1
-          `;
-
-          if (!uploadRows.length) {
-            return res.status(400).json({
-              error:
-                "The selected file is not available for this retainer",
-            });
-          }
-
-          const linkedProjectId =
-            uploadRows[0].resource_id;
-
-          if (
-            linkedProjectId !== null &&
-            Number(linkedProjectId) !==
-              Number(task.project_id)
-          ) {
-            return res.status(400).json({
-              error:
-                "This file belongs to a different project",
-            });
-          }
-
-          await db`
-            UPDATE upload_objects
-            SET resource_id =
-              ${task.project_id}
-            WHERE id = ${uploadId}
-          `;
         }
 
         const stages =
@@ -1263,7 +1196,6 @@ export function registerRetainerBuilderRoutes(app: Express): void {
               submitted_by,
               note,
               deliverable_url,
-              upload_object_id,
               status,
               submitted_at,
               created_at
@@ -1274,8 +1206,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
             ${version},
             ${Number(userId)},
             ${note || null},
-            ${deliverableUrl || null},
-            ${uploadId},
+            ${deliverableUrl},
             'submitted',
             ${nowIso},
             ${nowIso}

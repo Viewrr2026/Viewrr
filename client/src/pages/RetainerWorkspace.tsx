@@ -1366,8 +1366,6 @@ function WorkItemSubmissionPanel({
   const [note, setNote] = useState("");
   const [deliverableUrl, setDeliverableUrl] =
     useState("");
-  const [file, setFile] =
-    useState<File | null>(null);
   const [feedback, setFeedback] =
     useState("");
   const [error, setError] =
@@ -1378,7 +1376,6 @@ function WorkItemSubmissionPanel({
       "submit" |
       "approve" |
       "changes" |
-      "download" |
       null
     >(null);
 
@@ -1453,103 +1450,12 @@ function WorkItemSubmissionPanel({
     ]);
   }
 
-  async function uploadSelectedFile():
-    Promise<number | null> {
-    if (!file) {
-      return null;
-    }
-
-    if (!file.type) {
-      throw new Error(
-        "This file type could not be identified. Please use a supported image, video, PDF or ZIP file.",
-      );
-    }
-
-    const request = await apiRequest(
-      "POST",
-      "/api/upload/request",
-      {
-        resourceType: "project",
-        mimeType: file.type,
-        fileSizeBytes: file.size,
-        originalFilename: file.name,
-      },
-    );
-
-    if (!request.ok) {
-      const body =
-        await request
-          .json()
-          .catch(() => ({}));
-
-      throw new Error(
-        body?.error ??
-          "Could not prepare file upload",
-      );
-    }
-
-    const {
-      uploadUrl,
-      objectKey,
-      uploadId,
-    } = await request.json();
-
-    const upload = await fetch(
-      uploadUrl,
-      {
-        method: "PUT",
-        headers: {
-          "Content-Type": file.type,
-        },
-        body: file,
-      },
-    );
-
-    if (!upload.ok) {
-      throw new Error(
-        "File upload failed",
-      );
-    }
-
-    const encodedObjectKey =
-      String(objectKey)
-        .split("/")
-        .map((part) =>
-          encodeURIComponent(part),
-        )
-        .join("/");
-
-    const confirm = await apiRequest(
-      "POST",
-      `/api/upload/confirm/${encodedObjectKey}`,
-      {},
-    );
-
-    if (!confirm.ok) {
-      const body =
-        await confirm
-          .json()
-          .catch(() => ({}));
-
-      throw new Error(
-        body?.error ??
-          "Could not confirm file upload",
-      );
-    }
-
-    return Number(uploadId);
-  }
-
   async function submitWork() {
     setError("");
 
-    if (
-      !note.trim() &&
-      !deliverableUrl.trim() &&
-      !file
-    ) {
+    if (!deliverableUrl.trim()) {
       setError(
-        "Add a note, deliverable link or file before submitting.",
+        "Add a deliverable link before submitting.",
       );
       return;
     }
@@ -1578,9 +1484,6 @@ function WorkItemSubmissionPanel({
     setBusy("submit");
 
     try {
-      const uploadId =
-        await uploadSelectedFile();
-
       const res = await apiRequest(
         "POST",
         `/api/retainer/${publicId}/tasks/${task.publicId}/submit`,
@@ -1588,9 +1491,7 @@ function WorkItemSubmissionPanel({
           note:
             note.trim() || null,
           deliverableUrl:
-            deliverableUrl.trim() ||
-            null,
-          uploadId,
+            deliverableUrl.trim(),
         },
       );
 
@@ -1608,7 +1509,6 @@ function WorkItemSubmissionPanel({
 
       setNote("");
       setDeliverableUrl("");
-      setFile(null);
 
       await invalidate();
     } catch (e: any) {
@@ -1673,48 +1573,6 @@ function WorkItemSubmissionPanel({
       setError(
         e?.message ??
           "Could not update work item",
-      );
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function openUploadedFile(
-    uploadId: number,
-  ) {
-    setError("");
-    setBusy("download");
-
-    try {
-      const res = await apiRequest(
-        "GET",
-        `/api/upload/download/${uploadId}`,
-      );
-
-      if (!res.ok) {
-        const body =
-          await res
-            .json()
-            .catch(() => ({}));
-
-        throw new Error(
-          body?.error ??
-            "Could not open file",
-        );
-      }
-
-      const data =
-        await res.json();
-
-      window.open(
-        data.downloadUrl,
-        "_blank",
-        "noopener,noreferrer",
-      );
-    } catch (e: any) {
-      setError(
-        e?.message ??
-          "Could not open file",
       );
     } finally {
       setBusy(null);
@@ -1845,29 +1703,6 @@ function WorkItemSubmissionPanel({
                         </a>
                       )}
 
-                      {submission.uploadId &&
-                        submission.uploadStatus ===
-                          "ready" && (
-                          <button
-                            type="button"
-                            disabled={
-                              busy ===
-                              "download"
-                            }
-                            onClick={() =>
-                              openUploadedFile(
-                                Number(
-                                  submission.uploadId,
-                                ),
-                              )
-                            }
-                            className="text-xs font-semibold text-[#FF5A1F] hover:underline disabled:opacity-50"
-                          >
-                            {submission.originalFilename
-                              ? `Open ${submission.originalFilename}`
-                              : "Open uploaded file"}
-                          </button>
-                        )}
                     </div>
 
                     {submission.clientFeedback && (
@@ -1918,8 +1753,8 @@ function WorkItemSubmissionPanel({
                 </p>
 
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Add a note, deliverable link,
-                  file, or any combination.
+                  Add the link to the work you want
+                  the client to review. A note is optional.
                 </p>
               </div>
 
@@ -1941,40 +1776,10 @@ function WorkItemSubmissionPanel({
                     e.target.value,
                   )
                 }
-                placeholder="https://drive.google.com/... or Vimeo, Figma, Frame.io…"
+                placeholder="Deliverable link — Drive, Dropbox, Vimeo, Figma, Frame.io…"
+                required
                 className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
-
-              <div className="rounded-xl border border-dashed border-border p-3">
-                <label className="block text-xs font-semibold mb-1.5">
-                  Optional file
-                </label>
-
-                <input
-                  type="file"
-                  onChange={(e) =>
-                    setFile(
-                      e.target.files?.[0] ??
-                        null,
-                    )
-                  }
-                  className="block w-full text-xs text-muted-foreground"
-                />
-
-                {file && (
-                  <p className="text-[11px] text-muted-foreground mt-1.5">
-                    {file.name}
-                    {" · "}
-                    {Math.max(
-                      1,
-                      Math.round(
-                        file.size / 1024,
-                      ),
-                    )}
-                    {" KB"}
-                  </p>
-                )}
-              </div>
 
               <button
                 type="button"
@@ -1989,9 +1794,7 @@ function WorkItemSubmissionPanel({
                 }}
               >
                 {busy === "submit"
-                  ? file
-                    ? "Uploading & submitting…"
-                    : "Submitting…"
+                  ? "Submitting…"
                   : changesRequested
                     ? "Submit revision"
                     : "Submit for review"}
