@@ -1038,6 +1038,323 @@ export function registerRetainerBuilderRoutes(app: Express): void {
   );
 
   // ─── Freelancer submits work for client review ────────────────────────────
+  // ─── GET retainer work-item stage updates ────────────────────────────────
+  app.get(
+    "/api/retainer/:publicId/stage-updates",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const { publicId } = req.params;
+        const userId = req.auth!.userId;
+
+        const agreementRows = await db`
+          SELECT
+            id,
+            client_id,
+            freelancer_id
+          FROM retainer_agreements
+          WHERE public_id = ${publicId}
+          LIMIT 1
+        `;
+
+        if (!agreementRows.length) {
+          return res.status(404).json({
+            error: "Retainer agreement not found",
+          });
+        }
+
+        const agreement =
+          agreementRows[0];
+
+        if (
+          Number(userId) !==
+            Number(agreement.client_id) &&
+          Number(userId) !==
+            Number(agreement.freelancer_id)
+        ) {
+          return res.status(403).json({
+            error:
+              "You do not have access to this retainer",
+          });
+        }
+
+        const updates = await db`
+          SELECT
+            rsu.id,
+            rsu.public_id
+              AS "publicId",
+            rct.public_id
+              AS "taskPublicId",
+
+            rsu.stage_index
+              AS "stageIndex",
+            rsu.stage_name
+              AS "stageName",
+
+            rsu.next_stage_index
+              AS "nextStageIndex",
+            rsu.next_stage_name
+              AS "nextStageName",
+
+            rsu.note,
+            rsu.deliverable_url
+              AS "deliverableUrl",
+
+            rsu.created_by
+              AS "createdBy",
+            rsu.created_at
+              AS "createdAt"
+
+          FROM retainer_work_item_stage_updates rsu
+
+          JOIN retainer_cycle_tasks rct
+            ON rct.id =
+              rsu.retainer_cycle_task_id
+
+          JOIN retainer_cycles rc
+            ON rc.id =
+              rct.retainer_cycle_id
+
+          WHERE
+            rc.retainer_agreement_id =
+              ${agreement.id}
+
+          ORDER BY
+            rsu.created_at ASC,
+            rsu.id ASC
+        `;
+
+        res.json(updates);
+      } catch (e: any) {
+        res.status(
+          e?.status ?? 500,
+        ).json({
+          error:
+            e.message ??
+            "Failed to load stage updates",
+        });
+      }
+    },
+  );
+
+  // ─── Save stage update + move freelancer to next stage ────────────────────
+  app.post(
+    "/api/retainer/:publicId/tasks/:taskPublicId/progress",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const {
+          publicId,
+          taskPublicId,
+        } = req.params;
+
+        const userId =
+          req.auth!.userId;
+
+        const task =
+          await loadRetainerWorkItem(
+            db,
+            publicId,
+            taskPublicId,
+          );
+
+        if (!task) {
+          return res.status(404).json({
+            error: "Work item not found",
+          });
+        }
+
+        if (
+          Number(userId) !==
+          Number(task.freelancer_id)
+        ) {
+          return res.status(403).json({
+            error:
+              "Only the freelancer can progress this work item",
+          });
+        }
+
+        if (
+          task.status === "complete" ||
+          task.status === "done"
+        ) {
+          return res.status(409).json({
+            error:
+              "This work item is already complete",
+          });
+        }
+
+        if (
+          task.status ===
+          "awaiting_client_review"
+        ) {
+          return res.status(409).json({
+            error:
+              "This work item is awaiting final client approval",
+          });
+        }
+
+        const note =
+          typeof req.body?.note ===
+          "string"
+            ? req.body.note.trim()
+            : "";
+
+        const deliverableUrl =
+          typeof req.body?.deliverableUrl ===
+          "string"
+            ? req.body.deliverableUrl.trim()
+            : "";
+
+        if (!note) {
+          return res.status(400).json({
+            error:
+              "Add a comment about the work completed at this stage",
+          });
+        }
+
+        if (!deliverableUrl) {
+          return res.status(400).json({
+            error:
+              "Add a work link before moving to the next stage",
+          });
+        }
+
+        try {
+          const parsedUrl =
+            new URL(deliverableUrl);
+
+          if (
+            parsedUrl.protocol !== "http:" &&
+            parsedUrl.protocol !== "https:"
+          ) {
+            throw new Error(
+              "Unsupported protocol",
+            );
+          }
+        } catch {
+          return res.status(400).json({
+            error:
+              "Work link must be a valid http or https URL",
+          });
+        }
+
+        const stages =
+          parseWorkItemStages(
+            task.stages,
+          );
+
+        if (!stages.length) {
+          return res.status(409).json({
+            error:
+              "This work item does not have a workflow",
+          });
+        }
+
+        const currentIndex =
+          Math.max(
+            0,
+            Number(
+              task.stage_index ?? 0,
+            ),
+          );
+
+        const finalIndex =
+          findFinalApprovalStageIndex(
+            stages,
+          );
+
+        if (
+          currentIndex >=
+          finalIndex
+        ) {
+          return res.status(409).json({
+            error:
+              "This work item is at its final stage. Submit the final work for client approval.",
+          });
+        }
+
+        const nextIndex =
+          currentIndex + 1;
+
+        const nowIso =
+          new Date().toISOString();
+
+        const updateRows = await db`
+          INSERT INTO
+            retainer_work_item_stage_updates (
+              public_id,
+              retainer_cycle_task_id,
+
+              stage_index,
+              stage_name,
+
+              next_stage_index,
+              next_stage_name,
+
+              note,
+              deliverable_url,
+
+              created_by,
+              created_at
+            )
+          VALUES (
+            ${makePublicId("rsu")},
+            ${task.id},
+
+            ${currentIndex},
+            ${stages[currentIndex]},
+
+            ${nextIndex},
+            ${stages[nextIndex]},
+
+            ${note},
+            ${deliverableUrl},
+
+            ${Number(userId)},
+            ${nowIso}
+          )
+          RETURNING *
+        `;
+
+        const updatedTaskRows =
+          await db`
+            UPDATE retainer_cycle_tasks
+            SET
+              stage =
+                ${stages[nextIndex]},
+              stage_index =
+                ${nextIndex},
+              status =
+                'in_progress',
+              completed_at = NULL
+            WHERE id =
+              ${task.id}
+            RETURNING *
+          `;
+
+        res.json({
+          stageUpdate:
+            updateRows[0],
+          task:
+            updatedTaskRows[0],
+        });
+      } catch (e: any) {
+        res.status(
+          e?.status ?? 500,
+        ).json({
+          error:
+            e.message ??
+            "Failed to save stage update",
+        });
+      }
+    },
+  );
+
   app.post(
     "/api/retainer/:publicId/tasks/:taskPublicId/submit",
     requireAuth,
@@ -1128,10 +1445,17 @@ export function registerRetainerBuilderRoutes(app: Express): void {
           }
         }
 
+        if (!note) {
+          return res.status(400).json({
+            error:
+              "Add a comment before submitting final work for approval",
+          });
+        }
+
         if (!deliverableUrl) {
           return res.status(400).json({
             error:
-              "Add a deliverable link before submitting for review",
+              "Add a final work link before submitting for approval",
           });
         }
 
@@ -1664,6 +1988,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
     },
   );
 
+  // ─── Legacy naked advancement is disabled ─────────────────────────────
   app.post(
     "/api/retainer/:publicId/tasks/:taskPublicId/advance",
     requireAuth,
@@ -1671,120 +1996,48 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       const db = getDb();
 
       try {
-        const { publicId, taskPublicId } = req.params;
-        const userId = req.auth!.userId;
+        const {
+          publicId,
+          taskPublicId,
+        } = req.params;
 
-        const rows = await db`
-          SELECT
-            rct.*,
-            rc.retainer_agreement_id,
-            ra.client_id,
-            ra.freelancer_id
-          FROM retainer_cycle_tasks rct
-          JOIN retainer_cycles rc
-            ON rc.id = rct.retainer_cycle_id
-          JOIN retainer_agreements ra
-            ON ra.id = rc.retainer_agreement_id
-          WHERE rct.public_id = ${taskPublicId}
-            AND ra.public_id = ${publicId}
-          LIMIT 1
-        `;
+        const userId =
+          req.auth!.userId;
 
-        if (!rows.length) {
-          return res.status(404).json({ error: "Work item not found" });
+        const task =
+          await loadRetainerWorkItem(
+            db,
+            publicId,
+            taskPublicId,
+          );
+
+        if (!task) {
+          return res.status(404).json({
+            error: "Work item not found",
+          });
         }
 
-        const task = rows[0];
-
-        if (Number(userId) !== Number(task.freelancer_id)) {
+        if (
+          Number(userId) !==
+          Number(task.freelancer_id)
+        ) {
           return res.status(403).json({
-            error: "Only the freelancer can move work items forward",
-          });
-        }
-
-        const stages =
-          parseWorkItemStages(
-            task.stages,
-          );
-
-        if (!stages.length) {
-          return res.status(409).json({
             error:
-              "This work item does not have a workflow",
+              "Only the freelancer can progress this work item",
           });
         }
 
-        if (
-          task.status === "complete" ||
-          task.status === "done"
-        ) {
-          return res.json(task);
-        }
-
-        if (
-          task.status ===
-          "awaiting_client_review"
-        ) {
-          return res.status(409).json({
-            error:
-              "This work item is awaiting client review",
-          });
-        }
-
-        const currentIndex =
-          Math.max(
-            0,
-            Number(
-              task.stage_index ?? 0,
-            ),
-          );
-
-        const approvalIndex =
-          findFinalApprovalStageIndex(
-            stages,
-          );
-
-        const maxFreelancerIndex =
-          approvalIndex;
-
-        if (
-          currentIndex >=
-          maxFreelancerIndex
-        ) {
-          return res.status(409).json({
-            error:
-              "Submit final work for client approval instead of moving this item forward",
-          });
-        }
-
-        const nextIndex =
-          Math.min(
-            currentIndex + 1,
-            maxFreelancerIndex,
-          );
-
-        const updated = await db`
-          UPDATE retainer_cycle_tasks
-          SET
-            stage =
-              ${stages[nextIndex]},
-            stage_index =
-              ${nextIndex},
-            status =
-              'in_progress',
-            completed_at = NULL
-          WHERE id = ${task.id}
-          RETURNING *
-        `;
-
-        res.json(updated[0]);
+        return res.status(409).json({
+          error:
+            "Add a work link and comment, then use Save update & move forward",
+        });
       } catch (e: any) {
-        const status = e?.status ?? 500;
-
-        res.status(status).json({
+        res.status(
+          e?.status ?? 500,
+        ).json({
           error:
             e.message ??
-            "Failed to advance retainer work item",
+            "Failed to validate work-item progression",
         });
       }
     },

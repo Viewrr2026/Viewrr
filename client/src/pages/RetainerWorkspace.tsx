@@ -170,6 +170,35 @@ export default function RetainerWorkspace() {
     staleTime: 0,
   });
 
+  const {
+    data: stageUpdates = [],
+  } = useQuery<any[]>({
+    queryKey: [
+      "retainer-stage-updates",
+      publicId,
+    ],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/retainer/${publicId}/stage-updates`,
+      );
+
+      if (!res.ok) {
+        throw new Error(
+          "Failed to load stage updates",
+        );
+      }
+
+      return res.json();
+    },
+    enabled:
+      !!publicId &&
+      !!user?.id &&
+      !isPendingProposal &&
+      !isDeclined,
+    staleTime: 0,
+  });
+
   // ── Mutations ──
 
   const acceptRetainerMutation = useMutation({
@@ -808,6 +837,13 @@ export default function RetainerWorkspace() {
                                 task.publicId,
                             );
 
+                          const taskStageUpdates =
+                            stageUpdates.filter(
+                              (update: any) =>
+                                update.taskPublicId ===
+                                task.publicId,
+                            );
+
                           return (
                             <div
                               key={
@@ -862,38 +898,16 @@ export default function RetainerWorkspace() {
                                 </div>
                               </div>
 
-                              {!complete &&
-                                !isClient &&
-                                task.status !==
-                                  "awaiting_client_review" &&
-                                Number(
-                                  task.stageIndex ?? 0,
-                                ) <
-                                  maxFreelancerIndex && (
-                                  <button
-                                    type="button"
-                                    disabled={
-                                      taskAdvanceMutation.isPending
-                                    }
-                                    onClick={() =>
-                                      taskAdvanceMutation.mutate(
-                                        task.publicId,
-                                      )
-                                    }
-                                    className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold bg-[#FF5A1F]/10 text-[#FF5A1F] hover:bg-[#FF5A1F]/20 disabled:opacity-50 shrink-0"
-                                  >
-                                    Move forward
-                                    <ChevronRight
-                                      size={13}
-                                    />
-                                  </button>
-                                )}
+
 
                               <WorkItemSubmissionPanel
                                 publicId={publicId!}
                                 task={task}
                                 submissions={
                                   taskSubmissions
+                                }
+                                stageUpdates={
+                                  taskStageUpdates
                                 }
                                 isClient={!!isClient}
                                 complete={complete}
@@ -1325,6 +1339,7 @@ function WorkItemSubmissionPanel({
   publicId,
   task,
   submissions,
+  stageUpdates,
   isClient,
   complete,
   finalApprovalStageIndex,
@@ -1332,6 +1347,7 @@ function WorkItemSubmissionPanel({
   publicId: string;
   task: any;
   submissions: any[];
+  stageUpdates: any[];
   isClient: boolean;
   complete: boolean;
   finalApprovalStageIndex: number;
@@ -1349,6 +1365,7 @@ function WorkItemSubmissionPanel({
 
   const [busy, setBusy] =
     useState<
+      "progress" |
       "submit" |
       "approve" |
       "changes" |
@@ -1384,12 +1401,30 @@ function WorkItemSubmissionPanel({
   const stageIndex =
     Number(task.stageIndex ?? 0);
 
+  const canProgress =
+    !isClient &&
+    !complete &&
+    !awaitingReview &&
+    stageIndex <
+      finalApprovalStageIndex;
+
   const canSubmit =
     !isClient &&
     !complete &&
     !awaitingReview &&
     stageIndex >=
       finalApprovalStageIndex;
+
+  const orderedStageUpdates =
+    [...stageUpdates].sort(
+      (a, b) =>
+        new Date(
+          a.createdAt ?? 0,
+        ).getTime() -
+        new Date(
+          b.createdAt ?? 0,
+        ).getTime(),
+    );
 
   const canReview =
     isClient &&
@@ -1417,7 +1452,89 @@ function WorkItemSubmissionPanel({
           publicId,
         ],
       }),
+      qc.invalidateQueries({
+        queryKey: [
+          "retainer-stage-updates",
+          publicId,
+        ],
+      }),
     ]);
+  }
+
+  async function progressWork() {
+    setError("");
+
+    if (!note.trim()) {
+      setError(
+        "Add a comment about the work completed at this stage.",
+      );
+      return;
+    }
+
+    if (!deliverableUrl.trim()) {
+      setError(
+        "Add a work link before moving to the next stage.",
+      );
+      return;
+    }
+
+    try {
+      const parsed =
+        new URL(
+          deliverableUrl.trim(),
+        );
+
+      if (
+        parsed.protocol !== "http:" &&
+        parsed.protocol !== "https:"
+      ) {
+        throw new Error();
+      }
+    } catch {
+      setError(
+        "Enter a valid http or https work link.",
+      );
+      return;
+    }
+
+    setBusy("progress");
+
+    try {
+      const res = await apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/tasks/${task.publicId}/progress`,
+        {
+          note:
+            note.trim(),
+          deliverableUrl:
+            deliverableUrl.trim(),
+        },
+      );
+
+      if (!res.ok) {
+        const body =
+          await res
+            .json()
+            .catch(() => ({}));
+
+        throw new Error(
+          body?.error ??
+            "Could not save stage update",
+        );
+      }
+
+      setNote("");
+      setDeliverableUrl("");
+
+      await invalidate();
+    } catch (e: any) {
+      setError(
+        e?.message ??
+          "Could not save stage update",
+      );
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function submitWork() {
@@ -1570,12 +1687,14 @@ function WorkItemSubmissionPanel({
       submissions.length > 0
         ? `Submit final revision v${nextVersion}`
         : "Submit final work";
-  } else if (!isClient) {
+  } else if (canProgress) {
     summary =
-      "Progress through the workflow to submit final work";
-  } else {
+      `Update ${task.stage ?? "current stage"} & move forward`;
+  } else if (isClient) {
     summary =
-      "No work submitted yet";
+      orderedStageUpdates.length > 0
+        ? `${orderedStageUpdates.length} stage update${orderedStageUpdates.length === 1 ? "" : "s"}`
+        : "No stage updates yet";
   }
 
   return (
@@ -1620,6 +1739,75 @@ function WorkItemSubmissionPanel({
 
       {open && (
         <div className="mt-2 rounded-xl border border-border bg-background p-4 space-y-4">
+
+          {orderedStageUpdates.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold">
+                Stage history
+              </p>
+
+              {orderedStageUpdates.map(
+                (update: any) => (
+                  <div
+                    key={
+                      update.publicId ??
+                      update.id
+                    }
+                    className="rounded-xl border border-border p-3 space-y-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold">
+                          Stage{" "}
+                          {Number(
+                            update.stageIndex ?? 0,
+                          ) + 1}
+                          {" — "}
+                          {update.stageName}
+                        </p>
+
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          Progressed to{" "}
+                          {update.nextStageName}
+                        </p>
+                      </div>
+
+                      {update.createdAt && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {new Date(
+                            update.createdAt,
+                          ).toLocaleString(
+                            "en-GB",
+                            {
+                              day: "numeric",
+                              month: "short",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            },
+                          )}
+                        </span>
+                      )}
+                    </div>
+
+                    <p className="text-sm whitespace-pre-wrap">
+                      {update.note}
+                    </p>
+
+                    <a
+                      href={
+                        update.deliverableUrl
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex text-xs font-semibold text-[#FF5A1F] hover:underline"
+                    >
+                      Open work link
+                    </a>
+                  </div>
+                ),
+              )}
+            </div>
+          )}
 
           {orderedSubmissions.length > 0 && (
             <div className="space-y-2">
@@ -1711,6 +1899,72 @@ function WorkItemSubmissionPanel({
             </div>
           )}
 
+          {canProgress && (
+            <div className="space-y-3 border-t border-border pt-4">
+              <div>
+                <p className="text-xs font-semibold">
+                  Update Stage{" "}
+                  {stageIndex + 1}
+                  {" — "}
+                  {task.stage ??
+                    "Current stage"}
+                </p>
+
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Share the work completed at
+                  this stage so the client has
+                  a permanent progress record.
+                  Saving the update moves this
+                  item to the next stage.
+                </p>
+              </div>
+
+              <Textarea
+                rows={3}
+                value={note}
+                onChange={(e) =>
+                  setNote(
+                    e.target.value,
+                  )
+                }
+                placeholder="What was completed or changed at this stage?"
+                className="resize-none text-sm"
+              />
+
+              <input
+                type="url"
+                value={deliverableUrl}
+                onChange={(e) =>
+                  setDeliverableUrl(
+                    e.target.value,
+                  )
+                }
+                placeholder="Work link — Drive, Dropbox, Vimeo, Figma, Frame.io…"
+                required
+                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+
+              <button
+                type="button"
+                disabled={
+                  busy === "progress"
+                }
+                onClick={
+                  progressWork
+                }
+                className="w-full sm:w-auto px-4 py-2.5 rounded-full text-xs font-semibold text-white disabled:opacity-50"
+                style={{
+                  background:
+                    "linear-gradient(135deg,#FF5A1F,#FF8C42)",
+                }}
+              >
+                {busy === "progress"
+                  ? "Saving update…"
+                  : "Save update & move forward"}
+              </button>
+            </div>
+          )}
+
           {canSubmit && (
             <div className="space-y-3">
               <div>
@@ -1723,8 +1977,10 @@ function WorkItemSubmissionPanel({
                 </p>
 
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Add the link to the work you want
-                  the client to review. A note is optional.
+                  Add a final comment and the
+                  final work link. The client
+                  will approve or request
+                  changes from this submission.
                 </p>
               </div>
 
@@ -1734,7 +1990,7 @@ function WorkItemSubmissionPanel({
                 onChange={(e) =>
                   setNote(e.target.value)
                 }
-                placeholder="Add a short note about this work…"
+                placeholder="Add your final delivery comment…"
                 className="resize-none text-sm"
               />
 
