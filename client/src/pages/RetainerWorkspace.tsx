@@ -340,7 +340,9 @@ export default function RetainerWorkspace() {
                   <p className="text-sm font-bold">{fmtDate(agreement.nextInvoiceDate)}</p>
                 </div>
               </div>
-              {primaryAction && (
+              {primaryAction &&
+                !isPendingProposal &&
+                !isDeclined && (
                 <button
                   type="button"
                   onClick={primaryAction.onClick}
