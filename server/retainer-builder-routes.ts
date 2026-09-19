@@ -135,6 +135,25 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       const isFreelancerSending = requester.role === "freelancer";
       const freelancerId = isFreelancerSending ? Number(userId) : Number(recipientUserId);
       const clientId = isFreelancerSending ? Number(recipientUserId) : Number(userId);
+      const freelancerName = isFreelancerSending ? requester.name : recipient.name;
+      const clientName = isFreelancerSending ? recipient.name : requester.name;
+
+      const templateCategory =
+        Array.isArray(templateIds) && templateIds.length > 0
+          ? String(templateIds[0])
+          : null;
+
+      let templateDbId: number | null = null;
+      if (templateCategory) {
+        const templateRows = await db`
+          SELECT id
+          FROM retainer_templates
+          WHERE category = ${templateCategory}
+          ORDER BY is_system DESC, id ASC
+          LIMIT 1
+        `;
+        templateDbId = templateRows[0]?.id ?? null;
+      }
 
       const agreementTitle: string = title || goal || "Retainer proposal";
 
@@ -151,7 +170,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
           billing_cycle, created_at
         ) VALUES (
           ${clientId}, ${freelancerId}, ${agreementTitle}, ${goal ?? ""}, 'draft',
-          0, ${recipient?.name ?? null}, ${requester?.name ?? null}, 1,
+          0, ${freelancerName ?? null}, ${clientName ?? null}, 1,
           ${billingFrequency}, ${nowIso}
         )
         RETURNING id
@@ -160,21 +179,23 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       const agreementRows = await db`
         INSERT INTO retainer_agreements (
-          public_id, project_id, title, template_id, commercial_model,
-          goal, success_measures, key_channels, priority_outcomes,
+          public_id, project_id, client_id, freelancer_id, title,
+          template_id, commercial_model,
+          retainer_goal, success_measures, key_channels, priority_outcomes,
           start_date, billing_frequency, agreed_cycle_amount_pence,
           minimum_term_cycles, renewal_mode, notice_period_cycles,
           intro_price_pence, intro_cycles, setup_fee_pence, max_revisions,
           response_time_hours, client_input_deadline_days, excluded_work,
-          draft_step, status, proposal_sent_at, created_by, created_at
+          draft_step, status, proposal_sent_at, created_at
         ) VALUES (
-          ${agreementPublicId}, ${projectId}, ${agreementTitle}, ${(templateIds && templateIds[0]) ?? null}, ${commercialModel ?? null},
-          ${goal ?? null}, ${asJson(successMeasures)}, ${asJson(keyChannels)}, ${asJson(priorityOutcomes)},
+          ${agreementPublicId}, ${projectId}, ${clientId}, ${freelancerId}, ${agreementTitle},
+          ${templateDbId}, ${commercialModel ?? null},
+          ${goal ?? null}, ${successMeasures ?? null}, ${asJson(keyChannels)}, ${asJson(priorityOutcomes)},
           ${startDate ?? null}, ${billingFrequency}, ${Number(amountPerCyclePence)},
           ${minimumTermCycles ?? null}, ${renewalMode ?? null}, ${noticePeriodCycles ?? null},
           ${introPrice ?? null}, ${introCycles ?? null}, ${setupFeePence ?? null}, ${maxRevisions ?? null},
           ${responseTimeHours ?? null}, ${clientInputDeadlineDays ?? null}, ${excludedWork ?? null},
-          8, 'awaiting_client_acceptance', ${nowIso}, ${Number(userId)}, ${nowIso}
+          8, 'awaiting_client_acceptance', ${nowIso}, ${nowIso}
         )
         RETURNING id, public_id
       `;
@@ -183,14 +204,22 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       let deliverableIds: number[] = [];
       if (Array.isArray(deliverables) && deliverables.length > 0) {
-        for (const item of deliverables) {
+        for (const [index, item] of deliverables.entries()) {
           const d = typeof item === "string" ? { name: item } : item;
           const row = await db`
             INSERT INTO retainer_deliverables (
-              public_id, retainer_agreement_id, name, description, quantity_per_cycle, unit
+              public_id, retainer_agreement_id, name, quantity, frequency,
+              turnaround_days, rollover_rule, item_type, sort_order
             ) VALUES (
-              ${makePublicId("del")}, ${retainerAgreementId}, ${d.name ?? d.title ?? "Deliverable"},
-              ${d.description ?? null}, ${d.quantityPerCycle ?? d.quantity ?? null}, ${d.unit ?? null}
+              ${makePublicId("del")},
+              ${retainerAgreementId},
+              ${d.name ?? d.title ?? "Deliverable"},
+              ${Number(d.quantity ?? 1)},
+              ${d.frequency ?? "per_cycle"},
+              ${d.turnaroundDays ?? null},
+              ${d.rollover ?? "none"},
+              ${d.type ?? "included"},
+              ${index}
             )
             RETURNING id
           `;
@@ -200,9 +229,13 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       const workstreamRows = await db`
         INSERT INTO retainer_workstreams (
-          public_id, retainer_agreement_id, stages
+          public_id, retainer_agreement_id, name, stages, is_default
         ) VALUES (
-          ${makePublicId("ws")}, ${retainerAgreementId}, ${asJson(workflowStages ?? [])}
+          ${makePublicId("ws")},
+          ${retainerAgreementId},
+          'Default workflow',
+          ${asJson(workflowStages ?? [])},
+          true
         )
         RETURNING id
       `;
@@ -219,7 +252,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       await db`
         INSERT INTO retainer_agreement_versions (
-          public_id, retainer_agreement_id, version, snapshot, created_by, created_at
+          public_id, retainer_agreement_id, version_number, snapshot, created_by, created_at
         ) VALUES (
           ${makePublicId("rav")}, ${retainerAgreementId}, 1, ${asJson(fullSnapshot)}, ${Number(userId)}, ${nowIso}
         )
@@ -359,7 +392,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         const stageName = typeof stage === "string" ? stage : stage?.name ?? stage?.title ?? "Task";
         await db`
           INSERT INTO retainer_cycle_tasks (
-            public_id, retainer_cycle_id, name, status, recurs_each_cycle, created_at
+            public_id, retainer_cycle_id, title, status, recurs_each_cycle, created_at
           ) VALUES (
             ${makePublicId("rct")}, ${cycle.id}, ${stageName}, 'pending', true, ${nowIso}
           )
@@ -417,11 +450,11 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       const requestRows = await db`
         INSERT INTO retainer_requests (
-          public_id, retainer_agreement_id, created_by, title, description,
+          public_id, retainer_agreement_id, submitted_by, title, description,
           priority, due_date, related_deliverable_id, status, created_at
         ) VALUES (
           ${requestPublicId}, ${agreement.id}, ${Number(userId)}, ${title}, ${description ?? null},
-          ${priority ?? "medium"}, ${dueDate ?? null}, ${relatedDeliverableId ?? null}, 'submitted', ${nowIso}
+          ${priority ?? "normal"}, ${dueDate ?? null}, ${relatedDeliverableId ?? null}, 'submitted', ${nowIso}
         )
         RETURNING *
       `;
@@ -525,8 +558,8 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       const usageRows = await db`
         INSERT INTO retainer_usage_entries (
-          public_id, retainer_agreement_id, deliverable_id, created_by,
-          description, quantity, unit, created_at
+          public_id, retainer_agreement_id, deliverable_id, recorded_by,
+          description, quantity, unit, recorded_at
         ) VALUES (
           ${makePublicId("use")}, ${agreement.id}, ${deliverableId ?? null}, ${Number(userId)},
           ${description ?? null}, ${quantity ?? null}, ${unit ?? null}, ${nowIso}
@@ -582,22 +615,36 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       const reviewRows = await db`
         INSERT INTO retainer_cycle_reviews (
-          public_id, retainer_cycle_id, retainer_agreement_id, created_by,
+          public_id, retainer_cycle_id, retainer_agreement_id,
           completed_deliverables, outstanding_items, outcomes_summary, created_at
         ) VALUES (
-          ${makePublicId("rcr")}, ${cycle.id}, ${agreement.id}, ${Number(userId)},
-          ${asJson(completedDeliverables)}, ${asJson(outstandingItems)}, ${outcomesSummary ?? null}, ${nowIso}
+          ${makePublicId("rcr")},
+          ${cycle.id},
+          ${agreement.id},
+          ${asJson(completedDeliverables)},
+          ${asJson(outstandingItems)},
+          ${outcomesSummary ?? null},
+          ${nowIso}
         )
         RETURNING *
       `;
 
+      const satisfactionRole =
+        Number(userId) === Number(agreement.client_id) ? "client" : "freelancer";
+
       await db`
         INSERT INTO retainer_satisfaction_pulses (
-          public_id, retainer_cycle_id, retainer_agreement_id, created_by,
-          score, comment, created_at
+          public_id, retainer_cycle_id, retainer_agreement_id,
+          submitted_by, role, score, comment, created_at
         ) VALUES (
-          ${makePublicId("rsp")}, ${cycle.id}, ${agreement.id}, ${Number(userId)},
-          ${satisfactionScore ?? null}, ${satisfactionComment ?? null}, ${nowIso}
+          ${makePublicId("rsp")},
+          ${cycle.id},
+          ${agreement.id},
+          ${Number(userId)},
+          ${satisfactionRole},
+          ${satisfactionScore ?? null},
+          ${satisfactionComment ?? null},
+          ${nowIso}
         )
       `;
 
