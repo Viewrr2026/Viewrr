@@ -675,6 +675,64 @@ function ProfileViewPanel({
   );
 }
 
+// ─── Retainer proposal ───────────────────────────────────────────────────────
+
+function RetainerProposalPanel({
+  notification,
+  onClose,
+}: {
+  notification: NotificationModalProps["notification"];
+  onClose: () => void;
+}) {
+  const link = notification?.link;
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div className="flex flex-col items-center text-center px-6 py-10 gap-4">
+        <div className="w-16 h-16 rounded-full flex items-center justify-center bg-primary/10">
+          <Briefcase size={30} className="text-primary" />
+        </div>
+
+        <div>
+          <p className="text-lg font-bold">
+            Retainer proposal
+          </p>
+
+          <p className="text-sm text-muted-foreground mt-1">
+            {notification?.message}
+          </p>
+        </div>
+
+        <p className="text-sm text-muted-foreground bg-secondary/60 rounded-xl px-4 py-3">
+          Review the deliverables, pricing, term and workflow
+          before accepting the retainer.
+        </p>
+
+        {link ? (
+          <Button
+            asChild
+            className="bg-primary hover:bg-primary/90 text-white rounded-full w-full"
+          >
+            <a
+              href={`/#${link}`}
+              onClick={onClose}
+            >
+              Review Retainer
+            </a>
+          </Button>
+        ) : (
+          <Button
+            className="bg-primary hover:bg-primary/90 text-white rounded-full w-full"
+            onClick={onClose}
+          >
+            Got it
+          </Button>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 // ─── Root export ──────────────────────────────────────────────────────────────
 export default function NotificationActionModal({ open, onClose, notification }: NotificationModalProps) {
   if (!open || !notification) return null;
@@ -710,6 +768,15 @@ export default function NotificationActionModal({ open, onClose, notification }:
         actorName={actorName}
         actorAvatar={actorAvatar}
         type={type}
+        onClose={onClose}
+      />
+    );
+  }
+
+  if (type === "retainer_proposal") {
+    return (
+      <RetainerProposalPanel
+        notification={notification}
         onClose={onClose}
       />
     );

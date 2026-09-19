@@ -380,6 +380,70 @@ export function registerRetainerBuilderRoutes(app: Express): void {
     }
   });
 
+  // ─── GET /api/projects/:projectId/retainer-agreement ─────────────────────
+  app.get(
+    "/api/projects/:projectId/retainer-agreement",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const projectId = Number(req.params.projectId);
+        const userId = req.auth!.userId;
+
+        if (!Number.isFinite(projectId)) {
+          return res.status(400).json({
+            error: "Invalid project id",
+          });
+        }
+
+        const rows = await db`
+          SELECT
+            ra.public_id,
+            ra.status,
+            p.client_id,
+            p.freelancer_id
+          FROM retainer_agreements ra
+          JOIN projects p
+            ON p.id = ra.project_id
+          WHERE ra.project_id = ${projectId}
+          ORDER BY ra.id DESC
+          LIMIT 1
+        `;
+
+        if (!rows.length) {
+          return res.status(404).json({
+            error: "Retainer agreement not found",
+          });
+        }
+
+        const agreement = rows[0];
+
+        if (
+          Number(userId) !== Number(agreement.client_id) &&
+          Number(userId) !== Number(agreement.freelancer_id)
+        ) {
+          return res.status(403).json({
+            error: "You do not have access to this retainer",
+          });
+        }
+
+        res.json({
+          publicId: agreement.public_id,
+          status: agreement.status,
+        });
+      } catch (e: any) {
+        const status = e?.status ?? 500;
+
+        res.status(status).json({
+          error:
+            e.message ??
+            "Failed to resolve retainer agreement",
+        });
+      }
+    },
+  );
+
   // ─── GET /api/retainer/:publicId/workspace ────────────────────────────────
   app.get("/api/retainer/:publicId/workspace", async (req, res) => {
     const db = getDb();
@@ -698,6 +762,100 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       res.status(status).json({ error: e.message ?? "Failed to accept retainer proposal" });
     }
   });
+
+  // ─── POST /api/retainer/:publicId/decline ─────────────────────────────────
+  app.post(
+    "/api/retainer/:publicId/decline",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const { publicId } = req.params;
+        const userId = req.auth!.userId;
+
+        const rows = await db`
+          SELECT
+            ra.*,
+            p.client_id,
+            p.freelancer_id
+          FROM retainer_agreements ra
+          JOIN projects p
+            ON p.id = ra.project_id
+          WHERE ra.public_id = ${publicId}
+          LIMIT 1
+        `;
+
+        if (!rows.length) {
+          return res.status(404).json({
+            error: "Retainer agreement not found",
+          });
+        }
+
+        const agreement = rows[0];
+
+        if (Number(userId) !== Number(agreement.client_id)) {
+          return res.status(403).json({
+            error:
+              "Only the client can decline this retainer proposal",
+          });
+        }
+
+        if (
+          agreement.status !==
+          "awaiting_client_acceptance"
+        ) {
+          return res.status(409).json({
+            error:
+              `Agreement cannot be declined in status: ${agreement.status}`,
+          });
+        }
+
+        const nowIso = new Date().toISOString();
+
+        await db`
+          UPDATE retainer_agreements
+          SET
+            status = 'declined',
+            updated_at = ${nowIso}
+          WHERE id = ${agreement.id}
+        `;
+
+        await db`
+          UPDATE projects
+          SET status = 'cancelled'
+          WHERE id = ${agreement.project_id}
+        `;
+
+        const client = await loadUser(
+          db,
+          agreement.client_id,
+        );
+
+        await insertNotification(db, {
+          recipientId: agreement.freelancer_id,
+          actorId: Number(userId),
+          actorName: client?.name ?? "The client",
+          type: "retainer_declined",
+          message:
+            "Your retainer proposal was declined",
+          link: `/retainer/${publicId}`,
+        });
+
+        res.json({
+          status: "declined",
+        });
+      } catch (e: any) {
+        const status = e?.status ?? 500;
+
+        res.status(status).json({
+          error:
+            e.message ??
+            "Failed to decline retainer proposal",
+        });
+      }
+    },
+  );
 
   // ─── POST /api/retainer/:publicId/tasks/:taskPublicId/advance ──────────────
   app.post(

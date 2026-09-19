@@ -40,6 +40,7 @@ const TABS: { key: Tab; label: string; icon: any }[] = [
 const STATUS_LABELS: Record<string, string> = {
   draft: "Draft",
   proposed: "Proposal Sent",
+  awaiting_client_acceptance: "Awaiting Client",
   accepted: "Accepted",
   active: "Active",
   active_cycle: "Active Cycle",
@@ -51,12 +52,14 @@ const STATUS_LABELS: Record<string, string> = {
   ending: "Ending",
   ended: "Ended",
   cancelled: "Cancelled",
+  declined: "Declined",
   expired: "Expired",
 };
 
 const STATUS_COLOURS: Record<string, string> = {
   draft: "bg-zinc-100 text-zinc-600",
   proposed: "bg-blue-100 text-blue-800",
+  awaiting_client_acceptance: "bg-amber-100 text-amber-800",
   accepted: "bg-blue-100 text-blue-800",
   active: "bg-green-100 text-green-800",
   active_cycle: "bg-green-100 text-green-800",
@@ -68,6 +71,7 @@ const STATUS_COLOURS: Record<string, string> = {
   ending: "bg-orange-100 text-orange-800",
   ended: "bg-zinc-100 text-zinc-500",
   cancelled: "bg-red-100 text-red-700",
+  declined: "bg-red-100 text-red-700",
   expired: "bg-zinc-100 text-zinc-500",
 };
 
@@ -127,9 +131,48 @@ export default function RetainerWorkspace() {
   const tasks: any[] = data?.tasks ?? [];
   const amendments: any[] = data?.amendments ?? [];
 
-  const isClient = agreement && user?.id === agreement.clientUserId;
+  const isClient =
+    agreement &&
+    Number(user?.id) === Number(agreement.clientUserId);
+
+  const isPendingProposal =
+    agreement?.status === "awaiting_client_acceptance";
+
+  const isDeclined =
+    agreement?.status === "declined";
 
   // ── Mutations ──
+
+  const acceptRetainerMutation = useMutation({
+    mutationFn: async () =>
+      apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/accept`,
+        {},
+      ),
+
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["retainer-workspace", publicId],
+      });
+    },
+  });
+
+  const declineRetainerMutation = useMutation({
+    mutationFn: async () =>
+      apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/decline`,
+        {},
+      ),
+
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["retainer-workspace", publicId],
+      });
+    },
+  });
+
   const submitRequestMutation = useMutation({
     mutationFn: async (payload: any) => apiRequest("POST", `/api/retainer/${publicId}/requests`, { userId: user?.id, ...payload }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }); setRequestModalOpen(false); },
@@ -312,6 +355,178 @@ export default function RetainerWorkspace() {
         </div>
       </div>
 
+      {/* ── Retainer proposal decision ── */}
+      {isPendingProposal && (
+        <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50/60 dark:bg-amber-950/10 overflow-hidden">
+          <div className="p-5 sm:p-6">
+            <div className="flex items-start gap-3 mb-5">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                <FileText size={18} />
+              </div>
+
+              <div>
+                <h2 className="text-base font-bold">
+                  Retainer proposal awaiting your decision
+                </h2>
+
+                <p className="text-sm text-muted-foreground mt-1">
+                  Review the agreement before accepting.
+                  Cycle 1 will only begin after acceptance.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+              <div className="p-3 rounded-xl bg-background border border-border">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Value / cycle
+                </p>
+                <p className="text-sm font-bold mt-1">
+                  {fmtGBP(agreement.amountPerCyclePence ?? 0)}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-background border border-border">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Billing
+                </p>
+                <p className="text-sm font-bold mt-1 capitalize">
+                  {(agreement.billingFrequency ?? "—").replace(/_/g, " ")}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-background border border-border">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Minimum term
+                </p>
+                <p className="text-sm font-bold mt-1">
+                  {agreement.minimumTermCycles
+                    ? `${agreement.minimumTermCycles} cycle${agreement.minimumTermCycles === 1 ? "" : "s"}`
+                    : "—"}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-background border border-border">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Proposed by
+                </p>
+                <p className="text-sm font-bold mt-1 truncate">
+                  {agreement.freelancerName}
+                </p>
+              </div>
+            </div>
+
+            {agreement.goal && (
+              <div className="mb-5">
+                <p className="text-xs font-semibold text-muted-foreground mb-1">
+                  Goal
+                </p>
+                <p className="text-sm">{agreement.goal}</p>
+              </div>
+            )}
+
+            <div className="mb-5">
+              <p className="text-xs font-semibold text-muted-foreground mb-2">
+                Deliverables
+              </p>
+
+              <div className="space-y-2">
+                {deliverables.map((deliverable: any) => (
+                  <div
+                    key={deliverable.id}
+                    className="flex items-center justify-between gap-3 p-3 rounded-xl bg-background border border-border"
+                  >
+                    <span className="text-sm font-medium">
+                      {deliverable.name}
+                    </span>
+
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      {deliverable.quantityIncluded}
+                      {" × "}
+                      {(deliverable.frequency ?? "per cycle").replace(/_/g, " ")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {isClient ? (
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    acceptRetainerMutation.isPending ||
+                    declineRetainerMutation.isPending
+                  }
+                  onClick={() => acceptRetainerMutation.mutate()}
+                  className="flex-1 px-4 py-2.5 rounded-full text-sm font-semibold text-white disabled:opacity-50"
+                  style={{
+                    background:
+                      "linear-gradient(135deg,#FF5A1F,#FF8C42)",
+                  }}
+                >
+                  {acceptRetainerMutation.isPending
+                    ? "Accepting…"
+                    : "Accept Retainer"}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={
+                    acceptRetainerMutation.isPending ||
+                    declineRetainerMutation.isPending
+                  }
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        "Decline this retainer proposal? The freelancer will be notified.",
+                      )
+                    ) {
+                      declineRetainerMutation.mutate();
+                    }
+                  }}
+                  className="flex-1 px-4 py-2.5 rounded-full text-sm font-semibold border border-red-300 text-red-700 bg-background hover:bg-red-50 disabled:opacity-50"
+                >
+                  {declineRetainerMutation.isPending
+                    ? "Declining…"
+                    : "Decline"}
+                </button>
+              </div>
+            ) : (
+              <div className="p-3 rounded-xl bg-background border border-border text-sm text-muted-foreground">
+                Waiting for {agreement.clientName} to review this proposal.
+              </div>
+            )}
+
+            {(acceptRetainerMutation.isError ||
+              declineRetainerMutation.isError) && (
+              <p className="text-xs text-red-600 mt-3">
+                We couldn't update this retainer. Please try again.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isDeclined && (
+        <div className="mb-6 p-5 rounded-2xl border border-red-200 bg-red-50/60 dark:bg-red-950/10">
+          <div className="flex items-start gap-3">
+            <XCircle
+              size={18}
+              className="text-red-600 mt-0.5 shrink-0"
+            />
+            <div>
+              <p className="text-sm font-semibold">
+                This retainer proposal was declined
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                No cycle has been started and no work items have been created.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* FR-12: Cycle review banner */}
       {agreement.status === "cycle_review_due" && (
         <div className="flex items-center justify-between gap-3 p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 mb-6">
@@ -332,6 +547,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Tabs ── */}
+      {!isPendingProposal && !isDeclined && (
       <div className="flex gap-1 mb-6 border-b border-border overflow-x-auto">
         {TABS.map(t => {
           const Icon = t.icon;
@@ -349,8 +565,9 @@ export default function RetainerWorkspace() {
         })}
       </div>
 
+      )}
       {/* ── Overview ── */}
-      {tab === "overview" && (
+      {!isPendingProposal && !isDeclined && tab === "overview" && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-5 rounded-2xl border border-border bg-card flex items-center gap-4">
@@ -402,7 +619,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Current Cycle: individual work items ── */}
-      {tab === "current_cycle" && (
+      {!isPendingProposal && !isDeclined && tab === "current_cycle" && (
         <div className="space-y-4">
           {!currentCycle ? (
             <div className="py-16 text-center rounded-2xl border border-dashed border-border">
@@ -632,7 +849,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Requests ── */}
-      {tab === "requests" && (
+      {!isPendingProposal && !isDeclined && tab === "requests" && (
         <div className="space-y-4">
           <div className="p-4 rounded-2xl border border-border bg-card">
             <p className="text-xs font-semibold text-muted-foreground mb-2">Available capacity</p>
@@ -691,7 +908,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Deliverables ── */}
-      {tab === "deliverables" && (
+      {!isPendingProposal && !isDeclined && tab === "deliverables" && (
         <div className="overflow-x-auto rounded-2xl border border-border">
           <table className="w-full text-xs">
             <thead>
@@ -720,7 +937,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Usage ── */}
-      {tab === "usage" && (
+      {!isPendingProposal && !isDeclined && tab === "usage" && (
         <div className="space-y-4">
           <div className="p-4 rounded-2xl border border-border bg-card flex items-center justify-between">
             <p className="text-xs font-semibold text-muted-foreground">Running total vs allowance</p>
@@ -747,12 +964,12 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Messages ── */}
-      {tab === "messages" && (
+      {!isPendingProposal && !isDeclined && tab === "messages" && (
         <MessagesPanel retainerId={agreement.id ?? publicId} userId={user?.id} />
       )}
 
       {/* ── Payments ── */}
-      {tab === "payments" && (
+      {!isPendingProposal && !isDeclined && tab === "payments" && (
         <div className="overflow-x-auto rounded-2xl border border-border">
           <table className="w-full text-xs">
             <thead>
@@ -793,7 +1010,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Agreement ── */}
-      {tab === "agreement" && (
+      {!isPendingProposal && !isDeclined && tab === "agreement" && (
         <div className="space-y-6">
           <div className="p-5 rounded-2xl border border-border bg-card space-y-4">
             <div className="flex items-center justify-between">
@@ -857,7 +1074,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── History ── */}
-      {tab === "history" && (
+      {!isPendingProposal && !isDeclined && tab === "history" && (
         <div className="space-y-2">
           {cycles.filter((c: any) => c.status === "completed").length === 0 && (
             <p className="text-center text-xs text-muted-foreground py-12">No completed cycles yet.</p>
@@ -944,7 +1161,10 @@ export default function RetainerWorkspace() {
       />
 
       {/* Floating new-request button (clients) */}
-      {isClient && tab !== "requests" && (
+      {isClient &&
+        !isPendingProposal &&
+        !isDeclined &&
+        tab !== "requests" && (
         <button
           type="button"
           onClick={() => setRequestModalOpen(true)}
