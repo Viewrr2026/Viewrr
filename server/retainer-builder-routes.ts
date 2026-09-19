@@ -85,6 +85,108 @@ async function insertNotification(
   `;
 }
 
+async function createCycleWorkItems(
+  db: any,
+  agreementId: number,
+  cycleId: number,
+  nowIso: string,
+): Promise<void> {
+  const deliverables = await db`
+    SELECT *
+    FROM retainer_deliverables
+    WHERE retainer_agreement_id = ${agreementId}
+      AND item_type = 'included'
+    ORDER BY sort_order ASC, id ASC
+  `;
+
+  const workstreams = await db`
+    SELECT *
+    FROM retainer_workstreams
+    WHERE retainer_agreement_id = ${agreementId}
+    ORDER BY is_default DESC, sort_order ASC, id ASC
+  `;
+
+  const workflow = workstreams[0];
+  let stages: string[] = [];
+
+  if (workflow?.stages) {
+    try {
+      const parsed =
+        typeof workflow.stages === "string"
+          ? JSON.parse(workflow.stages)
+          : workflow.stages;
+
+      if (Array.isArray(parsed)) {
+        stages = parsed
+          .map((stage: any) =>
+            typeof stage === "string"
+              ? stage
+              : stage?.name ?? stage?.title ?? stage?.label
+          )
+          .filter(Boolean);
+      }
+    } catch {}
+  }
+
+  if (!stages.length) {
+    stages = [
+      "Brief / Requests",
+      "Production",
+      "Client Review",
+      "Revisions",
+      "Approved",
+      "Complete",
+    ];
+  }
+
+  let sortOrder = 0;
+
+  for (const deliverable of deliverables) {
+    const quantity = Math.max(0, Number(deliverable.quantity ?? 0));
+
+    for (let index = 0; index < quantity; index += 1) {
+      const itemNumber = index + 1;
+
+      const title =
+        quantity > 1
+          ? `${deliverable.name} ${String(itemNumber).padStart(2, "0")}`
+          : deliverable.name;
+
+      await db`
+        INSERT INTO retainer_cycle_tasks (
+          public_id,
+          retainer_cycle_id,
+          retainer_deliverable_id,
+          title,
+          status,
+          stage,
+          stage_index,
+          stages,
+          item_number,
+          sort_order,
+          recurs_each_cycle,
+          created_at
+        ) VALUES (
+          ${makePublicId("rct")},
+          ${cycleId},
+          ${deliverable.id},
+          ${title},
+          'in_progress',
+          ${stages[0]},
+          0,
+          ${asJson(stages)},
+          ${itemNumber},
+          ${sortOrder},
+          true,
+          ${nowIso}
+        )
+      `;
+
+      sortOrder += 1;
+    }
+  }
+}
+
 export function registerRetainerBuilderRoutes(app: Express): void {
   // ─── POST /api/retainer-builder/create ────────────────────────────────────
   // PRD-018: requireAuth + session-derived userId
@@ -286,11 +388,14 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
       const rows = await db`
         SELECT ra.*, p.title as project_title, p.client_id, p.freelancer_id,
-               u_client.name as client_name, u_freelancer.name as freelancer_name
+               u_client.name as client_name,
+               u_freelancer.name as freelancer_name,
+               rt.name as template_label
         FROM retainer_agreements ra
         JOIN projects p ON p.id = ra.project_id
         JOIN users u_client ON u_client.id = p.client_id
         JOIN users u_freelancer ON u_freelancer.id = p.freelancer_id
+        LEFT JOIN retainer_templates rt ON rt.id = ra.template_id
         WHERE ra.public_id = ${publicId}
         LIMIT 1
       `;
@@ -302,7 +407,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         db`SELECT * FROM retainer_deliverables WHERE retainer_agreement_id = ${agreement.id} ORDER BY id ASC`,
         db`SELECT * FROM retainer_workstreams WHERE retainer_agreement_id = ${agreement.id} ORDER BY id ASC`,
         db`SELECT * FROM retainer_requests WHERE retainer_agreement_id = ${agreement.id} ORDER BY created_at DESC`,
-        db`SELECT * FROM retainer_usage_entries WHERE retainer_agreement_id = ${agreement.id} ORDER BY created_at DESC`,
+        db`SELECT * FROM retainer_usage_entries WHERE retainer_agreement_id = ${agreement.id} ORDER BY recorded_at DESC`,
         db`
           SELECT rct.* FROM retainer_cycle_tasks rct
           JOIN retainer_cycles rc ON rc.id = rct.retainer_cycle_id
@@ -312,14 +417,203 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         db`SELECT * FROM retainer_amendments WHERE retainer_agreement_id = ${agreement.id} ORDER BY created_at DESC`,
       ]);
 
+      const parseArray = (value: any): any[] => {
+        if (Array.isArray(value)) return value;
+
+        if (typeof value !== "string") {
+          return [];
+        }
+
+        try {
+          const parsed = JSON.parse(value);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      };
+
+      const workflowStages = workstreams
+        .flatMap((workstream: any) =>
+          parseArray(workstream.stages)
+            .map((stage: any) =>
+              typeof stage === "string"
+                ? stage
+                : stage?.name ??
+                  stage?.title ??
+                  stage?.label
+            )
+            .filter(Boolean)
+        );
+
+      const currentCycleRaw =
+        [...cycles]
+          .reverse()
+          .find((cycle: any) => cycle.status === "active") ??
+        cycles[cycles.length - 1] ??
+        null;
+
+      const currentCycleTasksRaw = currentCycleRaw
+        ? tasks.filter(
+            (task: any) =>
+              Number(task.retainer_cycle_id) ===
+              Number(currentCycleRaw.id)
+          )
+        : [];
+
+      const completedTaskStatuses = new Set([
+        "complete",
+        "done",
+      ]);
+
+      const currentCycle = currentCycleRaw
+        ? {
+            ...currentCycleRaw,
+            publicId: currentCycleRaw.public_id,
+            cycleNumber: currentCycleRaw.cycle_number,
+            periodStart: currentCycleRaw.period_start,
+            periodEnd: currentCycleRaw.period_end,
+            amountPence: currentCycleRaw.amount_pence,
+            paymentStatus: currentCycleRaw.payment_status,
+
+            deliverablesTotal:
+              currentCycleTasksRaw.length,
+
+            deliverablesDone:
+              currentCycleTasksRaw.filter((task: any) =>
+                completedTaskStatuses.has(task.status)
+              ).length,
+          }
+        : null;
+
+      const normalisedCycles = cycles.map((cycle: any) => ({
+        ...cycle,
+        publicId: cycle.public_id,
+        cycleNumber: cycle.cycle_number,
+        periodStart: cycle.period_start,
+        periodEnd: cycle.period_end,
+        amountPence: cycle.amount_pence,
+        paymentStatus: cycle.payment_status,
+      }));
+
+      const normalisedDeliverables = deliverables.map(
+        (deliverable: any) => {
+          const cycleItems = currentCycleRaw
+            ? currentCycleTasksRaw.filter(
+                (task: any) =>
+                  Number(task.retainer_deliverable_id) ===
+                  Number(deliverable.id)
+              )
+            : [];
+
+          const completedItems = cycleItems.filter(
+            (task: any) =>
+              completedTaskStatuses.has(task.status)
+          ).length;
+
+          return {
+            ...deliverable,
+            publicId: deliverable.public_id,
+            quantityIncluded: deliverable.quantity,
+            turnaroundDays: deliverable.turnaround_days,
+            rolloverRule: deliverable.rollover_rule,
+            itemType: deliverable.item_type,
+
+            workItemsTotal: cycleItems.length,
+            workItemsDone: completedItems,
+
+            usedThisCycle: completedItems,
+            rolloverBalance: 0,
+            status: "active",
+          };
+        }
+      );
+
+      const normalisedTasks = tasks.map((task: any) => ({
+        ...task,
+        publicId: task.public_id,
+        retainerCycleId: task.retainer_cycle_id,
+        deliverableId: task.retainer_deliverable_id,
+        itemNumber: task.item_number,
+        stageIndex: task.stage_index,
+        stages: parseArray(task.stages),
+        sortOrder: task.sort_order,
+        assigneeId: task.assigned_to,
+        dueDate: task.due_date,
+        completedAt: task.completed_at,
+      }));
+
       res.json({
-        agreement,
-        cycles,
-        deliverables,
+        agreement: {
+          ...agreement,
+
+          publicId: agreement.public_id,
+          name: agreement.title,
+
+          clientUserId: agreement.client_id,
+          freelancerUserId: agreement.freelancer_id,
+
+          clientName: agreement.client_name,
+          freelancerName: agreement.freelancer_name,
+
+          templateLabel:
+            agreement.template_label ?? "Retainer",
+
+          amountPerCyclePence:
+            agreement.agreed_cycle_amount_pence,
+
+          billingFrequency:
+            agreement.billing_frequency,
+
+          minimumTermCycles:
+            agreement.minimum_term_cycles,
+
+          noticePeriodCycles:
+            agreement.notice_period_cycles,
+
+          maxRevisions:
+            agreement.max_revisions,
+
+          responseTimeHours:
+            agreement.response_time_hours,
+
+          renewalMode:
+            agreement.renewal_mode,
+
+          version:
+            agreement.current_version,
+
+          goal:
+            agreement.retainer_goal,
+
+          workflowStages,
+
+          nextInvoiceDate:
+            currentCycleRaw?.period_end ?? null,
+        },
+
+        currentCycle,
+        cycles: normalisedCycles,
+        deliverables: normalisedDeliverables,
         workstreams,
-        requests,
+
+        requests: requests.map((request: any) => ({
+          ...request,
+          publicId: request.public_id,
+          dueDate: request.due_date,
+          relatedDeliverableId:
+            request.related_deliverable_id,
+        })),
+
+        usage: usageEntries.map((entry: any) => ({
+          ...entry,
+          publicId: entry.public_id,
+          deliverableId: entry.deliverable_id,
+          recordedBy: entry.recorded_by,
+          date: entry.recorded_at,
+        })),
+
         usageEntries,
-        tasks,
+        tasks: normalisedTasks,
         amendments,
       });
     } catch (e: any) {
@@ -376,28 +670,12 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       `;
       const cycle = cycleRows[0];
 
-      const workstreams = await db`
-        SELECT * FROM retainer_workstreams WHERE retainer_agreement_id = ${agreement.id}
-      `;
-
-      let stages: any[] = [];
-      for (const ws of workstreams) {
-        try {
-          const parsed = typeof ws.stages === "string" ? JSON.parse(ws.stages) : ws.stages;
-          if (Array.isArray(parsed)) stages = stages.concat(parsed);
-        } catch {}
-      }
-
-      for (const stage of stages) {
-        const stageName = typeof stage === "string" ? stage : stage?.name ?? stage?.title ?? "Task";
-        await db`
-          INSERT INTO retainer_cycle_tasks (
-            public_id, retainer_cycle_id, title, status, recurs_each_cycle, created_at
-          ) VALUES (
-            ${makePublicId("rct")}, ${cycle.id}, ${stageName}, 'pending', true, ${nowIso}
-          )
-        `;
-      }
+      await createCycleWorkItems(
+        db,
+        agreement.id,
+        cycle.id,
+        nowIso,
+      );
 
       await db`
         UPDATE projects SET status = 'active' WHERE id = ${agreement.project_id}
@@ -420,6 +698,130 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       res.status(status).json({ error: e.message ?? "Failed to accept retainer proposal" });
     }
   });
+
+  // ─── POST /api/retainer/:publicId/tasks/:taskPublicId/advance ──────────────
+  app.post(
+    "/api/retainer/:publicId/tasks/:taskPublicId/advance",
+    requireAuth,
+    async (req, res) => {
+      const db = getDb();
+
+      try {
+        const { publicId, taskPublicId } = req.params;
+        const userId = req.auth!.userId;
+
+        const rows = await db`
+          SELECT
+            rct.*,
+            rc.retainer_agreement_id,
+            ra.client_id,
+            ra.freelancer_id
+          FROM retainer_cycle_tasks rct
+          JOIN retainer_cycles rc
+            ON rc.id = rct.retainer_cycle_id
+          JOIN retainer_agreements ra
+            ON ra.id = rc.retainer_agreement_id
+          WHERE rct.public_id = ${taskPublicId}
+            AND ra.public_id = ${publicId}
+          LIMIT 1
+        `;
+
+        if (!rows.length) {
+          return res.status(404).json({ error: "Work item not found" });
+        }
+
+        const task = rows[0];
+
+        if (Number(userId) !== Number(task.freelancer_id)) {
+          return res.status(403).json({
+            error: "Only the freelancer can move work items forward",
+          });
+        }
+
+        let stages: string[] = [];
+
+        try {
+          const parsed =
+            typeof task.stages === "string"
+              ? JSON.parse(task.stages)
+              : task.stages;
+
+          if (Array.isArray(parsed)) {
+            stages = parsed.filter(Boolean);
+          }
+        } catch {}
+
+        if (!stages.length) {
+          return res.status(409).json({
+            error: "This work item does not have a workflow",
+          });
+        }
+
+        if (task.status === "complete") {
+          return res.json(task);
+        }
+
+        const currentIndex = Math.max(
+          0,
+          Number(task.stage_index ?? 0),
+        );
+
+        const nextIndex = Math.min(
+          currentIndex + 1,
+          stages.length - 1,
+        );
+
+        const isComplete =
+          nextIndex === stages.length - 1;
+
+        const nowIso = new Date().toISOString();
+
+        const updated = await db`
+          UPDATE retainer_cycle_tasks
+          SET
+            stage = ${stages[nextIndex]},
+            stage_index = ${nextIndex},
+            status = ${isComplete ? "complete" : "in_progress"},
+            completed_at = ${isComplete ? nowIso : null}
+          WHERE id = ${task.id}
+          RETURNING *
+        `;
+
+        if (isComplete) {
+          const remainingRows = await db`
+            SELECT COUNT(*)::int AS remaining
+            FROM retainer_cycle_tasks
+            WHERE retainer_cycle_id = ${task.retainer_cycle_id}
+              AND id <> ${task.id}
+              AND status NOT IN ('complete', 'done')
+          `;
+
+          const remaining =
+            Number(remainingRows[0]?.remaining ?? 0);
+
+          if (remaining === 0) {
+            await db`
+              UPDATE retainer_agreements
+              SET
+                status = 'cycle_review_due',
+                updated_at = ${nowIso}
+              WHERE id = ${task.retainer_agreement_id}
+            `;
+          }
+        }
+
+        res.json(updated[0]);
+      } catch (e: any) {
+        const status = e?.status ?? 500;
+
+        res.status(status).json({
+          error:
+            e.message ??
+            "Failed to advance retainer work item",
+        });
+      }
+    },
+  );
 
   // ─── POST /api/retainer/:publicId/requests ────────────────────────────────
   // PRD-018: requireAuth + session-derived userId
@@ -630,23 +1032,40 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       `;
 
       const satisfactionRole =
-        Number(userId) === Number(agreement.client_id) ? "client" : "freelancer";
+        Number(userId) === Number(agreement.client_id)
+          ? "client"
+          : "freelancer";
 
-      await db`
-        INSERT INTO retainer_satisfaction_pulses (
-          public_id, retainer_cycle_id, retainer_agreement_id,
-          submitted_by, role, score, comment, created_at
-        ) VALUES (
-          ${makePublicId("rsp")},
-          ${cycle.id},
-          ${agreement.id},
-          ${Number(userId)},
-          ${satisfactionRole},
-          ${satisfactionScore ?? null},
-          ${satisfactionComment ?? null},
-          ${nowIso}
-        )
-      `;
+      const parsedSatisfactionScore =
+        Number(satisfactionScore);
+
+      if (
+        Number.isInteger(parsedSatisfactionScore) &&
+        parsedSatisfactionScore >= 1 &&
+        parsedSatisfactionScore <= 5
+      ) {
+        await db`
+          INSERT INTO retainer_satisfaction_pulses (
+            public_id,
+            retainer_cycle_id,
+            retainer_agreement_id,
+            submitted_by,
+            role,
+            score,
+            comment,
+            created_at
+          ) VALUES (
+            ${makePublicId("rsp")},
+            ${cycle.id},
+            ${agreement.id},
+            ${Number(userId)},
+            ${satisfactionRole},
+            ${parsedSatisfactionScore},
+            ${satisfactionComment ?? null},
+            ${nowIso}
+          )
+        `;
+      }
 
       await db`
         UPDATE retainer_cycles SET status = 'complete', end_date = ${nowIso.slice(0, 10)}
@@ -670,7 +1089,25 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         RETURNING *
       `;
 
-      res.json({ review: reviewRows[0], nextCycle: nextCycleRows[0] });
+      await createCycleWorkItems(
+        db,
+        agreement.id,
+        nextCycleRows[0].id,
+        nowIso,
+      );
+
+      await db`
+        UPDATE retainer_agreements
+        SET
+          status = 'active',
+          updated_at = ${nowIso}
+        WHERE id = ${agreement.id}
+      `;
+
+      res.json({
+        review: reviewRows[0],
+        nextCycle: nextCycleRows[0],
+      });
     } catch (e: any) {
       const status = e?.status ?? 500;
       res.status(status).json({ error: e.message ?? "Failed to submit cycle review" });

@@ -141,14 +141,39 @@ export default function RetainerWorkspace() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }),
   });
 
-  const taskCompleteMutation = useMutation({
-    mutationFn: async (taskId: string) => apiRequest("POST", `/api/retainer/${publicId}/tasks/${taskId}/complete`, { userId: user?.id }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }),
+  const taskAdvanceMutation = useMutation({
+    mutationFn: async (taskPublicId: string) =>
+      apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/tasks/${taskPublicId}/advance`,
+        { userId: user?.id },
+      ),
+
+    onSuccess: () =>
+      qc.invalidateQueries({
+        queryKey: ["retainer-workspace", publicId],
+      }),
   });
 
   const cycleReviewMutation = useMutation({
-    mutationFn: async (payload: any) => apiRequest("POST", `/api/retainer/${publicId}/cycles/${currentCycle?.publicId}/review`, { userId: user?.id, ...payload }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }); setReviewModalOpen(false); },
+    mutationFn: async (payload: any) =>
+      apiRequest(
+        "POST",
+        `/api/retainer/${publicId}/cycle-review`,
+        {
+          userId: user?.id,
+          cycleId: currentCycle?.id,
+          ...payload,
+        },
+      ),
+
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["retainer-workspace", publicId],
+      });
+
+      setReviewModalOpen(false);
+    },
   });
 
   const payCycleMutation = useMutation({
@@ -168,9 +193,54 @@ export default function RetainerWorkspace() {
 
   // ── Derived metrics ──
   const healthScore = agreement?.healthScore ?? computeHealthScore(currentCycle, deliverables);
-  const cycleDeliverablesTotal = currentCycle?.deliverablesTotal ?? deliverables.length;
-  const cycleDeliverablesDone = currentCycle?.deliverablesDone ?? tasks.filter(t => t.status === "done").length;
-  const cycleProgressPct = cycleDeliverablesTotal > 0 ? Math.round((cycleDeliverablesDone / cycleDeliverablesTotal) * 100) : 0;
+  const currentCycleTasks = currentCycle
+    ? tasks.filter(
+        (task) =>
+          Number(task.retainerCycleId) ===
+          Number(currentCycle.id),
+      )
+    : [];
+
+  const cycleDeliverablesTotal =
+    currentCycleTasks.length;
+
+  const cycleDeliverablesDone =
+    currentCycleTasks.filter(
+      (task) =>
+        task.status === "complete" ||
+        task.status === "done",
+    ).length;
+
+  const cycleProgressPct =
+    cycleDeliverablesTotal > 0
+      ? Math.round(
+          (cycleDeliverablesDone /
+            cycleDeliverablesTotal) *
+            100,
+        )
+      : 0;
+
+  const workItemGroups = deliverables
+    .map((deliverable) => {
+      const items = currentCycleTasks.filter(
+        (task) =>
+          Number(task.deliverableId) ===
+          Number(deliverable.id),
+      );
+
+      const done = items.filter(
+        (task) =>
+          task.status === "complete" ||
+          task.status === "done",
+      ).length;
+
+      return {
+        deliverable,
+        items,
+        done,
+      };
+    })
+    .filter((group) => group.items.length > 0);
 
   const primaryAction = useMemo(() => getPrimaryAction(agreement?.status, currentCycle), [agreement?.status, currentCycle]);
 
@@ -331,56 +401,233 @@ export default function RetainerWorkspace() {
         </div>
       )}
 
-      {/* ── Current Cycle (Kanban) ── */}
+      {/* ── Current Cycle: individual work items ── */}
       {tab === "current_cycle" && (
-        <div className="overflow-x-auto pb-4">
-          <div className="flex gap-4 min-w-max">
-            {(agreement.workflowStages ?? ["Brief / Requests", "Production", "Client Review", "Revisions", "Approved", "Cycle Complete"]).map((stage: string) => {
-              const stageTasks = tasks.filter(t => t.stage === stage);
-              return (
-                <div key={stage} className="w-64 shrink-0">
-                  <div className="flex items-center justify-between mb-2 px-1">
-                    <p className="text-xs font-semibold">{stage}</p>
-                    <span className="text-[10px] text-muted-foreground bg-zinc-100 dark:bg-zinc-800 rounded-full px-2 py-0.5">{stageTasks.length}</span>
+        <div className="space-y-4">
+          {!currentCycle ? (
+            <div className="py-16 text-center rounded-2xl border border-dashed border-border">
+              <Package
+                size={24}
+                className="mx-auto mb-2 text-muted-foreground"
+              />
+
+              <p className="text-sm font-semibold">
+                No active cycle yet
+              </p>
+
+              <p className="text-xs text-muted-foreground mt-1">
+                Work items will appear here when the
+                retainer cycle starts.
+              </p>
+            </div>
+          ) : workItemGroups.length === 0 ? (
+            <div className="py-16 text-center rounded-2xl border border-dashed border-border">
+              <Package
+                size={24}
+                className="mx-auto mb-2 text-muted-foreground"
+              />
+
+              <p className="text-sm font-semibold">
+                No work items in this cycle
+              </p>
+
+              <p className="text-xs text-muted-foreground mt-1">
+                This cycle does not have any included
+                deliverables yet.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="p-4 rounded-2xl border border-border bg-card">
+                <div className="flex items-center justify-between gap-4 mb-2">
+                  <div>
+                    <p className="text-sm font-semibold">
+                      Cycle {currentCycle.cycleNumber}
+                    </p>
+
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {fmtDate(currentCycle.periodStart)}
+                      {" → "}
+                      {fmtDate(currentCycle.periodEnd)}
+                    </p>
                   </div>
-                  <div className="space-y-2">
-                    {stageTasks.map(task => {
-                      const overdue = task.dueDate && new Date(task.dueDate) < new Date() && task.status !== "done";
-                      return (
-                        <div
-                          key={task.id}
-                          className={`p-3 rounded-xl border bg-card text-xs space-y-1.5 ${overdue ? "border-red-300 bg-red-50 dark:bg-red-950/10" : "border-border"}`}
-                        >
-                          <div className="flex items-start gap-1.5">
-                            <span className={`w-2 h-2 rounded-full mt-1 shrink-0 ${
-                              task.status === "done" ? "bg-green-500" : overdue ? "bg-red-500" : "bg-zinc-300"
-                            }`} />
-                            <p className="font-medium flex-1">{task.title}</p>
-                          </div>
-                          <div className="flex items-center justify-between text-muted-foreground">
-                            <span>{task.assigneeName ?? "Unassigned"}</span>
-                            <span className={overdue ? "text-red-600 font-semibold" : ""}>{fmtDate(task.dueDate)}</span>
-                          </div>
-                          {task.status !== "done" && (
-                            <button
-                              type="button"
-                              onClick={() => taskCompleteMutation.mutate(task.id)}
-                              className="w-full mt-1 px-2 py-1 rounded-full text-[10px] font-semibold bg-[#FF5A1F]/10 text-[#FF5A1F] hover:bg-[#FF5A1F]/20"
-                            >
-                              Mark complete
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {stageTasks.length === 0 && (
-                      <p className="text-[11px] text-muted-foreground px-1 py-3 text-center border border-dashed border-border rounded-xl">No tasks</p>
-                    )}
-                  </div>
+
+                  <p className="text-sm font-bold tabular-nums whitespace-nowrap">
+                    {cycleDeliverablesDone}
+                    {" / "}
+                    {cycleDeliverablesTotal}
+                    {" complete"}
+                  </p>
                 </div>
-              );
-            })}
-          </div>
+
+                <div className="h-2 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${cycleProgressPct}%`,
+                      background: "#FF5A1F",
+                    }}
+                  />
+                </div>
+              </div>
+
+              {workItemGroups.map(
+                ({ deliverable, items, done }) => {
+                  const progress =
+                    items.length > 0
+                      ? Math.round(
+                          (done / items.length) * 100,
+                        )
+                      : 0;
+
+                  return (
+                    <div
+                      key={deliverable.id}
+                      className="rounded-2xl border border-border bg-card overflow-hidden"
+                    >
+                      <div className="p-4 sm:p-5 border-b border-border">
+                        <div className="flex items-start justify-between gap-4 mb-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold">
+                              {deliverable.name}
+                            </p>
+
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {deliverable.quantityIncluded}
+                              {" "}
+                              {deliverable.frequency
+                                ?.replace(/_/g, " ")}
+                            </p>
+                          </div>
+
+                          <span className="text-xs font-semibold whitespace-nowrap">
+                            {done}
+                            {" / "}
+                            {items.length}
+                            {" complete"}
+                          </span>
+                        </div>
+
+                        <div className="h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${progress}%`,
+                              background: "#FF5A1F",
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="divide-y divide-border">
+                        {items.map((task) => {
+                          const complete =
+                            task.status === "complete" ||
+                            task.status === "done";
+
+                          const stages: string[] =
+                            Array.isArray(task.stages)
+                              ? task.stages
+                              : [];
+
+                          const stageCount =
+                            stages.length;
+
+                          const currentStep =
+                            Math.min(
+                              Number(
+                                task.stageIndex ?? 0,
+                              ) + 1,
+                              Math.max(
+                                stageCount,
+                                1,
+                              ),
+                            );
+
+                          return (
+                            <div
+                              key={
+                                task.publicId ??
+                                task.id
+                              }
+                              className="p-4 flex flex-col sm:flex-row sm:items-center gap-3"
+                            >
+                              <div className="flex items-start gap-3 flex-1 min-w-0">
+                                <div className="mt-0.5 shrink-0">
+                                  {complete ? (
+                                    <CheckCircle2
+                                      size={18}
+                                      className="text-green-600"
+                                    />
+                                  ) : (
+                                    <Circle
+                                      size={18}
+                                      className="text-zinc-300"
+                                    />
+                                  )}
+                                </div>
+
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium truncate">
+                                    {task.title}
+                                  </p>
+
+                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                    <span
+                                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                        complete
+                                          ? "bg-green-100 text-green-800"
+                                          : "bg-[#FF5A1F]/10 text-[#FF5A1F]"
+                                      }`}
+                                    >
+                                      {complete
+                                        ? "Complete"
+                                        : task.stage ??
+                                          "In progress"}
+                                    </span>
+
+                                    {stageCount > 0 && (
+                                      <span className="text-[10px] text-muted-foreground">
+                                        Stage{" "}
+                                        {currentStep}
+                                        {" of "}
+                                        {stageCount}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {!complete &&
+                                !isClient && (
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      taskAdvanceMutation.isPending
+                                    }
+                                    onClick={() =>
+                                      taskAdvanceMutation.mutate(
+                                        task.publicId,
+                                      )
+                                    }
+                                    className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold bg-[#FF5A1F]/10 text-[#FF5A1F] hover:bg-[#FF5A1F]/20 disabled:opacity-50 shrink-0"
+                                  >
+                                    Move forward
+                                    <ChevronRight
+                                      size={13}
+                                    />
+                                  </button>
+                                )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                },
+              )}
+            </>
+          )}
         </div>
       )}
 
