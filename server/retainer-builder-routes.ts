@@ -296,6 +296,8 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         clientInputDeadlineDays,
         excludedWork,
         recipientUserId,
+        welcomeMessage,
+        kickoffAt,
         title,
       } = req.body ?? {};
 
@@ -429,6 +431,14 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         billingFrequency, amountPerCyclePence, minimumTermCycles, renewalMode,
         noticePeriodCycles, introPrice, introCycles, setupFeePence, maxRevisions,
         responseTimeHours, clientInputDeadlineDays, excludedWork,
+        welcomeMessage:
+          typeof welcomeMessage === "string"
+            ? welcomeMessage.trim().slice(0, 500)
+            : null,
+        kickoffAt:
+          typeof kickoffAt === "string" && kickoffAt.trim()
+            ? kickoffAt.trim()
+            : null,
       };
 
       await db`
@@ -587,6 +597,38 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         db`SELECT * FROM retainer_amendments WHERE retainer_agreement_id = ${agreement.id} ORDER BY created_at DESC`,
       ]);
 
+        const onboardingVersionRows = await db`
+          SELECT snapshot
+          FROM retainer_agreement_versions
+          WHERE retainer_agreement_id = ${agreement.id}
+          ORDER BY version_number DESC, id DESC
+          LIMIT 1
+        `;
+
+        const rawOnboardingSnapshot =
+          onboardingVersionRows?.[0]?.snapshot ?? {};
+
+        let onboardingSnapshot: any = rawOnboardingSnapshot;
+
+        if (typeof rawOnboardingSnapshot === "string") {
+          try {
+            onboardingSnapshot = JSON.parse(rawOnboardingSnapshot);
+          } catch {
+            onboardingSnapshot = {};
+          }
+        }
+
+        const onboarding = {
+          welcomeMessage:
+            typeof onboardingSnapshot?.welcomeMessage === "string"
+              ? onboardingSnapshot.welcomeMessage
+              : null,
+          kickoffAt:
+            typeof onboardingSnapshot?.kickoffAt === "string"
+              ? onboardingSnapshot.kickoffAt
+              : null,
+        };
+
       const parseArray = (value: any): any[] => {
         if (Array.isArray(value)) return value;
 
@@ -713,6 +755,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
       }));
 
       res.json({
+          onboarding,
         agreement: {
           ...agreement,
 

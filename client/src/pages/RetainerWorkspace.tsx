@@ -123,6 +123,7 @@ export default function RetainerWorkspace() {
   const workspaceQuery = useWorkspace(publicId, user?.id);
   const data = workspaceQuery.data;
   const agreement = data?.agreement;
+  const onboarding = data?.onboarding ?? {};
   const currentCycle = data?.currentCycle;
   const cycles: any[] = data?.cycles ?? [];
   const deliverables: any[] = data?.deliverables ?? [];
@@ -629,6 +630,44 @@ export default function RetainerWorkspace() {
       {/* ── Overview ── */}
       {!isPendingProposal && !isDeclined && tab === "overview" && (
         <div className="space-y-6">
+          {(onboarding.welcomeMessage || onboarding.kickoffAt) && (
+            <div className="rounded-2xl border border-border bg-card p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <CalendarDays size={16} className="text-[#FF5A1F]" />
+                <p className="text-sm font-semibold">Getting started</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {onboarding.welcomeMessage && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground mb-1">
+                      Welcome message
+                    </p>
+                    <p className="text-sm whitespace-pre-wrap">
+                      {onboarding.welcomeMessage}
+                    </p>
+                  </div>
+                )}
+
+                {onboarding.kickoffAt && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground mb-1">
+                      Kick-off
+                    </p>
+                    <p className="text-sm font-semibold">
+                      {new Date(onboarding.kickoffAt).toLocaleString("en-GB", {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-5 rounded-2xl border border-border bg-card flex items-center gap-4">
               <HealthRing score={healthScore} />

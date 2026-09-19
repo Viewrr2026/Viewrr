@@ -79,6 +79,8 @@ interface DraftState {
   outOfScopeProcess: string;
   clientName: string;
   recipientUserId: number | null;
+  welcomeMessage: string;
+  kickoffAt: string;
 }
 
 const DRAFT_KEY = "retainer_draft";
@@ -185,6 +187,8 @@ function defaultDraft(): DraftState {
     outOfScopeProcess: "Requests outside this scope will be quoted separately before work begins.",
     clientName: "",
     recipientUserId: null,
+    welcomeMessage: "",
+    kickoffAt: "",
   };
 }
 
@@ -309,6 +313,9 @@ export default function RetainerBuilder() {
   const [launched, setLaunched] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
   const [showClientSearch, setShowClientSearch] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const [kickoffOpen, setKickoffOpen] = useState(false);
+  const [workspacePreviewOpen, setWorkspacePreviewOpen] = useState(false);
 
   // Load existing connections — maps storage shape { id, name, role, headline } → { userId, name, email }
   const { data: connections } = useQuery<Array<{ userId: number; name: string; email: string; avatar?: string }>>({
@@ -472,6 +479,10 @@ export default function RetainerBuilder() {
         clientInputDeadlineDays: draft.clientInputDeadlineDays,
         excludedWork: draft.excludedWork,
         recipientUserId: draft.recipientUserId,
+        welcomeMessage: draft.welcomeMessage.trim() || null,
+        kickoffAt: draft.kickoffAt
+          ? new Date(draft.kickoffAt).toISOString()
+          : null,
       });
       setLaunched(true);
     } catch (e: any) {
@@ -1129,16 +1140,197 @@ export default function RetainerBuilder() {
                   {submitting ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
                   {draft.recipientUserId ? "Send to Client" : "Select a client above to send"}
                 </button>
-                <button type="button" className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                  <MessageSquarePlus size={15} /> Add Welcome Message
+                <button
+                  type="button"
+                  onClick={() => setWelcomeOpen(true)}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  <MessageSquarePlus size={15} />
+                  {draft.welcomeMessage.trim()
+                    ? "Edit Welcome Message"
+                    : "Add Welcome Message"}
                 </button>
-                <button type="button" className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                  <CalendarClock size={15} /> Schedule Kick-off
+
+                <button
+                  type="button"
+                  onClick={() => setKickoffOpen(true)}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  <CalendarClock size={15} />
+                  {draft.kickoffAt ? "Edit Kick-off" : "Schedule Kick-off"}
                 </button>
-                <button type="button" className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:bg-zinc-50 dark:hover:bg-zinc-900 sm:col-span-2">
+
+                <button
+                  type="button"
+                  onClick={() => setWorkspacePreviewOpen(true)}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:bg-zinc-50 dark:hover:bg-zinc-900 sm:col-span-2"
+                >
                   <Eye size={15} /> Preview Workspace
                 </button>
               </div>
+
+              <Dialog open={welcomeOpen} onOpenChange={setWelcomeOpen}>
+                <DialogContent className="max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Welcome message</DialogTitle>
+                  </DialogHeader>
+
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      Add a short personal message your client will see when
+                      they open the retainer workspace.
+                    </p>
+
+                    <Textarea
+                      rows={5}
+                      maxLength={500}
+                      value={draft.welcomeMessage}
+                      onChange={e => update("welcomeMessage", e.target.value)}
+                      placeholder="Excited to get started — here's how we'll work together…"
+                      className="resize-none"
+                    />
+
+                    <p className="text-[11px] text-muted-foreground text-right">
+                      {draft.welcomeMessage.length}/500
+                    </p>
+                  </div>
+
+                  <DialogFooter>
+                    <button
+                      type="button"
+                      onClick={() => setWelcomeOpen(false)}
+                      className="px-4 py-2 rounded-full text-sm font-semibold text-white"
+                      style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                    >
+                      Save message
+                    </button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog open={kickoffOpen} onOpenChange={setKickoffOpen}>
+                <DialogContent className="max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Schedule kick-off</DialogTitle>
+                  </DialogHeader>
+
+                  <div className="space-y-3">
+                    <p className="text-sm text-muted-foreground">
+                      Set a proposed date and time for your first kick-off.
+                      Your client will see this in the workspace.
+                    </p>
+
+                    <input
+                      type="datetime-local"
+                      value={draft.kickoffAt}
+                      onChange={e => update("kickoffAt", e.target.value)}
+                      className="w-full px-3 py-2.5 text-sm border border-input rounded-lg bg-background"
+                    />
+
+                    {draft.kickoffAt && (
+                      <button
+                        type="button"
+                        onClick={() => update("kickoffAt", "")}
+                        className="text-xs text-muted-foreground hover:text-foreground underline"
+                      >
+                        Clear scheduled kick-off
+                      </button>
+                    )}
+                  </div>
+
+                  <DialogFooter>
+                    <button
+                      type="button"
+                      onClick={() => setKickoffOpen(false)}
+                      className="px-4 py-2 rounded-full text-sm font-semibold text-white"
+                      style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                    >
+                      Save kick-off
+                    </button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog
+                open={workspacePreviewOpen}
+                onOpenChange={setWorkspacePreviewOpen}
+              >
+                <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle>Client workspace preview</DialogTitle>
+                  </DialogHeader>
+
+                  <div className="space-y-5">
+                    <div className="rounded-2xl border border-border bg-card overflow-hidden">
+                      <div
+                        className="h-1.5"
+                        style={{ background: "linear-gradient(90deg,#FF5A1F,#FF8C42)" }}
+                      />
+                      <div className="p-5">
+                        <p className="text-lg font-bold font-[Clash_Display,sans-serif]">
+                          {draft.goal || "Your retainer"}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {template?.label ?? "Custom Retainer"} · {model?.label ?? "Custom"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {(draft.welcomeMessage.trim() || draft.kickoffAt) && (
+                      <div className="rounded-2xl border border-border p-5 space-y-4">
+                        <p className="text-sm font-semibold">Getting started</p>
+
+                        {draft.welcomeMessage.trim() && (
+                          <div>
+                            <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground mb-1">
+                              Welcome message
+                            </p>
+                            <p className="text-sm whitespace-pre-wrap">
+                              {draft.welcomeMessage}
+                            </p>
+                          </div>
+                        )}
+
+                        {draft.kickoffAt && (
+                          <div>
+                            <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground mb-1">
+                              Kick-off
+                            </p>
+                            <p className="text-sm">
+                              {new Date(draft.kickoffAt).toLocaleString("en-GB", {
+                                day: "numeric",
+                                month: "short",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <AgreementSummary
+                      draft={draft}
+                      template={template}
+                      model={model}
+                      nextInvoiceDate={nextInvoiceDate}
+                      compact
+                    />
+                  </div>
+
+                  <DialogFooter>
+                    <button
+                      type="button"
+                      onClick={() => setWorkspacePreviewOpen(false)}
+                      className="px-4 py-2 rounded-full text-sm font-semibold text-white"
+                      style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
+                    >
+                      Close preview
+                    </button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
 
               <div className="mt-10">
                 <p className="text-sm font-semibold mb-3">What happens next</p>
