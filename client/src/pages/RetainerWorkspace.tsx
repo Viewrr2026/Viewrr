@@ -792,38 +792,14 @@ export default function RetainerWorkspace() {
                               ),
                             );
 
-                          const reviewStageIndexRaw =
-                            stages.findIndex(
-                              (stage) => {
-                                const value =
-                                  String(stage)
-                                    .toLowerCase();
-
-                                return (
-                                  value.includes(
-                                    "client review",
-                                  ) ||
-                                  value === "review" ||
-                                  value.includes(
-                                    "client approval",
-                                  )
-                                );
-                              },
-                            );
-
-                          const reviewStageIndex =
-                            reviewStageIndexRaw >= 0
-                              ? reviewStageIndexRaw
-                              : Math.max(
-                                  0,
-                                  stageCount - 2,
-                                );
-
-                          const maxFreelancerIndex =
+                          const finalApprovalStageIndex =
                             Math.max(
                               0,
-                              reviewStageIndex - 1,
+                              stageCount - 1,
                             );
+
+                          const maxFreelancerIndex =
+                            finalApprovalStageIndex;
 
                           const taskSubmissions =
                             submissions.filter(
@@ -921,8 +897,8 @@ export default function RetainerWorkspace() {
                                 }
                                 isClient={!!isClient}
                                 complete={complete}
-                                reviewStageIndex={
-                                  reviewStageIndex
+                                finalApprovalStageIndex={
+                                  finalApprovalStageIndex
                                 }
                               />
                             </div>
@@ -1351,14 +1327,14 @@ function WorkItemSubmissionPanel({
   submissions,
   isClient,
   complete,
-  reviewStageIndex,
+  finalApprovalStageIndex,
 }: {
   publicId: string;
   task: any;
   submissions: any[];
   isClient: boolean;
   complete: boolean;
-  reviewStageIndex: number;
+  finalApprovalStageIndex: number;
 }) {
   const qc = useQueryClient();
 
@@ -1412,14 +1388,8 @@ function WorkItemSubmissionPanel({
     !isClient &&
     !complete &&
     !awaitingReview &&
-    (
-      changesRequested ||
-      stageIndex >=
-        Math.max(
-          0,
-          reviewStageIndex - 1,
-        )
-    );
+    stageIndex >=
+      finalApprovalStageIndex;
 
   const canReview =
     isClient &&
@@ -1598,11 +1568,11 @@ function WorkItemSubmissionPanel({
   } else if (canSubmit) {
     summary =
       submissions.length > 0
-        ? `Submit revision v${nextVersion}`
-        : "Add work submission";
+        ? `Submit final revision v${nextVersion}`
+        : "Submit final work";
   } else if (!isClient) {
     summary =
-      "Move to Production to submit work";
+      "Progress through the workflow to submit final work";
   } else {
     summary =
       "No work submitted yet";
@@ -1748,8 +1718,8 @@ function WorkItemSubmissionPanel({
                   {changesRequested
                     ? `Submit revision v${nextVersion}`
                     : submissions.length > 0
-                      ? `Submit version ${nextVersion}`
-                      : "Submit work for review"}
+                      ? `Submit final version ${nextVersion}`
+                      : "Submit final work for approval"}
                 </p>
 
                 <p className="text-[11px] text-muted-foreground mt-1">
@@ -1797,7 +1767,7 @@ function WorkItemSubmissionPanel({
                   ? "Submitting…"
                   : changesRequested
                     ? "Submit revision"
-                    : "Submit for review"}
+                    : "Submit for final approval"}
               </button>
             </div>
           )}

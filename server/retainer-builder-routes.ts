@@ -110,27 +110,12 @@ function parseWorkItemStages(raw: any): string[] {
   }
 }
 
-function findClientReviewStageIndex(
+function findFinalApprovalStageIndex(
   stages: string[],
 ): number {
-  const index = stages.findIndex((stage) => {
-    const value =
-      String(stage).toLowerCase();
-
-    return (
-      value.includes("client review") ||
-      value === "review" ||
-      value.includes("client approval")
-    );
-  });
-
-  if (index >= 0) {
-    return index;
-  }
-
   return Math.max(
     0,
-    stages.length - 2,
+    stages.length - 1,
   );
 }
 
@@ -1162,10 +1147,28 @@ export function registerRetainerBuilderRoutes(app: Express): void {
           });
         }
 
-        const reviewIndex =
-          findClientReviewStageIndex(
+        const approvalIndex =
+          findFinalApprovalStageIndex(
             stages,
           );
+
+        const currentIndex =
+          Math.max(
+            0,
+            Number(
+              task.stage_index ?? 0,
+            ),
+          );
+
+        if (
+          currentIndex <
+          approvalIndex
+        ) {
+          return res.status(409).json({
+            error:
+              "Move this work item to its final stage before submitting for client approval",
+          });
+        }
 
         const versionRows = await db`
           SELECT
@@ -1220,9 +1223,9 @@ export function registerRetainerBuilderRoutes(app: Express): void {
               retainer_cycle_tasks
             SET
               stage =
-                ${stages[reviewIndex]},
+                ${stages[approvalIndex]},
               stage_index =
-                ${reviewIndex},
+                ${approvalIndex},
               status =
                 'awaiting_client_review',
               completed_at = NULL
@@ -1370,15 +1373,15 @@ export function registerRetainerBuilderRoutes(app: Express): void {
           });
         }
 
-        const reviewIndex =
-          findClientReviewStageIndex(
+        const approvalIndex =
+          findFinalApprovalStageIndex(
             stages,
           );
 
         const revisionIndex =
           findRevisionStageIndex(
             stages,
-            reviewIndex,
+            approvalIndex,
           );
 
         const nowIso =
@@ -1736,16 +1739,13 @@ export function registerRetainerBuilderRoutes(app: Express): void {
             ),
           );
 
-        const reviewIndex =
-          findClientReviewStageIndex(
+        const approvalIndex =
+          findFinalApprovalStageIndex(
             stages,
           );
 
         const maxFreelancerIndex =
-          Math.max(
-            0,
-            reviewIndex - 1,
-          );
+          approvalIndex;
 
         if (
           currentIndex >=
@@ -1753,7 +1753,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         ) {
           return res.status(409).json({
             error:
-              "Submit work for client review instead of moving this item forward",
+              "Submit final work for client approval instead of moving this item forward",
           });
         }
 
