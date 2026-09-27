@@ -111,3 +111,13 @@ export const MAX_UPLOAD_BYTES: Record<ResourceType, number> = {
 export function isAllowedMime(resourceType: ResourceType, mimeType: string): boolean {
   return ALLOWED_MIMES[resourceType]?.has(mimeType) ?? false;
 }
+
+// Private retainer processing uses server uploads, never client-overwritable keys.
+export async function putPrivateObject(objectKey: string, body: import('node:stream').Readable, contentType: string, size: number) {
+  await getS3().send(new PutObjectCommand({ Bucket: STORAGE_BUCKET!, Key: objectKey, Body: body, ContentType: contentType, ContentLength: size }));
+}
+export async function readPrivateObject(objectKey: string): Promise<import('node:stream').Readable> {
+  const result = await getS3().send(new GetObjectCommand({ Bucket: STORAGE_BUCKET!, Key: objectKey }));
+  if (!result.Body) throw new Error('Private file unavailable');
+  return result.Body as import('node:stream').Readable;
+}

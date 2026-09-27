@@ -1,3 +1,4 @@
+import { cycleAccess } from "../shared/retainer-v1";
 /**
  * PRD-012 — Retainer Builder server routes + Founder metrics.
  *
@@ -657,7 +658,10 @@ export function registerRetainerBuilderRoutes(app: Express): void {
             .filter(Boolean)
         );
 
-      const currentCycleRaw =
+      const customCurrent = agreement.workflow_version === 1
+        ? cycles.find((c: any) => cycleAccess(cycles as any, c, agreement.status).canWork) ?? cycles.find((c: any) => !c.paid_at) ?? cycles[cycles.length-1]
+        : null;
+      const currentCycleRaw = customCurrent ??
         [...cycles]
           .reverse()
           .find((cycle: any) => cycle.status === "active") ??

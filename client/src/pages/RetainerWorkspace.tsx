@@ -1,3 +1,4 @@
+import { useCustomRetainer, CustomProposal, CustomCyclePanel, CyclePayment } from "@/components/retainer/CustomRetainerWorkspace";
 import { useState, useMemo } from "react";
 import { useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -26,9 +27,8 @@ type Tab =
 
 const TABS: { key: Tab; label: string; icon: any }[] = [
   { key: "overview", label: "Overview", icon: Gauge },
-  { key: "current_cycle", label: "Current Cycle", icon: LayoutGrid },
+  { key: "current_cycle", label: "Cycle & Deliverables", icon: LayoutGrid },
   { key: "requests", label: "Requests", icon: Inbox },
-  { key: "deliverables", label: "Deliverables", icon: Package },
   { key: "usage", label: "Usage", icon: BarChart3 },
   { key: "messages", label: "Messages", icon: MessageSquare },
   { key: "payments", label: "Payments", icon: CreditCard },
@@ -113,7 +113,7 @@ export default function RetainerWorkspace() {
   const { publicId } = useParams<{ publicId: string }>();
   const { user } = useAuth();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>(() => /[?&]tab=deliverables(?:&|$)/.test(window.location.href) ? "current_cycle" : "overview");
   const [requestModalOpen, setRequestModalOpen] = useState(false);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [pauseModalOpen, setPauseModalOpen] = useState(false);
@@ -123,6 +123,8 @@ export default function RetainerWorkspace() {
   const workspaceQuery = useWorkspace(publicId, user?.id);
   const data = workspaceQuery.data;
   const agreement = data?.agreement;
+  const isCustom = agreement?.workflow_version === 1;
+  const customQuery = useCustomRetainer(publicId, isCustom);
   const onboarding = data?.onboarding ?? {};
   const currentCycle = data?.currentCycle;
   const cycles: any[] = data?.cycles ?? [];
@@ -137,7 +139,7 @@ export default function RetainerWorkspace() {
     Number(user?.id) === Number(agreement.clientUserId);
 
   const isPendingProposal =
-    agreement?.status === "awaiting_client_acceptance";
+    agreement?.status === "awaiting_client_acceptance" || agreement?.status === "changes_requested";
 
   const isDeclined =
     agreement?.status === "declined";
@@ -167,7 +169,7 @@ export default function RetainerWorkspace() {
       !!publicId &&
       !!user?.id &&
       !isPendingProposal &&
-      !isDeclined,
+      !isDeclined && !isCustom,
     staleTime: 0,
   });
 
@@ -196,7 +198,7 @@ export default function RetainerWorkspace() {
       !!publicId &&
       !!user?.id &&
       !isPendingProposal &&
-      !isDeclined,
+      !isDeclined && !isCustom,
     staleTime: 0,
   });
 
@@ -391,8 +393,8 @@ export default function RetainerWorkspace() {
             <div className="flex flex-col sm:items-end gap-2 shrink-0">
               <div className="flex gap-4 text-right">
                 <div>
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Value / cycle</p>
-                  <p className="text-sm font-bold">{fmtGBP(agreement.amountPerCyclePence ?? 0)}</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{isCustom ? "Retainer total" : "Value / cycle"}</p>
+                  <p className="text-sm font-bold">{fmtGBP(isCustom ? (customQuery.data?.plan?.cycles ?? []).reduce((sum: number, c: any) => sum + c.amountPence, 0) : agreement.amountPerCyclePence ?? 0)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Next invoice</p>
@@ -404,11 +406,11 @@ export default function RetainerWorkspace() {
                 !isDeclined && (
                 <button
                   type="button"
-                  onClick={primaryAction.onClick}
+                  onClick={isCustom ? () => setTab("current_cycle") : primaryAction.onClick}
                   className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold text-white whitespace-nowrap"
                   style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
                 >
-                  {primaryAction.label} <ArrowRight size={12} />
+                  {isCustom ? "View cycle & deliverables" : primaryAction.label} <ArrowRight size={12} />
                 </button>
               )}
             </div>
@@ -417,7 +419,9 @@ export default function RetainerWorkspace() {
       </div>
 
       {/* ── Retainer proposal decision ── */}
-      {isPendingProposal && (
+      {isCustom && (isPendingProposal || (customQuery.data?.pending && tab !== "agreement")) && customQuery.data && <CustomProposal publicId={publicId!} data={customQuery.data} userId={user!.id}/>}
+      {isCustom && customQuery.isError && <p role="alert" className="text-sm text-red-600 mb-4">Unable to load custom cycle details. Please refresh.</p>}
+      {!isCustom && isPendingProposal && (
         <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50/60 dark:bg-amber-950/10 overflow-hidden">
           <div className="p-5 sm:p-6">
             <div className="flex items-start gap-3 mb-5">
@@ -718,7 +722,8 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Current Cycle: individual work items ── */}
-      {!isPendingProposal && !isDeclined && tab === "current_cycle" && (
+      {isCustom && !isPendingProposal && tab === "current_cycle" && (customQuery.data ? <CustomCyclePanel publicId={publicId!} data={customQuery.data} userId={user!.id}/> : <p>Loading cycle details…</p>)}
+      {!isCustom && !isPendingProposal && !isDeclined && tab === "current_cycle" && (
         <div className="space-y-4">
           {!currentCycle ? (
             <div className="py-16 text-center rounded-2xl border border-dashed border-border">
@@ -1027,7 +1032,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Deliverables ── */}
-      {!isPendingProposal && !isDeclined && tab === "deliverables" && (
+      {!isCustom && !isPendingProposal && !isDeclined && tab === "current_cycle" && (
         <div className="overflow-x-auto rounded-2xl border border-border">
           <table className="w-full text-xs">
             <thead>
@@ -1093,7 +1098,7 @@ export default function RetainerWorkspace() {
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border bg-zinc-50 dark:bg-zinc-900">
-                {["Cycle", "Period", "Amount", "Status", "Invoice date", ""].map(h => (
+                {["Cycle", "Period", "Amount", "Status", isCustom ? "Payment deadline" : "Invoice date", ""].map(h => (
                   <th key={h} className="px-3 py-2.5 text-left font-semibold text-muted-foreground whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -1104,10 +1109,11 @@ export default function RetainerWorkspace() {
                   <td className="px-3 py-2.5 font-medium">Cycle {c.cycleNumber}</td>
                   <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">{fmtDate(c.periodStart)} → {fmtDate(c.periodEnd)}</td>
                   <td className="px-3 py-2.5 font-semibold">{fmtGBP(c.amountPence ?? agreement.amountPerCyclePence ?? 0)}</td>
-                  <td className="px-3 py-2.5"><StatusBadge status={c.paymentStatus ?? c.status} /></td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(c.invoiceDate)}</td>
+                  <td className="px-3 py-2.5"><StatusBadge status={isCustom ? (c.paid_at ? "paid" : c.accepted_at ? "awaiting_payment" : "scheduled") : c.paymentStatus ?? c.status} /></td>
+                  <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(isCustom ? c.due_at : c.invoiceDate)}</td>
                   <td className="px-3 py-2.5">
-                    {["pending", "unpaid", "overdue"].includes(c.paymentStatus) && (
+                    {isCustom && isClient && c.accepted_at && !c.paid_at && <CyclePayment publicId={publicId!} cycle={c}/>}
+                    {!isCustom && ["pending", "unpaid", "overdue"].includes(c.paymentStatus) && (
                       <button
                         onClick={() => payCycleMutation.mutate(c.publicId)}
                         disabled={payCycleMutation.isPending}
@@ -1131,6 +1137,7 @@ export default function RetainerWorkspace() {
       {/* ── Agreement ── */}
       {!isPendingProposal && !isDeclined && tab === "agreement" && (
         <div className="space-y-6">
+          {isCustom && customQuery.data ? <CustomProposal publicId={publicId!} data={customQuery.data} userId={user!.id}/> : (
           <div className="p-5 rounded-2xl border border-border bg-card space-y-4">
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold">Current agreement — v{agreement.version ?? 1}</p>
@@ -1154,6 +1161,7 @@ export default function RetainerWorkspace() {
               <p className="text-sm">{agreement.goal}</p>
             </div>
           </div>
+          )}
 
           {amendments.length > 0 && (
             <div>

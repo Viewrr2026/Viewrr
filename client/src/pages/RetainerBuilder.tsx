@@ -1,3 +1,4 @@
+import CustomRetainerBuilder from "@/components/retainer/CustomRetainerBuilder";
 import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -302,6 +303,12 @@ function NavButtons({
 // ─── Main component ─────────────────────────────────────────────────────────
 
 export default function RetainerBuilder() {
+  const { data, isLoading, isError } = useQuery({queryKey:["custom-retainer-config"],queryFn: async () => (await apiRequest("GET","/api/custom-retainers/config")).json()});
+  if(isLoading) return <div className="p-8 text-center">Loading retainer builder…</div>;
+  if(isError) return <div role="alert" className="p-8 text-center">Unable to load the retainer builder. Please refresh.</div>;
+  return data?.enabled ? <CustomRetainerBuilder/> : <LegacyRetainerBuilder/>;
+}
+function LegacyRetainerBuilder() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
   const [draft, setDraft] = useState<DraftState>(defaultDraft);

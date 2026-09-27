@@ -1,3 +1,4 @@
+import Stripe from "stripe";
 /**
  * PRD-008 — Server-authoritative retainer payment service.
  * Eliminates amountPence from client. Amount always derived from retainer_cycles.
@@ -12,7 +13,6 @@ function getDb() {
 }
 
 function getStripe() {
-  const Stripe = require("stripe");
   if (!process.env.STRIPE_SECRET_KEY) throw new Error("STRIPE_SECRET_KEY not set");
   return new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2025-02-24.acacia" as any });
 }
@@ -40,7 +40,6 @@ export async function createRetainerPayment(
   clientUserId: number
 ): Promise<RetainerPaymentResult> {
   const db = getDb();
-  const stripe = getStripe();
 
   // 1. Load cycle + project
   const cycleRows = await db`
@@ -55,6 +54,14 @@ export async function createRetainerPayment(
   `;
   if (!cycleRows.length) throw Object.assign(new Error("Retainer cycle not found"), { status: 404 });
   const cycle = cycleRows[0];
+
+  const model = await db`SELECT workflow_version FROM retainer_agreements WHERE id = ${cycle.retainer_agreement_id}`;
+  if (model[0]?.workflow_version === 1) {
+    const { createCustomCyclePayment } = await import("./retainer-v1-payments");
+    return { ...(await createCustomCyclePayment(cyclePublicId, clientUserId)), freelancerOnboarded: true } as RetainerPaymentResult;
+  }
+
+  const stripe = getStripe();
 
   // 2. Ownership check — client must own this project
   if (cycle.client_id !== clientUserId) {
