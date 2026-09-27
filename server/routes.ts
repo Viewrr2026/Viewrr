@@ -1,3 +1,5 @@
+import { registerCustomRetainerRoutes, guardCustomRetainerLegacy } from "./retainer-v1-routes";
+import { startRetainerWorker } from "./retainer-v1-worker";
 import type { Express, Request, Response, NextFunction } from "express";
 import { registerRetainerBuilderRoutes } from "./retainer-builder-routes";
 import { Server } from "http";
@@ -455,6 +457,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.use(cookieParser());
   // PRD-019: Origin validation defence-in-depth (CSRF mitigation for cookie-auth unsafe methods)
   app.use(requireBrowserOrigin);
+  app.use(guardCustomRetainerLegacy);
+  registerCustomRetainerRoutes(app);
   // ─── Version / health ─────────────────────────────────────────────────────
   // ─── P0-07: Rate limiting ──────────────────────────────────────────────────
   const loginLimiter = rateLimit({
@@ -6328,16 +6332,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // GET /api/retainer-cycles/:cyclePublicId/payment — get current payment status
-  app.get("/api/retainer-cycles/:cyclePublicId/payment", async (req, res) => {
+  app.get("/api/retainer-cycles/:cyclePublicId/payment", requireAuth, async (req, res) => {
     try {
       const db = neon(process.env.DATABASE_URL!);
       const { cyclePublicId } = req.params;
       const cycles = await db`SELECT * FROM retainer_cycles WHERE public_id = ${cyclePublicId} LIMIT 1`;
       if (!cycles.length) return res.status(404).json({ error: "Cycle not found" });
       const cycle = cycles[0];
+      const member = await db`SELECT id FROM projects WHERE id=${cycle.project_id} AND (client_id=${req.auth!.userId} OR freelancer_id=${req.auth!.userId})`;
+      if (!member.length) return res.status(403).json({error:"You do not have access to this payment"});
       if (!cycle.payment_id) return res.json({ status: "not_started" });
       const payments = await db`SELECT * FROM payments WHERE id = ${cycle.payment_id} LIMIT 1`;
-      res.json(payments[0] ?? { status: "not_found" });
+      const payment = payments[0];
+      res.json(payment ? { status: payment.status, paymentPublicId: payment.public_id, amountPence: payment.gross_pence } : {status:"not_found"});
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -7352,6 +7359,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   // Start the worker (non-blocking)
   startWorker();
+  startRetainerWorker();
 
   // Check confirmed scheduled deletions on startup and then hourly.
   // An hour is sufficiently responsive for account deletion while avoiding

@@ -12,6 +12,7 @@ import SignupModal from "@/components/SignupModal";
 import MeetingSection from "@/components/MeetingSection";
 import DeliverablesSection, { StripePaymentDialog } from "@/components/DeliverablesSection";
 
+import RetainerInvitationDialog from "@/components/retainer/RetainerInvitationDialog";
 import CreateProjectModal from "@/components/CreateProjectModal";
 import ProjectPlanBuilder, { ProjectTimeline } from "@/components/ProjectPlanBuilder";
 import {
@@ -2737,6 +2738,30 @@ export default function YourWork() {
   const [invTab, setInvTab] = useState<"received" | "sent">("received");
   const [reviewTarget, setReviewTarget] = useState<ProjectWithDetails | null>(null);
   const [invitationsOpen, setInvitationsOpen] = useState(true);
+  const [retainerInvitation, setRetainerInvitation] = useState<string | null>(null);
+  const { data: retainerInvitations = [], isError: retainerInvitationsError, refetch: refetchRetainerInvitations } = useQuery<Array<{
+    publicId: string; projectId: number; title: string; status: string;
+    senderId: number; recipientId: number; senderName: string; recipientName: string;
+    startDate: string; endDate: string; version: number;
+  }>>({
+    queryKey: ["custom-retainer-invitations", user?.id],
+    queryFn: async () => (await apiRequest("GET", "/api/custom-retainer-invitations")).json(),
+    enabled: !!user, refetchInterval: 5000,
+  });
+  const retainerReceived = retainerInvitations.filter(i => i.recipientId === user?.id);
+  const retainerSent = retainerInvitations.filter(i => i.senderId === user?.id);
+  const retainerPendingCount = retainerReceived.filter(i => i.status === "awaiting_client_acceptance").length;
+  function retainerCards(items: typeof retainerInvitations) {
+    return items.map(inv => <div key={inv.publicId} className="rounded-xl border border-border p-4 space-y-2">
+      <div className="flex justify-between gap-2"><h3 className="font-semibold">{inv.title}</h3><span className="text-xs">Retainer · v{inv.version}</span></div>
+      <p className="text-sm text-muted-foreground">{inv.senderId === user?.id ? `To ${inv.recipientName}` : `From ${inv.senderName}`}</p>
+      <p className="text-xs">{inv.startDate} → {inv.endDate}</p>
+      <p className="text-sm">{inv.status === "declined" ? "Declined" : inv.status === "changes_requested" ? "Changes requested" : "Awaiting acceptance"}</p>
+      <Button variant="outline" onClick={() => setRetainerInvitation(inv.publicId)}>
+        {inv.status === "declined" ? "View proposal" : "Review proposal"}
+      </Button>
+    </div>);
+  }
 
   async function openProjectOrRetainer(
     pw: ProjectWithDetails,
@@ -2785,7 +2810,7 @@ export default function YourWork() {
     enabled: !!user,
     staleTime: 0,          // always fetch fresh on mount — prevents stale cache showing wrong stage
     refetchOnMount: true,
-    refetchInterval: false,
+    refetchInterval: 10000, // Pick up acceptance by the other party while this page is open.
     retry: false,
   });
 
@@ -2903,6 +2928,7 @@ export default function YourWork() {
 
   return (
     <div className="min-h-screen bg-background">
+      {retainerInvitation && <RetainerInvitationDialog publicId={retainerInvitation} onClose={() => setRetainerInvitation(null)} />}
       <div className="mx-auto max-w-5xl px-6 py-10">
 
         {/* Header */}
@@ -2927,7 +2953,7 @@ export default function YourWork() {
 
 
         {/* ── Pending Invitations panel ── */}
-        {invitations.length > 0 && (
+        {(invitations.length > 0 || retainerInvitations.length > 0 || retainerInvitationsError) && (
           <div className="mb-8 rounded-2xl border border-border bg-card overflow-hidden">
             {/* Collapsible header — always visible */}
             <button
@@ -2938,16 +2964,16 @@ export default function YourWork() {
               <div className="flex items-center gap-2">
                 <Inbox size={16} className="text-primary" />
                 <span className="text-sm font-semibold">Project Invitations</span>
-                {pendingReceived.length > 0 && (
+                {pendingReceived.length + retainerPendingCount > 0 && (
                   <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-primary text-white">
-                    {pendingReceived.length}
+                    {pendingReceived.length + retainerPendingCount}
                   </span>
                 )}
               </div>
               <div className="flex items-center gap-2">
                 {!invitationsOpen && (
                   <span className="text-xs text-muted-foreground">
-                    {invitations.length} invitation{invitations.length !== 1 ? "s" : ""}
+                    {invitations.length + retainerInvitations.length} invitations
                   </span>
                 )}
                 <ChevronDown
@@ -2972,7 +2998,7 @@ export default function YourWork() {
                       }`}
                       data-testid="tab-inv-received"
                     >
-                      Received {received.length > 0 && `(${received.length})`}
+                      Received {received.length + retainerReceived.length > 0 && `(${received.length + retainerReceived.length})`}
                     </button>
                     <button
                       onClick={() => setInvTab("sent")}
@@ -2981,15 +3007,17 @@ export default function YourWork() {
                       }`}
                       data-testid="tab-inv-sent"
                     >
-                      Sent {sent.length > 0 && `(${sent.length})`}
+                      Sent {sent.length + retainerSent.length > 0 && `(${sent.length + retainerSent.length})`}
                     </button>
                   </div>
                 </div>
 
                 {/* Cards */}
                 <div className="p-4 grid gap-3 sm:grid-cols-2">
+                  {retainerInvitationsError && <p role="alert">Unable to load retainer invitations. <button onClick={() => refetchRetainerInvitations()}>Try again</button></p>}
+                  {retainerCards(invTab === "received" ? retainerReceived : retainerSent)}
                   {invTab === "received" && (
-                    received.length === 0 ? (
+                    received.length === 0 && retainerReceived.length === 0 ? (
                       <div className="col-span-2 text-center py-8 text-muted-foreground">
                         <Inbox size={28} className="mx-auto mb-2 opacity-30" />
                         <p className="text-sm">No invitations received yet</p>
@@ -3009,7 +3037,7 @@ export default function YourWork() {
                     )
                   )}
                   {invTab === "sent" && (
-                    sent.length === 0 ? (
+                    sent.length === 0 && retainerSent.length === 0 ? (
                       <div className="col-span-2 text-center py-8 text-muted-foreground">
                         <Send size={28} className="mx-auto mb-2 opacity-30" />
                         <p className="text-sm">No invitations sent yet</p>

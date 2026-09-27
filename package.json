@@ -11,7 +11,8 @@
     "db:push": "drizzle-kit push",
     "test:server": "npx tsx --test server/tests/*.test.ts",
     "test:auth": "npx tsx --test server/tests/auth.test.ts",
-    "test:security": "npx tsx --test server/tests/security.test.ts"
+    "test:security": "npx tsx --test server/tests/security.test.ts",
+    "test:retainer": "NODE_ENV=test node --import tsx --test server/tests/retainer-v1*.test.ts"
   },
   "engines": {
     "node": ">=20"
@@ -114,7 +115,8 @@
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@types/ws": "^8.5.13",
-    "drizzle-kit": "^0.31.8"
+    "drizzle-kit": "^0.31.8",
+    "@electric-sql/pglite": "0.5.8"
   },
   "optionalDependencies": {
     "bufferutil": "^4.0.8"

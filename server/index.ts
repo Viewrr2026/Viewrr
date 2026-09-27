@@ -71,6 +71,7 @@ const LOG_REDACTED_KEYS = new Set([
   "token", "resetToken", "refreshToken", "rawToken", "tokenHash", "token_hash",
   "cookie", "authorization", "SESSION_SECRET",
   "stripeSecretKey", "webhookSecret", "STRIPE_SECRET_KEY",
+  "url", // Signed media access URLs must not be captured in API logs.
   "clientSecret",  // Stripe PaymentIntent secret — must never be logged
   // WS-F additions:
   "verificationCode", "codeHash", "code_hash", "rawCode",

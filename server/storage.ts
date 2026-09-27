@@ -1156,7 +1156,10 @@ class Storage implements IStorage {
         or(eq(schema.projects.clientId, userId), eq(schema.projects.freelancerId, userId)),
         isNull((schema.projects as any).deletedAt),
       ));
-    const sorted = all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const excluded = all.some(p => p.isRetainer === 1)
+      ? await (await import("./retainer-v1-service")).unacceptedRetainerProjectIds(userId)
+      : new Set<number>();
+    const sorted = all.filter(p => !excluded.has(p.id)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const results: ProjectWithDetails[] = [];
     for (const p of sorted) {
       const details = await this._buildProjectWithDetails(p);

@@ -12,6 +12,7 @@
  *  connection         → ConnectionPanel
  */
 import { useState } from "react";
+import RetainerInvitationDialog from "./retainer/RetainerInvitationDialog";
 import { X, Heart, MessageCircle, Send, CheckCircle, XCircle, Eye, Briefcase, User, ChevronDown, ChevronUp, UserPlus, Star, MapPin, Video, Camera, Megaphone, Scissors, Crown, UserCheck } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -773,6 +774,11 @@ export default function NotificationActionModal({ open, onClose, notification }:
     );
   }
 
+  // Include already-delivered V1 notices, which used the generic update type.
+  const retainerId = link?.match(/^\/?(?:#\/)?retainer\/([a-zA-Z0-9_-]+)(?:[?#].*)?$/)?.[1];
+  if ((type === "retainer_proposal" || type === "retainer_update") && retainerId) {
+    return <RetainerInvitationDialog publicId={retainerId} onClose={onClose} />;
+  }
   if (type === "retainer_proposal") {
     return (
       <RetainerProposalPanel

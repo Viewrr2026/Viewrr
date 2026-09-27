@@ -823,6 +823,9 @@ export async function handlePaymentIntentSucceeded(
     return;
   }
 
+  const { fulfilCustomCyclePayment } = await import("./retainer-v1-payments");
+  if (intent.metadata?.payment_kind === "retainer_cycle" && await fulfilCustomCyclePayment(intent)) return;
+
   // Load internal payment record
   const paymentRows = await db
     .select()
