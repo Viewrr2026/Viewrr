@@ -62,6 +62,7 @@ export const envSummary = {
 export const PUBLIC_SITE_URL = "https://www.viewrr.co.uk";
 
 export const LEGAL_URLS = {
-  privacy: `${PUBLIC_SITE_URL}/privacy`,
-  terms: `${PUBLIC_SITE_URL}/terms`,
+  // The public website uses Wouter's hash router.
+  privacy: `${PUBLIC_SITE_URL}/#/privacy`,
+  terms: `${PUBLIC_SITE_URL}/#/terms`,
 } as const;

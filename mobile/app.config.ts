@@ -29,7 +29,13 @@ import type { ConfigContext, ExpoConfig } from "expo/config";
 
 type AppEnv = "development" | "staging" | "production";
 
-const APP_ENV = (process.env.APP_ENV ?? "development") as AppEnv;
+const requestedEnv = process.env.APP_ENV ?? "development";
+if (!["development", "staging", "production"].includes(requestedEnv)) {
+  throw new Error(
+    `[viewrr/config] Invalid APP_ENV "${requestedEnv}". Use development, staging or production.`,
+  );
+}
+const APP_ENV = requestedEnv as AppEnv;
 
 const IS_DEV = APP_ENV === "development";
 const IS_STAGING = APP_ENV === "staging";
