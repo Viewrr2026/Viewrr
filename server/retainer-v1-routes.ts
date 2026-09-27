@@ -7,6 +7,7 @@ import { rm } from "node:fs/promises";
 import { requireAuth } from "./auth-middleware";
 import { retainerPool, retainerError } from "./retainer-v1-db";
 import {
+  customRetainerInvitations,
   createCustomRetainer,
   proposeCustomRetainer,
   reviewProposal,
@@ -46,6 +47,8 @@ export function registerCustomRetainerRoutes(app: Express) {
   app.get("/api/custom-retainers/config", requireAuth, (_req, res) =>
     res.json({ enabled: process.env.CUSTOM_RETAINERS_ENABLED === "true" }),
   );
+  app.get("/api/custom-retainer-invitations", requireAuth,
+    asyncRoute(req => customRetainerInvitations(req.auth!.userId)));
   app.post(
     "/api/custom-retainers",
     requireAuth,
@@ -84,7 +87,7 @@ export function registerCustomRetainerRoutes(app: Express) {
         publicId(req),
         req.auth!.userId,
         positive.parse(req.body.version),
-        z.enum(["accept", "request_changes"]).parse(req.body.action),
+        z.enum(["accept", "request_changes", "decline"]).parse(req.body.action),
         z.string().max(5000).default("").parse(req.body.feedback),
       ),
     ),

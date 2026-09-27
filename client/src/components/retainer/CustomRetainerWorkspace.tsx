@@ -38,6 +38,9 @@ function useRefresh(publicId: string) {
   return () => {
     qc.invalidateQueries({ queryKey: ["custom-retainer", publicId] });
     qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] });
+    qc.invalidateQueries({ queryKey: ["custom-retainer-invitations"] });
+    qc.invalidateQueries({ queryKey: ["/api/projects"] });
+    qc.invalidateQueries({ queryKey: ["/api/invitations"] });
   };
 }
 export function CustomProposal({
@@ -90,14 +93,15 @@ export function CustomProposal({
       <h2 className="font-semibold">
         {data.pending
           ? `Proposal v${data.pending.version} — review and acceptance`
-          : "Agreed retainer structure"}
+          : data.hasAcceptedAgreement ? "Agreed retainer structure" : "Retainer proposal"}
       </h2>
       {data.feedback && (
         <p className="rounded-xl bg-amber-50 text-amber-900 p-3 text-sm whitespace-pre-wrap">
           Changes requested: {data.feedback}
         </p>
       )}
-      <PlanSummary plan={data.pending?.plan ?? data.plan} />
+      {data.status === "declined" && <p role="status">This retainer invitation was declined. No work has started.</p>}
+      <PlanSummary plan={data.pending?.plan ?? (data.hasAcceptedAgreement ? data.plan : data.latestPlan)} />
       {data.pending && data.pending.proposedBy !== userId && (
         <div className="space-y-3">
           <label className="block text-sm">
@@ -126,6 +130,10 @@ export function CustomProposal({
             >
               Request changes
             </button>
+            <button type="button" disabled={busy} className={buttonClass}
+              onClick={() => review("decline")}>
+              {data.status === "active" || data.status === "paused" ? "Decline amendment" : "Decline invitation"}
+            </button>
           </div>
         </div>
       )}
@@ -146,7 +154,7 @@ export function CustomProposal({
           disabled={busy}
           onClick={() => setEditing(true)}
         >
-          Revise and send proposal
+          Revise / counter proposal
         </button>
       )}
       {error && (

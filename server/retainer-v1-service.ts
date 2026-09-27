@@ -6,6 +6,7 @@ import {
   type CustomRetainerPlan,
 } from "../shared/retainer-v1";
 import {
+  retainerPool,
   retainerError,
   retainerTransaction,
   type RetainerDb,
@@ -339,7 +340,7 @@ export async function reviewProposal(
   publicId: string,
   userId: number,
   version: number,
-  action: "accept" | "request_changes",
+  action: "accept" | "request_changes" | "decline",
   feedback: string,
 ) {
   return retainerTransaction(async (db) => {
@@ -353,7 +354,13 @@ export async function reviewProposal(
       retainerError(
         "Refresh and review the current proposal from the other party",
       );
-    if (action === "request_changes") {
+    if (action === "decline") {
+      const alreadyAccepted = !!a.client_accepted_at && !!a.freelancer_accepted_at;
+      await db.query(`UPDATE retainer_agreements SET draft_data=NULL,proposal_feedback=$2,
+        status=CASE WHEN $3 THEN status ELSE 'declined' END WHERE id=$1`,
+        [a.id, feedback.trim().slice(0, 5000) || null, alreadyAccepted]);
+      if (!alreadyAccepted) await db.query("UPDATE projects SET status='declined' WHERE id=$1", [a.project_id]);
+    } else if (action === "request_changes") {
       if (!feedback.trim()) retainerError("Explain the requested changes", 400);
       await db.query(
         `UPDATE retainer_agreements SET draft_data=NULL,proposal_feedback=$2,status=CASE WHEN status IN ('active','paused') THEN status ELSE 'changes_requested' END WHERE id=$1`,
@@ -391,7 +398,7 @@ export async function reviewProposal(
       db,
       a,
       `proposal-review:${a.id}:${version}`,
-      `${a.title}: proposal ${action === "accept" ? "accepted" : "changes requested"}`,
+      `${a.title}: proposal ${action === "accept" ? "accepted" : action === "decline" ? "declined" : "changes requested"}`,
     );
     return { ok: true };
   });
@@ -431,6 +438,7 @@ export async function customWorkspace(publicId: string, userId: number) {
       pending: a.draft_data,
       feedback: a.proposal_feedback,
       status: a.status,
+      hasAcceptedAgreement: !!a.client_accepted_at && !!a.freelancer_accepted_at,
       clientId: a.client_id,
       freelancerId: a.freelancer_id,
       cycles: cycles.map((c) => ({
@@ -609,4 +617,29 @@ export async function reviewCustomWork(
     );
     return { ok: true };
   });
+}
+
+// Invitations are derived from agreement acceptance, including existing proposals.
+// No second invitation record can independently activate a retainer.
+export async function customRetainerInvitations(userId: number) {
+  return (await retainerPool().query(`
+    SELECT a.public_id AS "publicId", a.project_id AS "projectId", a.status,
+      v.created_by AS "senderId",
+      CASE WHEN v.created_by=a.client_id THEN a.freelancer_id ELSE a.client_id END AS "recipientId",
+      u.name AS "senderName", other_user.name AS "recipientName",
+      v.version_number AS version, v.snapshot->>'title' AS title,
+      v.snapshot->>'startDate' AS "startDate", v.snapshot->>'endDate' AS "endDate"
+    FROM retainer_agreements a
+    JOIN LATERAL (SELECT created_by,version_number,snapshot FROM retainer_agreement_versions
+      WHERE retainer_agreement_id=a.id ORDER BY version_number DESC LIMIT 1) v ON true
+    JOIN users u ON u.id=v.created_by
+    JOIN users other_user ON other_user.id=CASE WHEN v.created_by=a.client_id THEN a.freelancer_id ELSE a.client_id END
+    WHERE a.workflow_version=1 AND (a.client_id=$1 OR a.freelancer_id=$1)
+      AND (a.client_accepted_at IS NULL OR a.freelancer_accepted_at IS NULL)
+    ORDER BY a.id DESC`, [userId])).rows;
+}
+export async function unacceptedRetainerProjectIds(userId: number) {
+  return new Set((await retainerPool().query(`SELECT project_id FROM retainer_agreements
+    WHERE workflow_version=1 AND (client_id=$1 OR freelancer_id=$1)
+    AND (client_accepted_at IS NULL OR freelancer_accepted_at IS NULL)`, [userId])).rows.map(r => r.project_id as number));
 }

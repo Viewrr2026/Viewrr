@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { setRetainerTestDatabase } from "../retainer-v1-db";
 import {
+  customRetainerInvitations,
+  unacceptedRetainerProjectIds,
   createCustomRetainer,
   reviewProposal,
   proposeCustomRetainer,
@@ -514,4 +516,54 @@ test("amendments preserve started work and the accepted agreement until both par
   const invalid = structuredClone(w.plan);
   invalid.cycles[0].deliverables[0].quantity = 5;
   await assert.rejects(() => proposeCustomRetainer(publicId, 2, 2, invalid));
+});
+
+
+test("retainer invitations stay pending through counteroffers and activate only on mutual acceptance", async () => {
+  const original = plan();
+  const { agreementPublicId: pid } = await createCustomRetainer(2, 1, original);
+  const invitation = (await customRetainerInvitations(1)).find(i => i.publicId === pid)!;
+  assert.equal(invitation.senderId, 2);
+  assert.equal(invitation.recipientId, 1);
+  assert.ok((await unacceptedRetainerProjectIds(1)).has(invitation.projectId));
+  assert.ok(!(await customRetainerInvitations(3)).some(i => i.publicId === pid));
+  await assert.rejects(reviewProposal(pid, 2, 1, "decline", ""));
+  await assert.rejects(reviewProposal(pid, 3, 1, "decline", ""));
+  await reviewProposal(pid, 1, 1, "request_changes", "Please reduce the price");
+  assert.ok((await unacceptedRetainerProjectIds(2)).has(invitation.projectId));
+  const counter = structuredClone(original);
+  counter.title = "Counter proposal";
+  counter.cycles[0].amountPence = 150000;
+  await proposeCustomRetainer(pid, 1, 1, counter);
+  const receivedByFreelancer = (await customRetainerInvitations(2)).find(i => i.publicId === pid)!;
+  assert.equal(receivedByFreelancer.senderId, 1);
+  assert.equal(receivedByFreelancer.recipientId, 2);
+  assert.equal(receivedByFreelancer.version, 2);
+  await assert.rejects(reviewProposal(pid, 1, 1, "accept", ""));
+  await reviewProposal(pid, 2, 2, "accept", "");
+  assert.ok(!(await unacceptedRetainerProjectIds(1)).has(invitation.projectId));
+  assert.ok(!(await customRetainerInvitations(1)).some(i => i.publicId === pid));
+  assert.equal((await db.query("SELECT status FROM projects WHERE id=$1", [invitation.projectId])).rows[0].status, "active");
+  // A declined amendment must leave the accepted project active and unchanged.
+  counter.cycles[1].amountPence = 180000;
+  await proposeCustomRetainer(pid, 1, 2, counter);
+  await reviewProposal(pid, 2, 3, "decline", "Keep the agreed price");
+  const w = await customWorkspace(pid, 1);
+  assert.equal(w.status, "active");
+  assert.equal(w.pending, null);
+  assert.equal(w.plan.cycles[1].amountPence, original.cycles[1].amountPence);
+});
+
+test("declined initial retainer remains an invitation record and cannot be activated by replay", async () => {
+  const { agreementPublicId: pid } = await createCustomRetainer(1, 2, plan());
+  await scanRetainerDeadlines();
+  const notification = (await db.query("SELECT type FROM notifications WHERE link=$1", [`/retainer/${pid}`])).rows[0];
+  assert.equal(notification.type, "retainer_proposal");
+  await reviewProposal(pid, 2, 1, "decline", "Not available");
+  const invitation = (await customRetainerInvitations(2)).find(i => i.publicId === pid)!;
+  assert.equal(invitation.status, "declined");
+  assert.ok((await unacceptedRetainerProjectIds(2)).has(invitation.projectId));
+  assert.equal((await customWorkspace(pid, 2)).cycles.some(c => c.canWork), false);
+  await assert.rejects(reviewProposal(pid, 2, 1, "accept", ""));
+  await assert.rejects(proposeCustomRetainer(pid, 1, 1, plan()));
 });

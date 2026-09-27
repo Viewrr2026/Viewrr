@@ -50,8 +50,8 @@ export async function scanRetainerDeadlines() {
     ).rows;
     for (const n of batch) {
       await db.query(
-        `INSERT INTO notifications(recipient_id,actor_id,actor_name,type,message,link) VALUES($1,$1,'Viewrr','retainer_update',$2,$3)`,
-        [n.recipient_id, n.message, `/retainer/${n.public_id}`],
+        `INSERT INTO notifications(recipient_id,actor_id,actor_name,type,message,link) VALUES($1,$1,'Viewrr',$4,$2,$3)`,
+        [n.recipient_id, n.message, `/retainer/${n.public_id}`, n.event_key.startsWith("proposal:") ? "retainer_proposal" : "retainer_update"],
       );
       await db.query(
         "UPDATE retainer_notice_outbox SET delivered_at=NOW() WHERE id=$1",
