@@ -51,6 +51,7 @@
       "channel": "staging"
     },
     "production": {
+      "environment": "production",
       "developmentClient": false,
       "distribution": "store",
       "autoIncrement": true,

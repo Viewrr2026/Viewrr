@@ -10,7 +10,7 @@ import { PUBLIC_SITE_URL } from "@/config/env";
  */
 
 /** The web workspace — /your-work in client/src/App.tsx. */
-export const WEB_WORK_URL = `${PUBLIC_SITE_URL}/your-work`;
+export const WEB_WORK_URL = `${PUBLIC_SITE_URL}/#/your-work`;
 
 /** One project on the web. Used for retainer management and payment. */
 export function webProjectUrl(projectId: number): string {

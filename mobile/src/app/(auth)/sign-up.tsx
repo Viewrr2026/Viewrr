@@ -2,7 +2,9 @@ import { useRouter } from "expo-router";
 import { Briefcase, Check, ChevronLeft, Sparkles } from "lucide-react-native";
 import { useCallback, useRef, useState } from "react";
 import {
+  Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -23,6 +25,7 @@ import { ErrorState } from "@/components/ErrorState";
 import { Logo } from "@/components/Logo";
 import { Screen } from "@/components/Screen";
 import { TextField } from "@/components/TextField";
+import { LEGAL_URLS } from "@/config/env";
 import { describeRegistrationFailure, type AuthFailure } from "@/session/authErrors";
 import { useSession } from "@/session/SessionProvider";
 import { hitSlop, radii, spacing, typography, useTheme } from "@/theme";
@@ -91,6 +94,17 @@ export default function SignUp() {
 
   const clearFailure = useCallback(() => {
     setFailure((current) => (current ? null : current));
+  }, []);
+
+  const openPolicy = useCallback(async (policy: keyof typeof LEGAL_URLS) => {
+    try {
+      await Linking.openURL(LEGAL_URLS[policy]);
+    } catch {
+      Alert.alert(
+        "Couldn't open this page",
+        `Please try again or open ${LEGAL_URLS[policy]} in your browser.`,
+      );
+    }
   }, []);
 
   const submit = useCallback(async () => {
@@ -300,6 +314,21 @@ export default function SignUp() {
             <Text style={[styles.legal, { color: colors.mutedForeground }]}>
               Creating an account confirms you accept Viewrr's Terms and Privacy Policy.
             </Text>
+            <View style={styles.legalLinks}>
+              {(["terms", "privacy"] as const).map((policy) => (
+                <Pressable
+                  key={policy}
+                  accessibilityRole="link"
+                  accessibilityHint="Opens in your browser"
+                  onPress={() => void openPolicy(policy)}
+                  style={({ pressed }) => [styles.legalLink, pressed && styles.pressed]}
+                >
+                  <Text style={[styles.legalLinkText, { color: colors.primary }]}>
+                    {policy === "terms" ? "Terms of Service" : "Privacy Policy"}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -401,5 +430,20 @@ const styles = StyleSheet.create({
   legal: {
     ...typography.caption,
     textAlign: "center",
+  },
+  legalLinks: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: spacing[2],
+  },
+  legalLink: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: spacing[2],
+  },
+  legalLinkText: {
+    ...typography.small,
+    textDecorationLine: "underline",
   },
 });

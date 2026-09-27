@@ -1,5 +1,9 @@
 # Viewrr Mobile — Alpha 0.1
 
+> Historical alpha documentation: several status sections below predate current
+> authentication, messaging and work features. For release checks and known
+> submission gates, start with [APP_STORE_RELEASE.md](./APP_STORE_RELEASE.md).
+
 React Native (Expo, TypeScript, Expo Router) client for the Viewrr marketplace.
 
 `/mobile` is an **isolated npm package**. It has its own `package.json`,
