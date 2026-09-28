@@ -65,6 +65,7 @@ export default function App() {
               <Route path="/feed" component={Feed} />
               <Route path="/pro" component={ProViewr} />
               <Route path="/your-work" component={YourWork} />
+              <Route path="/project/:projectId" component={YourWork} />
               <Route path="/payouts" component={PayoutsEarnings} />
               <Route path="/terms" component={Terms} />
               <Route path="/privacy" component={Privacy} />

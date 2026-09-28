@@ -456,6 +456,14 @@ async function notify(
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
+  // Older mobile builds used a pathname instead of the web app's hash router.
+  app.get("/project/:projectId", (req, res) => {
+    if (!/^[1-9]\d*$/.test(req.params.projectId)) {
+      return res.status(400).send("Invalid project link");
+    }
+    return res.redirect(302, `/#/project/${req.params.projectId}`);
+  });
+
   // P0-04: Parse cookies so session tokens are accessible via req.cookies
   app.use(cookieParser());
   // PRD-019: Origin validation defence-in-depth (CSRF mitigation for cookie-auth unsafe methods)

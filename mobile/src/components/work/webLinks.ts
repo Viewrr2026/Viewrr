@@ -14,5 +14,5 @@ export const WEB_WORK_URL = `${PUBLIC_SITE_URL}/#/your-work`;
 
 /** One project on the web. Used for retainer management and payment. */
 export function webProjectUrl(projectId: number): string {
-  return `${PUBLIC_SITE_URL}/project/${projectId}`;
+  return `${PUBLIC_SITE_URL}/#/project/${projectId}`;
 }
