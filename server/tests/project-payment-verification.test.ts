@@ -1,3 +1,4 @@
+import { confirmStoredPayment } from "../payment-confirmation";
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -69,4 +70,39 @@ test('ledger ownership mismatch cannot unlock a paid project', async () => {
   await reset(); await fulfilVerifiedProjectPayment(intent,details);
   await db.exec('UPDATE payments SET client_id=3');
   assert.equal(await hasVerifiedProjectPayment(1),false);
+});
+
+test('confirmation resolves both reference formats to the stored Stripe ID before fulfilment', async () => {
+  for (const reference of ['pay_test','pi_test']) {
+    await reset();
+    let retrieved = '';
+    const result = await confirmStoredPayment(db as any, async id => { retrieved=id; return intent; },
+      async pi => { await fulfilVerifiedProjectPayment(pi,details); },1,1,reference);
+    assert.equal(retrieved,'pi_test'); assert.deepEqual(result,{ ok:true,status:'succeeded' });
+    assert.equal(await hasVerifiedProjectPayment(1),true);
+  }
+});
+test('unrelated user, project or payment reference never reaches Stripe', async () => {
+  await reset();
+  for (const [projectId,userId,reference] of [[1,3,'pay_test'],[2,1,'pay_test'],[1,1,'pi_stranger']] as const) {
+    await assert.rejects(confirmStoredPayment(db as any, async () => { assert.fail('Stripe must not be called'); },
+      async () => {},projectId,userId,reference), /Payment not found/);
+  }
+});
+test('pending processor status and failed fulfilment cannot report success', async () => {
+  await reset();
+  const pending=await confirmStoredPayment(db as any,async () => ({...intent,status:'processing'}),
+    async () => assert.fail('must not fulfil processing payment'),1,1,'pay_test');
+  assert.deepEqual(pending,{ok:false,status:'processing'});
+  await assert.rejects(confirmStoredPayment(db as any,async () => intent,
+    async () => { throw new Error('database unavailable'); },1,1,'pay_test'),/database unavailable/);
+  assert.equal(await hasVerifiedProjectPayment(1),false);
+});
+
+test('verified final payment completes an awaiting-payment project, while active work stays active', async () => {
+  await reset(); await db.exec("UPDATE projects SET status='awaiting_payment'");
+  await fulfilVerifiedProjectPayment(intent,details);
+  assert.equal((await db.query<any>('SELECT status FROM projects')).rows[0].status,'completed');
+  await reset(); await fulfilVerifiedProjectPayment(intent,details);
+  assert.equal((await db.query<any>('SELECT status FROM projects')).rows[0].status,'active');
 });
