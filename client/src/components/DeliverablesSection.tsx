@@ -454,6 +454,7 @@ function CardForm({
   const stripe    = useStripe();
   const elements  = useElements();
   const [paying, setPaying] = useState(false);
+  const [verificationPending, setVerificationPending] = useState(false);
   const [ready,  setReady]  = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -477,25 +478,35 @@ function CardForm({
         return;
       }
       if (paymentIntent?.status === "succeeded") {
-        // FR-03: notify backend (non-authoritative — webhook is the source of truth)
-        // The project will update via webhook even if this call fails
-        try {
-          await apiRequest("POST", "/api/stripe/confirm-intent", {
-            paymentIntentId, projectId, clientUserId,
-          });
-        } catch { /* non-fatal — webhook handles fulfilment */ }
+        const confirmation = await apiRequest("POST", "/api/stripe/confirm-intent", {
+          paymentIntentId: paymentIntent.id, projectId,
+        });
+        const result = await confirmation.json();
+        if (!result.ok || result.status !== "succeeded") {
+          setVerificationPending(true);
+          onError("Payment is awaiting verification. Do not pay again. Close this window and reopen your invoice to check its status.");
+          return;
+        }
         // Invalidate queries so UI refreshes when webhook updates project
         queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
         onSuccess();
       } else {
-        onError("Payment was not completed. Please try again.");
+        setVerificationPending(true);
+        onError("Payment is awaiting verification. Do not pay again; reopen your invoice to check its status.");
         setPaying(false);
       }
     } catch (e: any) {
-      onError(e.message || "Something went wrong");
-      setPaying(false);
+      setVerificationPending(true);
+      onError("We could not verify the payment yet. Do not pay again. Close this window and reopen your invoice to check its status.");
     }
   }
+
+  if (verificationPending) return (
+    <div className="space-y-4">
+      <p>We’re checking your payment. Please don’t pay again.</p>
+      <Button className="w-full" onClick={() => window.location.reload()}>Return to invoice and check status</Button>
+    </div>
+  );
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">

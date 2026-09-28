@@ -16,6 +16,8 @@ import * as schema from "../shared/schema";
 import { eq, isNull, inArray, and } from "drizzle-orm";
 import {
   createPayment,
+  confirmProjectPayment,
+  recoverProjectPayments,
   initiateRefund,
   claimStripeEvent,
   markEventProcessed,
@@ -4956,24 +4958,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // FR-03: Browser notification only — fulfilment is handled by webhook
-  // This endpoint records that the client-side confirmed, but does NOT mark project paid
+  // Server-side Stripe verification fallback; browser claims never establish payment.
   // PRD-018 A27: requireAuth
   app.post("/api/stripe/confirm-intent", requireAuth, async (req, res) => {
     try {
       const { paymentIntentId, projectId } = req.body;
       if (!paymentIntentId || !projectId) return res.status(400).json({ error: "paymentIntentId and projectId required" });
 
-      // Just verify the intent status with Stripe and return — webhook handles fulfilment
-      if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
-      const intent = await stripe.paymentIntents.retrieve(paymentIntentId as string);
-
-      if (intent.status !== "succeeded") {
-        return res.status(200).json({ ok: false, status: intent.status, message: "Payment still processing — project will update automatically" });
-      }
-
-      // Payment succeeded client-side — return status. Webhook will fulfil.
-      res.json({ ok: true, status: "processing", message: "Payment confirmed. Project will update within moments." });
+      const result = await confirmProjectPayment(Number(projectId), req.auth!.userId, String(paymentIntentId));
+      res.json(result);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -5011,21 +5004,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           return res.json({ received: true, duplicate: true });
         }
 
-        // Acknowledge receipt to Stripe immediately — must be within 30s.
-        // All processing runs in setImmediate so the response is never blocked.
-        res.json({ received: true });
-
-        setImmediate(async () => {
         try {
-          // FR-04: Delegate to canonical processor (WS-A extraction)
           await processStripeEvent(event, correlationId);
           await markEventProcessed(event.id);
-          console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", event: "stripe_event_processed", requestId: correlationId, stripeEventId: event.id, eventType: event.type }));
+          res.json({ received: true });
         } catch (processingError: any) {
-          console.error(JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "stripe_event_failed", requestId: correlationId, stripeEventId: event.id, eventType: event.type, error: processingError.message.slice(0, 500) }));
           await markEventProcessed(event.id, processingError.message);
+          console.error("[stripe/webhook] Processing failed:", processingError.message);
+          res.status(500).json({ error: "Payment event processing failed" });
         }
-        }); // end setImmediate
 
       } catch (e: any) {
         console.error("[stripe/webhook] Fatal error:", e.message);
@@ -5663,6 +5650,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (pw.project.clientId !== req.auth!.userId && pw.project.freelancerId !== req.auth!.userId) {
         return res.status(403).json({ error: 'Not authorised' });
       }
+      if (pw.project.isRetainer !== 1) await recoverProjectPayments(projectId, req.auth!.userId);
+      res.set("Cache-Control", "private, no-store");
       const invoice = await storage.getInvoiceByProject(projectId);
       if (!invoice) return res.status(404).json({ error: 'No invoice found' });
       // Also attach the freelancer's template for rendering

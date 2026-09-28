@@ -21,7 +21,6 @@ export default function Invoice() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [stripeOpen, setStripeOpen] = useState(false);
-  const [paid, setPaid] = useState(false); // local optimistic state
 
   const { data, isLoading, error } = useQuery<{ invoice: any; template: any }>({
     queryKey: ['/api/projects', projectId, 'invoice'],
@@ -50,7 +49,7 @@ export default function Invoice() {
   const lineItems: LineItem[] = (() => { try { return JSON.parse(invoice.lineItems || '[]'); } catch { return []; } })();
   const isClient = user?.id === invoice.clientId;
   const isFreelancer = user?.id === invoice.freelancerId;
-  const isPaid = paid || invoice.status === 'paid';
+  const isPaid = invoice.status === 'paid';
   const accentColor = template?.accentColor || '#FF5A1F';
 
   function handlePrint() {
@@ -236,7 +235,6 @@ export default function Invoice() {
         agreedAmountPence={invoice.totalPence}
         onPaymentDone={() => {
           setStripeOpen(false);
-          setPaid(true); // immediate optimistic update
           queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId, 'invoice'] });
           queryClient.invalidateQueries({ queryKey: ['/api/projects'] });
         }}

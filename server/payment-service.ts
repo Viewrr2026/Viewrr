@@ -1,3 +1,5 @@
+import { confirmStoredPayment } from "./payment-confirmation";
+import { retainerPool } from "./retainer-v1-db";
 import { fulfilVerifiedProjectPayment } from "./project-payment-verification";
 /**
  * PRD-007 — Viewrr Payment Domain Services
@@ -31,6 +33,37 @@ function getStripe(): Stripe {
 function getDb() {
   const sqlClient = neon(DB_URL);
   return drizzle(sqlClient, { schema });
+}
+
+export async function confirmProjectPayment(projectId: number, userId: number, reference: string) {
+  return confirmStoredPayment(retainerPool(), id => getStripe().paymentIntents.retrieve(id),
+    intent => handlePaymentIntentSucceeded(intent, `sync_${intent.id}`), projectId,userId,reference);
+}
+
+export async function recoverProjectPayments(projectId: number, userId: number) {
+  const db = retainerPool();
+  const { rows } = await db.query(`SELECT p.public_id FROM payments p JOIN projects j ON j.id=p.project_id
+    WHERE p.project_id=$1 AND (j.client_id=$2 OR j.freelancer_id=$2) AND p.payment_kind='one_off'
+      AND p.stripe_payment_intent_id IS NOT NULL
+      AND p.status IN ('pending','requires_payment_method','requires_confirmation','processing')
+    ORDER BY p.id DESC LIMIT 20`,[projectId,userId]);
+  for (const p of rows) {
+    const result = await confirmProjectPayment(projectId,userId,p.public_id);
+    if (result.ok) return;
+  }
+}
+
+// Bounded restart recovery: Stripe reads only, never creates or confirms a charge.
+export async function recoverRecentProjectPayments() {
+  if (!process.env.STRIPE_SECRET_KEY) return;
+  const { rows } = await retainerPool().query(`SELECT DISTINCT project_id, client_id FROM payments
+    WHERE payment_kind='one_off' AND status IN ('pending','requires_payment_method','requires_confirmation','processing')
+      AND stripe_payment_intent_id IS NOT NULL AND created_at >= $1 LIMIT 20`,
+    [new Date(Date.now()-24*60*60*1000).toISOString()]);
+  for (const p of rows) {
+    try { await recoverProjectPayments(p.project_id,p.client_id); }
+    catch (error: any) { console.error('[payment-recovery]', p.project_id, error.message); }
+  }
 }
 
 // ── Nano ID generator (deterministic-safe, no Date.now()) ─────────────────
@@ -190,6 +223,9 @@ export async function createPayment(
   if (project.clientId !== actingUserId)
     throw Object.assign(new Error("You are not authorised to pay this project"), { status: 403 });
 
+  // Check existing attempts with Stripe before offering another charge. Fail closed on lookup errors.
+  await recoverProjectPayments(projectId, actingUserId);
+
   // 2. Load and validate invoice (FR-01: amount from DB)
   const invoiceRows = await db
     .select()
@@ -218,7 +254,7 @@ export async function createPayment(
     .where(
       and(
         eq(schema.payments.invoiceId, invoiceId),
-        eq(schema.payments.status, "pending")
+        drizzleSql`${schema.payments.status} IN ('pending','requires_payment_method','requires_confirmation','processing')`
       )
     );
 
@@ -228,6 +264,8 @@ export async function createPayment(
     if (ep.stripePaymentIntentId) {
       try {
         const existingIntent = await stripe.paymentIntents.retrieve(ep.stripePaymentIntentId);
+        if (["processing", "requires_action", "requires_capture", "succeeded"].includes(existingIntent.status))
+          throw Object.assign(new Error("An existing payment is being confirmed. Do not pay again."), { status: 409 });
         if (
           existingIntent.status === "requires_payment_method" ||
           existingIntent.status === "requires_confirmation"
@@ -242,7 +280,7 @@ export async function createPayment(
             publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "",
           };
         }
-      } catch { /* intent may be expired — fall through to create new */ }
+      } catch { throw Object.assign(new Error("Unable to check the existing payment. Do not pay again yet."), { status: 502 }); }
     }
   }
 

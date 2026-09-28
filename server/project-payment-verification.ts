@@ -52,7 +52,7 @@ export async function fulfilVerifiedProjectPayment(intent: Stripe.PaymentIntent,
         details.stripeFeePence === null ? null : p.platform_fee_pence-details.stripeFeePence]);
     // Replays also repair incomplete fulfilment left by older deployments.
     await db.query("UPDATE invoices SET status='paid', paid_at=COALESCE(paid_at,$2) WHERE id=$1", [i.id, p.succeeded_at || now]);
-    await db.query("UPDATE projects SET payment_status='paid' WHERE id=$1", [j.id]);
+    await db.query("UPDATE projects SET payment_status='paid', status=CASE WHEN status='awaiting_payment' THEN 'completed' ELSE status END WHERE id=$1", [j.id]);
     return firstSuccess;
   });
 }
