@@ -1,3 +1,4 @@
+import { hasVerifiedProjectPayment, rejectClientPaymentConfirmation } from "./project-payment-verification";
 import { registerCustomRetainerRoutes, guardCustomRetainerLegacy } from "./retainer-v1-routes";
 import { startRetainerWorker } from "./retainer-v1-worker";
 import type { Express, Request, Response, NextFunction } from "express";
@@ -1449,6 +1450,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
 
       if (!hasAccess) return res.status(403).json({ error: "Forbidden" });
+      if (record.resource_type === "deliverable" && record.owner_user_id !== userId) {
+        const projects = await sql`SELECT client_id, is_retainer FROM projects WHERE id=${record.resource_id}`;
+        if (projects[0]?.client_id === userId && projects[0]?.is_retainer !== 1 &&
+            !(await hasVerifiedProjectPayment(record.resource_id))) {
+          return res.status(403).json({ error: "Verified payment required", code: "awaiting_payment" });
+        }
+      }
+      res.set("Cache-Control", "private, no-store");
 
       // FR-25: 15-min presigned download URL
       const downloadUrl = await createPresignedDownloadUrl(record.object_key, 900);
@@ -2752,7 +2761,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // ─── Confirm final payment → marks project completed ──────────────────────
+  // ─── Legacy browser payment confirmation (non-authoritative) ──────────────────────
   // A0-F5
   app.post("/api/projects/:id/confirm-payment", requireAuth, async (req, res) => {
     try {
@@ -2763,23 +2772,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (pw.project.clientId !== req.auth!.userId) {
         return res.status(403).json({ error: "Only the client can confirm payment" });
       }
-      // Mark project completed + paid
-      await storage.updateProjectStatus(projectId, "completed", "paid");
-      // Notify freelancer
-      await notify({
-        recipientId: pw.project.freelancerId,
-        actorId:     pw.project.clientId,
-        actorName:   pw.client.name,
-        actorAvatar: pw.client.avatar ?? null,
-        type:        "payment_confirmed",
-        message:     `${pw.client.name} has confirmed final payment for "${pw.project.title}" — your work is now fully released.`,
-        link:        "/your-work",
-        read:        0,
-        // `/your-work` dropped the project id entirely; this is the fix.
-        targetType:  "project",
-        targetId:    projectId,
-      });
-      res.json({ success: true });
+      return rejectClientPaymentConfirmation(req, res);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -3738,7 +3731,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // and `embedUrl` are never serialised at all.
   //
   // GATE CONDITION (contract D):
-  //   locked = (viewer is the CLIENT party) AND (project.paymentStatus !== "paid")
+  // One-off clients need a matching verified ledger payment; legacy retainers
+  // retain their existing gate (custom cycles use their separate media route).
   // The freelancer party always receives URLs — it is their own work. Admins
   // always receive URLs; note that `assertProjectParty` has no admin bypass, so
   // an admin who is not a party is rejected before the gate is even evaluated
@@ -3749,7 +3743,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const list = await storage.getDeliverables(Number(req.params.id));
 
       const isAdmin = (req.auth as any)?.role === "admin" || (req.auth as any)?.isAdmin === true;
-      const locked = role === "client" && project.paymentStatus !== "paid" && !isAdmin;
+      const verified = project.isRetainer === 1 ? project.paymentStatus === "paid" : await hasVerifiedProjectPayment(project.id);
+      const locked = role === "client" && !isAdmin && !verified;
 
       res.set("Cache-Control", "private, no-store");
       res.json(list.map(d => ({
@@ -4688,8 +4683,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const link = await stripe.accountLinks.create({
         account: user.stripeAccountId,
-        refresh_url: `${APP_BASE_URL}/#/payouts?stripe=refresh`,
-        return_url: `${APP_BASE_URL}/#/payouts?stripe=complete`,
+        refresh_url: `${APP_BASE_URL}/?stripe=refresh#/payouts`,
+        return_url: `${APP_BASE_URL}/?stripe=complete#/payouts`,
         type: "account_onboarding",
       });
 
@@ -4794,7 +4789,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // PRD-015 FR-17: Expired Stripe Account Link — refresh URL handler
-  // When Stripe sends user to refresh_url, they GET /#/payouts?stripe=refresh
+  // When Stripe sends user to refresh_url, they GET /?stripe=refresh#/payouts
   // The frontend handles this URL param and auto-calls onboarding-link again.
   // (No server endpoint needed — the frontend re-calls /api/stripe/onboarding-link)
 
@@ -5765,15 +5760,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // PATCH /api/invoices/:id/paid — mark invoice paid (only client on the project)
+  // Legacy invoice confirmation: browser requests cannot set financial state.
   // PRD-018 B10: requireAuth + verify caller is client on project
   app.patch('/api/invoices/:id/paid', requireAuth, async (req, res) => {
     try {
       const invoice = await storage.getInvoiceById(Number(req.params.id));
       if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
       if (invoice.clientId !== req.auth!.userId) return res.status(403).json({ error: 'Only the client can mark an invoice paid' });
-      await storage.markInvoicePaid(Number(req.params.id));
-      res.json({ success: true });
+      return rejectClientPaymentConfirmation(req, res);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

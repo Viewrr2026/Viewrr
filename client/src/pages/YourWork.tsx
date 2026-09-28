@@ -1088,7 +1088,7 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                       View Files ↓
                     </span>
                     <span className="text-[10px] bg-primary text-white font-semibold px-2.5 py-1 rounded-full">
-                      {pw.project.status === "awaiting_payment" ? "Approve &amp; Pay" : "Approve Stage"}
+                      {pw.project.status === "awaiting_payment" ? "Approve & Pay" : "Approve Stage"}
                     </span>
                     <span className="text-[10px] border border-border text-muted-foreground font-semibold px-2.5 py-1 rounded-full">
                       Request Changes
