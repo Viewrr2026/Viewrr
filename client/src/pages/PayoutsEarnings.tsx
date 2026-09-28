@@ -531,7 +531,8 @@ function PayoutAccount({
       const res = await apiRequest("POST", "/api/stripe/dashboard-link", { userId });
       if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error((b as any).error || "Could not open Stripe dashboard"); }
       const { url } = await res.json();
-      window.open(url, "_blank", "noopener,noreferrer");
+      // Same-tab navigation remains available after the asynchronous link request.
+      window.location.assign(url);
     } catch (e: any) {
       setDashboardError(e.message ?? "We couldn't open Stripe. Please try again.");
     } finally {

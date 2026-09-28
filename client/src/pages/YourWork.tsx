@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/components/AuthProvider";
-import { Link } from "wouter";
+import { Link, useParams } from "wouter";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -2732,6 +2732,8 @@ function FreelancerEarningsPanel({ userId }: { userId: number }) {
 
 export default function YourWork() {
   const { user } = useAuth();
+  const { projectId: linkedProjectId } = useParams<{ projectId?: string }>();
+  const openedLink = useRef<string | null>(null);
   const [openProject, setOpenProject] = useState<ProjectWithDetails | null>(null);
   const [filter, setFilter] = useState<"all" | "active" | "completed" | "none">("none");
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -2813,6 +2815,18 @@ export default function YourWork() {
     refetchInterval: 10000, // Pick up acceptance by the other party while this page is open.
     retry: false,
   });
+
+  // Resolve app links only from projects accessible to the signed-in user.
+  // Remember the link so polling does not reopen a dismissed workspace.
+  useEffect(() => {
+    if (!user || !linkedProjectId) return;
+    const key = `${user.id}:${linkedProjectId}`;
+    if (openedLink.current === key) return;
+    const project = projects.find(p => String(p.project.id) === linkedProjectId);
+    if (!project) return;
+    openedLink.current = key;
+    void openProjectOrRetainer(project);
+  }, [linkedProjectId, user?.id, projects]);
 
   // Keep open project in sync with refetched data
   useEffect(() => {
