@@ -1,3 +1,4 @@
+import { fulfilVerifiedProjectPayment } from "./project-payment-verification";
 /**
  * PRD-007 — Viewrr Payment Domain Services
  *
@@ -840,7 +841,7 @@ export async function handlePaymentIntentSucceeded(
   const payment = paymentRows[0];
 
   // Idempotency: if already succeeded, skip
-  if (payment.status === "succeeded") {
+  if (payment.status === "succeeded" && payment.paymentKind !== "one_off") {
     console.log("[webhook] payment_intent.succeeded already processed:", viewrrPaymentId);
     return;
   }
@@ -881,6 +882,16 @@ export async function handlePaymentIntentSucceeded(
     }
   } catch (e: any) {
     console.warn("[webhook] Could not retrieve charge details (non-fatal):", e.message);
+  }
+
+  if (payment.paymentKind === "one_off") {
+    const changed = await fulfilVerifiedProjectPayment(intent, { chargeId, balanceTxId, stripeFeePence, applicationFeeId });
+    if (changed) {
+      await auditLog({ paymentId: payment.id, actorType: "webhook", action: "payment_intent_succeeded",
+        afterState: { status: "succeeded", stripeChargeId: chargeId }, correlationId });
+      await sendPaymentNotifications(payment, "succeeded");
+    }
+    return;
   }
 
   const netPlatformRevenuePence =
