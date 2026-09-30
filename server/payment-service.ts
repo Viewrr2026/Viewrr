@@ -720,7 +720,7 @@ export async function processStripeEvent(
 
           if (event.type === "payout.paid") {
             await storage.createNotification({
-              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
               message: `\u2705 Payment Complete — Your earnings of £${(payout.amount / 100).toFixed(2)} have successfully reached your bank account.`,
               link: "/your-work", read: 0,
@@ -732,7 +732,7 @@ export async function processStripeEvent(
                 ? new Date(payout.arrival_date * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
                 : null;
               await storage.createNotification({
-                recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+                recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
                 type: "payment_received",
                 message: `\uD83D\uDCB8 Your payout is on its way — Stripe has initiated your payout of \u00a3${(payout.amount / 100).toFixed(2)}.${arrivalStr ? ` Estimated bank arrival: ${arrivalStr}.` : ""}`,
                 link: "/your-work", read: 0,
@@ -740,7 +740,7 @@ export async function processStripeEvent(
             }
           } else if (event.type === "payout.failed") {
             await storage.createNotification({
-              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
               message: `A payout of \u00a3${(payout.amount / 100).toFixed(2)} failed. Please check your bank details in your Stripe account.`,
               link: "/your-work", read: 0,
@@ -766,7 +766,7 @@ export async function processStripeEvent(
           const amountPence = available?.amount ?? 0;
           if (amountPence > 0) {
             await storage.createNotification({
-              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
               message: `\uD83C\uDF89 Your earnings are now available — Stripe has released \u00a3${(amountPence / 100).toFixed(2)} and will automatically send it to your bank according to your payout schedule.`,
               link: "/your-work", read: 0,
