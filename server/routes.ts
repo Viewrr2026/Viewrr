@@ -97,12 +97,14 @@ import path from "path";
 import fs from "fs";
 import os from "os";
 import Stripe from "stripe";
+import { verifyStripeWebhook } from "./stripe-webhook-verification";
 
 // ── Stripe setup ──────────────────────────────────────────────────
 const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2025-02-24.acacia" as any })
   : null;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
+const STRIPE_CONNECT_WEBHOOK_SECRET = process.env.STRIPE_CONNECT_WEBHOOK_SECRET ?? "";
 const VIEWRR_FEE_PERCENT = 11; // 11% platform fee
 const APP_BASE_URL = process.env.APP_BASE_URL ?? "https://www.viewrr.co.uk";
 
@@ -4989,13 +4991,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       try {
         if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
         const sig = req.headers["stripe-signature"] as string;
-        if (!sig || !STRIPE_WEBHOOK_SECRET) {
+        if (!sig || (!STRIPE_WEBHOOK_SECRET && !STRIPE_CONNECT_WEBHOOK_SECRET)) {
           return res.status(400).json({ error: "Missing signature or webhook secret" });
         }
 
         let event: Stripe.Event;
         try {
-          event = stripe.webhooks.constructEvent((req as any).rawBody, sig, STRIPE_WEBHOOK_SECRET);
+          event = verifyStripeWebhook(stripe, (req as any).rawBody, sig, {
+            platform: STRIPE_WEBHOOK_SECRET,
+            connect: STRIPE_CONNECT_WEBHOOK_SECRET,
+          });
         } catch (err: any) {
           console.error("[webhook] Signature failed:", err.message);
           return res.status(400).json({ error: "Invalid signature" });
