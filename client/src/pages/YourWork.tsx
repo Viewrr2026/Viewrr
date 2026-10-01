@@ -845,7 +845,7 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                     ))}
                   </div>
 
-                  <ProjectEstimate projectId={pw.project.id} userId={user!.id} />
+                  <ProjectEstimate projectId={pw.project.id} userId={currentUserId} />
                   {/* Progress tab */}
                   {leftTab === "progress" && (
                     <>
