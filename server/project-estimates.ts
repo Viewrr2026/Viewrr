@@ -74,3 +74,35 @@ export async function requireProjectEstimate(id:number,finalSubmission=false) {
   if(finalSubmission&&latest&&!(await db.query('SELECT id FROM invoices WHERE project_id=$1 LIMIT 1',[id])).rows.length)
     retainerError('Send the agreed final invoice before submitting final delivery.');
 }
+
+/** Invitation acceptance, project and its agreed provisional invoice are one transaction. */
+export async function acceptEstimatedInvitation(invitationId:number,userId:number) {
+  const { invitationEstimate }=await import('../shared/project-estimate');
+  const camel=(row:any)=>Object.fromEntries(Object.entries(row).map(([k,v])=>[k.replace(/_([a-z])/g,(_,c)=>c.toUpperCase()),v]));
+  return retainerTransaction(async db=>{
+    const {rows:[inv]}=await db.query('SELECT * FROM project_invitations WHERE id=$1 FOR UPDATE',[invitationId]);
+    if(!inv)retainerError('Invitation not found',404);
+    if(inv.recipient_id!==userId)retainerError('Not authorised',403);
+    if(inv.is_retainer===1)retainerError('Use the retainer acceptance flow');
+    if(inv.accepted_project_id){
+      const {rows:[p]}=await db.query('SELECT * FROM projects WHERE id=$1',[inv.accepted_project_id]);
+      return {invitation:camel(inv),project:camel(p),replayed:true};
+    }
+    if(inv.status!=='pending')retainerError('This invitation is no longer pending');
+    const {rows:people}=await db.query('SELECT id,name,role FROM users WHERE id IN ($1,$2)',[inv.sender_id,inv.recipient_id]);
+    const sender=people.find(p=>p.id===inv.sender_id),recipient=people.find(p=>p.id===inv.recipient_id);
+    if(!sender||!recipient||sender.id===recipient.id)retainerError('Two participants are required',400);
+    const client=sender.role==='client'?sender:recipient,freelancer=sender.role==='client'?recipient:sender;
+    let estimate:any=null;
+    // Older invitations may have free-text budget ranges, requiring explicit workspace agreement.
+    try{estimate=invitationEstimate(inv.title,inv.budget);}catch{}
+    const now=new Date().toISOString();
+    const {rows:[p]}=await db.query(`INSERT INTO projects(client_id,freelancer_id,title,description,status,current_stage,client_name,freelancer_name,brief_category,is_retainer,planning_status,agreed_amount_pence,created_at)
+      VALUES($1,$2,$3,$4,'active',0,$5,$6,$7,0,'planning_required',$8,$9) RETURNING *`,
+      [client.id,freelancer.id,inv.title,inv.description??'',client.name,freelancer.name,inv.category??'',estimate?.totalPence??null,now]);
+    if(estimate)await db.query(`INSERT INTO project_estimate_versions(project_id,version,proposed_by,snapshot,status,reviewed_by,reviewed_at)
+      VALUES($1,1,$2,$3,'accepted',$4,NOW())`,[p.id,inv.sender_id,JSON.stringify(estimate),inv.recipient_id]);
+    await db.query("UPDATE project_invitations SET status='accepted',accepted_project_id=$2 WHERE id=$1",[inv.id,p.id]);
+    return {invitation:camel({...inv,status:'accepted',accepted_project_id:p.id}),project:camel(p),replayed:false};
+  });
+}

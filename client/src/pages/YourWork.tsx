@@ -1962,7 +1962,7 @@ function InvitationCard({
         )}
         {inv.budget && (
           <span className="px-2.5 py-1 rounded-full text-[11px] bg-secondary text-muted-foreground border border-border">
-            {inv.budget}
+            Provisional estimate: {inv.budget}
           </span>
         )}
         {inv.timeline && (

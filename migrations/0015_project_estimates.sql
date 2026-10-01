@@ -13,4 +13,5 @@ CREATE TABLE IF NOT EXISTS project_estimate_versions (
   UNIQUE(project_id,version)
 );
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS estimate_version_id BIGINT REFERENCES project_estimate_versions(id);
+ALTER TABLE project_invitations ADD COLUMN IF NOT EXISTS accepted_project_id INTEGER REFERENCES projects(id);
 COMMIT;

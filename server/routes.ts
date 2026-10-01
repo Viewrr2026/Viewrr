@@ -1,6 +1,7 @@
+import { invitationEstimate } from "../shared/project-estimate";
 import { createCompatibleConnectAccount } from "./connect-account-create";
 import { registerProjectEstimateRoutes } from "./project-estimate-routes";
-import { issueProjectInvoice,requireProjectEstimate } from "./project-estimates";
+import { issueProjectInvoice,requireProjectEstimate,acceptEstimatedInvitation } from "./project-estimates";
 import { adjustedEarnings } from "./payment-refund-sync";
 import { hasVerifiedProjectPayment, rejectClientPaymentConfirmation } from "./project-payment-verification";
 import { registerCustomRetainerRoutes, guardCustomRetainerLegacy } from "./retainer-v1-routes";
@@ -3095,6 +3096,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { recipientId, title, description, category, budget, timeline, startStage,
               isRetainer, billingCycle, deliverablesPerCycle, totalCycles } = req.body;
       if (!recipientId || !title) return res.status(400).json({ error: "Missing fields" });
+      if (!isRetainer) {
+        try { invitationEstimate(String(title),budget); }
+        catch(e:any) { return res.status(400).json({error:e.message}); }
+      }
       // A0: senderId is always the authenticated caller
       const inv = await storage.createInvitation({
         senderId: req.auth!.userId, recipientId: Number(recipientId),
@@ -3149,6 +3154,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const existing = await db.select().from(schema.projectInvitations).where(eq(schema.projectInvitations.id, Number(req.params.id))).limit(1);
     if (!existing.length) return res.status(404).json({ error: "Not found" });
     if (req.auth!.userId !== existing[0].recipientId) return res.status(403).json({ error: "Forbidden." });
+    if (!existing[0].isRetainer) {
+      try {
+        const result=await acceptEstimatedInvitation(Number(req.params.id),req.auth!.userId);
+        if(!result.replayed) await notify({recipientId:existing[0].senderId,actorId:req.auth!.userId,actorName:"Viewrr",actorAvatar:null,
+          type:"project_accepted",message:`Your project invitation and provisional estimate for "${existing[0].title}" were accepted.`,link:"/your-work",read:0,targetType:"project",targetId:Number(result.project.id)});
+        return res.json(result);
+      } catch(e:any) { return res.status(e.status??500).json({error:e.status?e.message:"Unable to accept the invitation"}); }
+    }
     const inv = await storage.updateInvitationStatus(Number(req.params.id), "accepted");
     if (!inv) return res.status(404).json({ error: "Not found" });
     const sender = await storage.getUser(inv.senderId);
@@ -3213,6 +3226,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const existingDecline = await db.select().from(schema.projectInvitations).where(eq(schema.projectInvitations.id, Number(req.params.id))).limit(1);
     if (!existingDecline.length) return res.status(404).json({ error: "Not found" });
     if (req.auth!.userId !== existingDecline[0].recipientId) return res.status(403).json({ error: "Forbidden." });
+    if (existingDecline[0].status !== "pending") return res.status(409).json({error:"This invitation is no longer pending"});
     const inv = await storage.updateInvitationStatus(Number(req.params.id), "declined");
     if (!inv) return res.status(404).json({ error: "Not found" });
     const recipient = await storage.getUser(inv.recipientId);
