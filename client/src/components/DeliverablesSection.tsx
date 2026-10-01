@@ -148,13 +148,13 @@ function WatermarkLayer({ username = "" }: { username?: string }) {
       <div
         className="relative z-10 flex flex-col items-center gap-1.5 px-5 py-3 rounded-2xl border-2"
         style={{
-          background: "rgba(0,0,0,0.72)",
+          background: "rgba(0,0,0,0.38)",
           borderColor: "rgba(255,90,31,0.6)",
           backdropFilter: "blur(4px)",
         }}
       >
         <Lock size={18} style={{ color: "#FF5A1F" }} />
-        <p className="text-white text-xs font-bold tracking-wide uppercase">Watermarked preview</p>
+        <p className="text-white text-xs font-bold tracking-wide uppercase">Viewrr preview</p>
         {username && (
           <p className="text-white/70 text-[10px] font-semibold" style={{ color: "rgba(255,90,31,0.9)" }}>
             @{username} on Viewrr
@@ -217,7 +217,7 @@ function EmbedModal({
           <span className="text-lg">{info.logo}</span>
           <div>
             <p className="font-semibold text-white text-sm">{deliverable.label}</p>
-            <p className="text-xs text-white/50">{info.name}</p>
+            <p className="text-xs text-white/70">{info.name} · External provider access and sign-in may be required</p>
           </div>
           {isLocked ? (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: "rgba(255,90,31,0.2)", color: "#FF5A1F", border: "1px solid rgba(255,90,31,0.4)" }}>
@@ -647,7 +647,7 @@ export function StripePaymentDialog({
     }
   }
 
-  const isDismissable = step !== "card";
+  const isDismissable = true; // Closing does not cancel or confirm a payment.
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v && isDismissable) onClose(); }}>
@@ -831,6 +831,11 @@ export default function DeliverablesSection({
   const [invoicePreviewOpen, setInvoicePreviewOpen] = useState(false);
   const [sendingInvoice, setSendingInvoice] = useState(false);
   const [lineItems, setLineItems] = useState([{ description: '', quantity: 1, unitPricePence: 0, priceStr: '' }]);
+  const { data: estimateData } = useQuery<any>({
+    queryKey: ['project-estimates', projectId],
+    queryFn: async () => (await apiRequest('GET', `/api/projects/${projectId}/estimates`)).json(),
+    enabled: isFreelancer,
+  });
   const [invoiceNotes, setInvoiceNotes] = useState('');
   const [vatPercent, setVatPercent] = useState(0);
 
@@ -934,6 +939,7 @@ export default function DeliverablesSection({
           )}
         </div>
 
+        {existingInvoice && <Button variant="outline" size="sm" onClick={() => setLocation(`/invoice/${projectId}`)}><FileText size={14} /> View invoice and payment history</Button>}
         {/* ── Client: awaiting payment banner ───────────────────────────────── */}
         {isClient && (isWatermarked || hasLockedFiles) && deliverables.length > 0 && (
           <div className="space-y-2">
@@ -963,18 +969,18 @@ export default function DeliverablesSection({
                 </Button>
                 <button
                   className="text-xs text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
-                  onClick={() => setPaymentDialogOpen(true)}
+                  disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
                 >
-                  Pay without invoice
+                  Open payment options
                 </button>
               </div>
             ) : (
               <Button
                 className="w-full text-white rounded-xl gap-2 font-semibold text-sm h-10"
                 style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                onClick={() => setPaymentDialogOpen(true)}
+                disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
               >
-                <CreditCard size={14} /> Pay {freelancerName} to unlock →
+                <FileText size={14} /> Waiting for the freelancer’s invoice
               </Button>
             )}
           </div>
@@ -1137,18 +1143,18 @@ export default function DeliverablesSection({
               </Button>
               <button
                 className="text-xs text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
-                onClick={() => setPaymentDialogOpen(true)}
+                disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
               >
-                Pay without invoice
+                Open payment options
               </button>
             </div>
           ) : (
             <Button
               className="w-full text-white rounded-xl gap-2 font-semibold mt-1 text-sm h-10"
               style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-              onClick={() => setPaymentDialogOpen(true)}
+              disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
             >
-              <CreditCard size={14} /> Pay {freelancerName} to unlock →
+              <FileText size={14} /> Waiting for the freelancer’s invoice
             </Button>
           )
         )}
@@ -1171,7 +1177,7 @@ export default function DeliverablesSection({
         projectTitle={projectTitle}
         freelancerName={freelancerName}
         clientUserId={clientId}
-        agreedAmountPence={agreedAmountPence}
+        agreedAmountPence={existingInvoice?.invoice?.totalPence ?? agreedAmountPence}
         onClose={() => setPaymentDialogOpen(false)}
         onPaymentDone={() => {
           setPaymentDialogOpen(false);
@@ -1197,6 +1203,11 @@ export default function DeliverablesSection({
             {/* Line items */}
             <div className="space-y-2">
               <Label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Line Items</Label>
+              {estimateData?.versions?.[0]?.status === 'accepted' && <button type="button" className="text-sm underline mb-3" onClick={() => {
+                const estimate=estimateData.versions[0].snapshot;
+                setLineItems(estimate.lineItems.map((i:any)=>({...i,priceStr:(i.unitPricePence/100).toFixed(2)})));
+                setVatPercent(estimate.vatPercent);
+              }}>Use the agreed estimate items and prices</button>}
               {lineItems.map((item, i) => (
                 <div key={i} className="grid grid-cols-[1fr,60px,90px,32px] gap-2 items-center">
                   <Input
@@ -1228,7 +1239,7 @@ export default function DeliverablesSection({
                         const raw = e.target.value.replace(/[^0-9.]/g, '');
                         let pence = Math.round(parseFloat(raw || '0') * 100);
                         // Clamp: don't let this item push subtotal over agreed budget
-                        if (agreedAmountPence) {
+                        if (agreedAmountPence && !estimateData?.versions?.length) {
                           const othersPence = lineItems.reduce((s, li, j) => j === i ? s : s + li.unitPricePence * li.quantity, 0);
                           const maxPence = Math.max(0, agreedAmountPence - othersPence);
                           const clamped = Math.min(pence, Math.floor(maxPence / item.quantity));
@@ -1287,7 +1298,7 @@ export default function DeliverablesSection({
               const subtotal = lineItems.reduce((s, i) => s + i.unitPricePence * i.quantity, 0);
               const vat = vatPercent ? Math.round(subtotal * vatPercent / 100) : 0;
               const total = subtotal + vat;
-              const overBudget = agreedAmountPence && subtotal > agreedAmountPence;
+              const overBudget = !estimateData?.versions?.length && agreedAmountPence && subtotal > agreedAmountPence;
               if (subtotal === 0) return null;
               return (
                 <div className="space-y-2">
@@ -1314,7 +1325,7 @@ export default function DeliverablesSection({
 
           {(() => {
             const subtotalCheck = lineItems.reduce((s, i) => s + i.unitPricePence * i.quantity, 0);
-            const isOverBudget = !!(agreedAmountPence && subtotalCheck > agreedAmountPence);
+            const isOverBudget = !!(!estimateData?.versions?.length && agreedAmountPence && subtotalCheck > agreedAmountPence);
             return (
               <div className="flex gap-2 mt-4">
                 <Button variant="outline" className="flex-1" onClick={() => setInvoiceOpen(false)}>Later</Button>

@@ -4,7 +4,7 @@
  * Used by freelancers to define how they'll deliver a project.
  */
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -266,7 +266,9 @@ export default function ProjectPlanBuilder({
   const { data: existingStages = [] } = useQuery<ProjectStage[]>({
     queryKey: [`/api/projects/${projectId}/stages`],
     enabled: ["plan_draft", "client_changes", "awaiting_client", "confirmed"].includes(planningStatus),
-    onSuccess: (data) => {
+  });
+  useEffect(() => {
+    const data = existingStages;
       if (data.length > 0 && stages.length === 0) {
         setStages(data.map(s => makeDraft({
           id: `existing_${s.id}`,
@@ -278,8 +280,7 @@ export default function ProjectPlanBuilder({
           revisionAllowance: s.revisionAllowance,
         })));
       }
-    },
-  });
+  }, [existingStages]);
 
   // Mutations
   const bulkMutation = useMutation({

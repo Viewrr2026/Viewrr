@@ -6,7 +6,7 @@ import { transformSync } from 'esbuild';
 // Run the actual switch cases with database/storage adapters, without Stripe network calls.
 const source = readFileSync(new URL('../payment-service.ts', import.meta.url), 'utf8');
 const cases = source.slice(source.indexOf('    case "payout.created":'), source.indexOf('    case "charge.dispute.created":'));
-const js = transformSync(`async function handle(event, sqlClient, storage) { switch(event.type) { ${cases} } }`, { loader: 'ts', target: 'es2022' }).code;
+const js = transformSync(`async function handle(event, sqlClient, storage, getStripe = () => ({payouts:{retrieve:async()=>event.data.object},balance:{retrieve:async()=>event.data.object}})) { switch(event.type) { ${cases} } }`, { loader: 'ts', target: 'es2022' }).code;
 const handle = new Function(`${js}; return handle;`)();
 function setup(failFirst = false) {
   const payouts = new Map();
@@ -46,4 +46,14 @@ test('unknown connected accounts and zero available balance do not notify', asyn
   const zero=event('balance.available'); zero.data.object.available[0].amount=0;
   await handle(zero,s.sqlClient,s.storage);
   assert.equal(s.notifications.length,0); assert.equal(s.payouts.size,0);
+});
+
+test('an older payout event uses current Stripe status; an old available event cannot announce spent funds', async () => {
+  const s=setup();
+  const stripe = () => ({payouts:{retrieve:async()=>({...event('payout.failed','failed').data.object,failure_code:'account_closed'})},balance:{retrieve:async()=>({available:[{currency:'gbp',amount:0}]})}});
+  await handle(event('payout.paid','paid'),s.sqlClient,s.storage,stripe);
+  assert.equal(s.payouts.get('po_test')[4],'failed');
+  assert.match(s.notifications[0].message,/failed/);
+  await handle(event('balance.available'),s.sqlClient,s.storage,stripe);
+  assert.equal(s.notifications.length,1);
 });

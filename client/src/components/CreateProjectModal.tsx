@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   X, Search, CheckCircle2, Send, User, FileText,
-  Tag, Clock, DollarSign, Loader2, ChevronRight, Plus,
+  Tag, Clock, PoundSterling, Loader2, ChevronRight, Plus,
   Circle, AlertCircle, RefreshCw, Zap, Calendar, LayoutList, Trash2,
 } from "lucide-react";
 
@@ -451,7 +451,7 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                    <DollarSign size={12} className="text-primary" />
+                    <PoundSterling size={12} className="text-primary" />
                     Budget
                   </label>
                   <Input
@@ -758,7 +758,7 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                 {categories.length > 0 && (
                   <SummaryRow icon={<Tag size={12} />} label="Category" value={categories.join(", ")} />
                 )}
-                {budget && <SummaryRow icon={<DollarSign size={12} />} label="Budget" value={budget} />}
+                {budget && <SummaryRow icon={<PoundSterling size={12} />} label="Budget" value={budget} />}
                 {isRetainer ? (
                   <>
                     <SummaryRow icon={<RefreshCw size={12} />} label="Type" value="Retainer" />

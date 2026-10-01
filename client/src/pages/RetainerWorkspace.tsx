@@ -397,7 +397,7 @@ export default function RetainerWorkspace() {
                   <p className="text-sm font-bold">{fmtGBP(isCustom ? (customQuery.data?.plan?.cycles ?? []).reduce((sum: number, c: any) => sum + c.amountPence, 0) : agreement.amountPerCyclePence ?? 0)}</p>
                 </div>
                 <div>
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Next invoice</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Planned cycle end</p>
                   <p className="text-sm font-bold">{fmtDate(agreement.nextInvoiceDate)}</p>
                 </div>
               </div>
