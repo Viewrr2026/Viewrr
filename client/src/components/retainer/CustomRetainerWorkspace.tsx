@@ -1,3 +1,4 @@
+import { retainerPlanChanges } from "@shared/retainer-plan-diff";
 import { useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -100,6 +101,15 @@ export function CustomProposal({
           Changes requested: {data.feedback}
         </p>
       )}
+      {data.pending?.requestedChanges && <p className="text-sm">Requested changes addressed by this version: {data.pending.requestedChanges}</p>}
+      {data.versions?.length > 1 && <details className="rounded-xl border p-3" open={!!data.pending}>
+        <summary className="cursor-pointer font-medium">What changed in v{data.latestVersion}?</summary>
+        <p className="text-xs text-muted-foreground my-2">Proposed by {data.versions[0].created_by === data.clientId ? "client" : "freelancer"} · {new Date(data.versions[0].created_at).toLocaleString("en-GB")}</p>
+        <div className="overflow-auto"><table className="w-full text-sm"><thead><tr><th className="text-left">Field</th><th className="text-left">Previous</th><th className="text-left">Revised</th></tr></thead><tbody>
+          {retainerPlanChanges(data.versions[1].snapshot,data.versions[0].snapshot).map((change,i)=><tr key={i} className="border-t"><td className="p-2">{change.field}</td><td className="p-2 whitespace-pre-wrap">{change.before}</td><td className="p-2 whitespace-pre-wrap">{change.after}</td></tr>)}
+        </tbody></table></div>
+        <details className="mt-3"><summary className="cursor-pointer">Earlier proposal versions</summary>{data.versions.slice(1).map((v:any)=><details key={v.version_number} className="mt-3"><summary className="cursor-pointer">Version {v.version_number} · {v.accepted_by_client_at && v.accepted_by_freelancer_at ? "Agreed" : "Proposed"}</summary><PlanSummary plan={v.snapshot}/></details>)}</details>
+      </details>}
       {data.status === "declined" && <p role="status">This retainer invitation was declined. No work has started.</p>}
       <PlanSummary plan={data.pending?.plan ?? (data.hasAcceptedAgreement ? data.plan : data.latestPlan)} />
       {data.pending && data.pending.proposedBy !== userId && (
@@ -188,6 +198,16 @@ export function CustomCyclePanel({
   );
   return (
     <div className="space-y-4">
+      <details className="rounded-xl border p-4">
+        <summary className="cursor-pointer font-semibold">Whole-retainer estimate · {gbp(data.cycles.reduce((n:number,c:any)=>n+c.amount_pence,0))}</summary>
+        <p className="text-sm text-muted-foreground my-3">This is the agreed estimate, not an additional bill. Each cycle is invoiced once, after its required deliverables are approved.</p>
+        <div className="flex flex-wrap gap-4 text-sm mb-3">
+          <span>Invoiced: {gbp(data.cycles.filter((c:any)=>c.invoice_id).reduce((n:number,c:any)=>n+c.amount_pence,0))}</span>
+          <span>Paid before refunds: {gbp(data.cycles.filter((c:any)=>c.paid_at).reduce((n:number,c:any)=>n+c.amount_pence,0))}</span>
+          <span>Remaining scheduled: {gbp(data.cycles.filter((c:any)=>!c.paid_at).reduce((n:number,c:any)=>n+c.amount_pence,0))}</span>
+        </div>
+        <PlanSummary plan={data.plan}/>
+      </details>
       <label className="block text-sm font-semibold">
         Cycle
         <select
@@ -236,8 +256,10 @@ export function CustomCyclePanel({
         )}
         {!cycle.paid_at && (
           <p className="text-xs text-muted-foreground">
-            Pay the cycle invoice to receive clean files. Unpaid originals
-            remain protected.
+            {cycle.invoice_id
+              ? userId === data.clientId ? "This cycle’s invoice is ready. Verified payment releases its clean files." : "The client’s cycle invoice is ready. Work can continue only within the agreed payment terms."
+              : "No payment is due for this cycle yet. Its invoice is issued when the client approves all required deliverables."}
+            {" "}Unpaid originals remain protected.
           </p>
         )}
         {cycle.paid_at && userId === data.freelancerId && (
@@ -248,6 +270,7 @@ export function CustomCyclePanel({
             </a>
           </p>
         )}
+        {!!data.refundHistory?.filter((r:any)=>r.retainer_cycle_id===cycle.id).length && <div className="text-sm"><strong>Cycle refund history</strong>{data.refundHistory.filter((r:any)=>r.retainer_cycle_id===cycle.id).map((r:any)=><p key={r.stripe_refund_id}>{gbp(r.amount_pence)} · {r.status} · {new Date(r.created_at).toLocaleDateString("en-GB")}</p>)}</div>}
         {cycle.accepted_at && !cycle.paid_at && userId === data.clientId && (
           <CyclePayment publicId={publicId} cycle={cycle} />
         )}
@@ -351,7 +374,7 @@ function WorkItem({
   }
   return (
     <details className="p-4">
-      <summary className="cursor-pointer flex justify-between gap-2 text-sm">
+      <summary className="cursor-pointer flex justify-between gap-2 text-sm"><span aria-hidden="true">▸</span><span className="text-xs text-muted-foreground">Expand to upload / review</span>
         <span className="font-medium">{task.title}</span>
         <span className="text-xs text-muted-foreground">
           {task.status === "complete"

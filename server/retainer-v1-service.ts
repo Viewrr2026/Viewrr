@@ -324,7 +324,7 @@ export async function proposeCustomRetainer(
     await writeVersion(db, a, plan, version, userId);
     await db.query(
       `UPDATE retainer_agreements SET draft_data=$2,proposal_feedback=NULL,status=CASE WHEN status IN ('active','paused') THEN status ELSE 'awaiting_client_acceptance' END WHERE id=$1`,
-      [a.id, JSON.stringify({ plan, version, proposedBy: userId })],
+      [a.id, JSON.stringify({ plan, version, proposedBy: userId, requestedChanges: a.proposal_feedback })],
     );
     await notice(
       db,
@@ -431,7 +431,14 @@ export async function customWorkspace(publicId: string, userId: number) {
         [a.id],
       )
     ).rows[0];
+    const versions = (await db.query(`SELECT version_number,snapshot,created_by,created_at,
+      accepted_by_client_at,accepted_by_freelancer_at FROM retainer_agreement_versions
+      WHERE retainer_agreement_id=$1 ORDER BY version_number DESC`,[a.id])).rows;
+    const refundHistory = (await db.query(`SELECT p.retainer_cycle_id,r.stripe_refund_id,r.amount_pence,r.status,r.created_at
+      FROM payment_refunds r JOIN payments p ON p.id=r.payment_id JOIN retainer_cycles c ON c.id=p.retainer_cycle_id
+      WHERE c.retainer_agreement_id=$1 ORDER BY r.created_at DESC`,[a.id])).rows;
     return {
+      versions, refundHistory,
       plan: await currentPlan(db, a),
       latestPlan: latest.snapshot,
       latestVersion: latest.version_number,

@@ -22,7 +22,7 @@ export default function Invoice() {
   const queryClient = useQueryClient();
   const [stripeOpen, setStripeOpen] = useState(false);
 
-  const { data, isLoading, error } = useQuery<{ invoice: any; template: any }>({
+  const { data, isLoading, error } = useQuery<{ invoice: any; template: any; refunds: any[] }>({
     queryKey: ['/api/projects', projectId, 'invoice'],
     queryFn: () => apiRequest('GET', `/api/projects/${projectId}/invoice`).then(r => r.json()),
     enabled: !!projectId,
@@ -95,6 +95,17 @@ export default function Invoice() {
         </div>
       </div>
 
+      {!!data.refunds?.length && <section className="mx-auto max-w-3xl p-5 border rounded-xl my-4" aria-label="Refund history">
+        <h2 className="font-semibold">Refund history</h2>
+        <p className="text-sm text-muted-foreground">The original invoice is preserved. Refunds are recorded separately.</p>
+        {data.refunds.map(refund => <div key={refund.stripe_refund_id} className="flex justify-between py-2 text-sm">
+          <span>{new Date(refund.created_at).toLocaleDateString("en-GB")}</span>
+          <span>£{(refund.amount_pence / 100).toFixed(2)} · {refund.status}</span>
+        </div>)}
+      </section>}
+      {isClient && isPaid && <p className="text-center text-sm no-print my-4">
+        <a className="underline" href={`mailto:support@viewrr.co.uk?subject=${encodeURIComponent(`Refund request — invoice ${invoice.invoiceNumber}`)}`}>Request help with a refund</a>
+      </p>}
       {/* Invoice card */}
       <div className="min-h-screen bg-muted/30 py-10 px-4 print:py-0 print:px-0 print:bg-white">
         <div
