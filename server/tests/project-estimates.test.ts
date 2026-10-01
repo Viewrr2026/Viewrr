@@ -31,7 +31,7 @@ test('estimate requires partner agreement, rejects strangers and stale versions,
   await reviewEstimate(1,1,2,'accept','');
   await assert.rejects(requireProjectEstimate(1,true),/final invoice/);
 });
-test('invoice uses agreed items, serializes retries and cannot be overwritten or revised after issuance',async()=>{
+test('invoice uses agreed financial terms, serializes retries and cannot be overwritten or revised after issuance',async()=>{
   await assert.rejects(issueProjectInvoice(1,1,terms),/freelancer/);
   await assert.rejects(issueProjectInvoice(1,2,terms),/differ/);
   const accepted=(await projectEstimates(1,2)).versions[0].snapshot;
@@ -56,3 +56,20 @@ test('accepting an invitation records the initial estimate atomically and replay
   const estimate=(await projectEstimates(Number(result.project.id),1)).versions[0];
   assert.equal(estimate.status,'accepted');assert.equal(estimate.snapshot.totalPence,150000);
 });
+
+ test('final invoice permits new wording and itemisation at the agreed total, without changing the estimate',async()=>{
+  await db.exec("INSERT INTO projects(id,client_id,freelancer_id,title,created_at) VALUES(30,1,2,'Same price','2026-10-01')");
+  const original={lineItems:[{description:'Readiness check',quantity:1,unitPricePence:1000}],vatPercent:0};
+  await proposeEstimate(30,2,0,original);
+  await reviewEstimate(30,1,1,'accept','');
+  await assert.rejects(issueProjectInvoice(30,2,{lineItems:[{description:'final',quantity:1,unitPricePence:1100}]}),/total or VAT differs/);
+  // The same total must not hide a changed VAT treatment.
+  await assert.rejects(issueProjectInvoice(30,2,{lineItems:[{description:'final',quantity:1,unitPricePence:800}],vatPercent:25}),/total or VAT differs/);
+  const finalItems=[{description:'Final editing',quantity:1,unitPricePence:600},{description:'Final delivery',quantity:2,unitPricePence:200}];
+  const invoice:any=await issueProjectInvoice(30,2,{lineItems:finalItems,totalPence:1});
+  assert.equal(invoice.totalPence,1000);
+  assert.deepEqual(JSON.parse(invoice.lineItems),finalItems.map(i=>({...i,totalPence:i.quantity*i.unitPricePence})));
+  const estimate=(await projectEstimates(30,1)).versions[0];
+  assert.equal(estimate.snapshot.lineItems[0].description,'Readiness check');
+  assert.equal(Number(invoice.estimateVersionId),Number(estimate.id));
+ });

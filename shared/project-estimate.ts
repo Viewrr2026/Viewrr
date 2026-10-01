@@ -16,5 +16,5 @@ export function calculateEstimate(raw:unknown) {
 export function invitationEstimate(title:string,budget:unknown) {
   const amount=String(budget??'').trim().replace(/^£\s*/, '').replace(/,/g,'');
   if(!/^\d+(\.\d{1,2})?$/.test(amount)) throw Object.assign(new Error('Enter a single provisional estimate in GBP, for example £1500.00.'),{status:400});
-  return calculateEstimate({lineItems:[{description:title,quantity:1,unitPricePence:Math.round(Number(amount)*100)}],vatPercent:0,notes:'Provisional total agreed with the project invitation. Any changes or itemisation require an agreed revision before the final invoice.'});
+  return calculateEstimate({lineItems:[{description:title,quantity:1,unitPricePence:Math.round(Number(amount)*100)}],vatPercent:0,notes:'Provisional total agreed with the project invitation. Changes to the agreed total, VAT or scope require approval before the final invoice.'});
 }

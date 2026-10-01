@@ -51,9 +51,12 @@ export async function issueProjectInvoice(id:number,freelancerId:number,raw:any)
     if(existing) retainerError('This project already has an invoice. Open the existing invoice.');
     const {rows:[latest]}=await db.query('SELECT * FROM project_estimate_versions WHERE project_id=$1 ORDER BY version DESC LIMIT 1',[id]);
     if(latest&&latest.status!=='accepted') retainerError('Both parties must agree the latest estimate before invoicing.');
-    if(latest && (JSON.stringify(requested.lineItems)!==JSON.stringify(calculateEstimate(latest.snapshot).lineItems)||requested.vatPercent!==latest.snapshot.vatPercent))
-      retainerError('Invoice items or prices differ from the agreed estimate. Send an amended estimate for approval first.');
-    const final=latest?.snapshot ?? requested;
+    const agreed=latest ? calculateEstimate(latest.snapshot) : null;
+    if(agreed && (requested.totalPence!==agreed.totalPence || requested.vatPercent!==agreed.vatPercent || requested.vatPence!==agreed.vatPence))
+      retainerError('Invoice total or VAT differs from the agreed estimate. Send an amended estimate for approval first.');
+    // The final invoice may describe and itemise the completed work differently.
+    // Keep the accepted estimate unchanged and calculate invoice amounts on the server.
+    const final=requested;
     // Lock freelancer as well to serialize numbering across their projects.
     await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[freelancerId]);
     const {rows:[count]}=await db.query('SELECT COUNT(*)::int AS count FROM invoices WHERE freelancer_id=$1',[freelancerId]);
