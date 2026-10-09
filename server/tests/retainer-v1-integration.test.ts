@@ -613,3 +613,97 @@ test("external links support revisions and one cycle invoice without private sto
   await db.query("UPDATE retainer_cycles SET due_at=$2 WHERE id=$1", [first.id, new Date(Date.now() - 1000).toISOString()]);
   await assert.rejects(() => submitCustomWork(publicId, 2, nextTask.public_id, undefined, "Overdue revision", url));
 });
+
+test("extra work applies only after agreement and preserves started submissions", async () => {
+  const {agreementPublicId: publicId} = await createCustomRetainer(2,1,plan());
+  await reviewProposal(publicId,1,1,"accept","");
+  let w = await customWorkspace(publicId,2);
+  const first = w.cycles[0], task = w.tasks[0];
+  await submitCustomWork(publicId,2,task.public_id,undefined,"Original","https://example.test/review");
+  w = await customWorkspace(publicId,1);
+  const originalSubmission = w.submissions[0];
+  await reviewCustomWork(publicId,1,originalSubmission.id,"approve","");
+  const proposed = structuredClone(w.plan);
+  proposed.cycles[0].deliverables.push({id:randomUUID(),name:"Additional reel",quantity:2,brief:"Extra edit"});
+  proposed.cycles[0].amountPence += 5000;
+  await proposeCustomRetainer(publicId,1,1,proposed);
+  w = await customWorkspace(publicId,2);
+  assert.equal(w.cycles[0].amount_pence,200000);
+  assert.equal(w.tasks.filter((t:any)=>t.retainer_cycle_id===first.id).length,3);
+  await assert.rejects(()=>reviewProposal(publicId,1,2,"accept",""));
+  await reviewProposal(publicId,2,2,"request_changes","Increase extra fee");
+  const counter = structuredClone(proposed);
+  counter.cycles[0].amountPence += 1000;
+  await proposeCustomRetainer(publicId,2,2,counter);
+  await reviewProposal(publicId,1,3,"accept","");
+  w = await customWorkspace(publicId,1);
+  assert.equal(w.cycles[0].id,first.id);
+  assert.equal(w.cycles[0].amount_pence,206000);
+  assert.equal(w.tasks.filter((t:any)=>t.retainer_cycle_id===first.id).length,5);
+  assert.equal(w.submissions[0].id,originalSubmission.id);
+  assert.equal(w.submissions[0].status,"approved");
+  assert.ok(w.proposalDecisions.some((e:any)=>e.kind==="request_changes"));
+  const destructive = structuredClone(w.plan);
+  destructive.cycles[0].deliverables[0].name="Replace original";
+  await assert.rejects(()=>proposeCustomRetainer(publicId,2,3,destructive));
+  for (const t of w.tasks.filter((t:any)=>t.retainer_cycle_id===first.id)) {
+    if (t.id!==task.id) await submitCustomWork(publicId,2,t.public_id,undefined,"Review","https://example.test/extra");
+    const state=await customWorkspace(publicId,1);
+    const sub=state.submissions.find((s:any)=>s.retainer_cycle_task_id===t.id);
+    await reviewCustomWork(publicId,1,sub.id,"approve","");
+  }
+  w = await customWorkspace(publicId,1);
+  assert.equal(w.cycles[0].amount_pence,206000);
+  assert.ok(w.cycles[0].invoice_id);
+  const frozen = structuredClone(w.plan); frozen.cycles[0].amountPence++;
+  await assert.rejects(()=>proposeCustomRetainer(publicId,2,3,frozen));
+});
+
+test("early starts need payment and mutual agreement, preserving the paid cycle", async () => {
+  const {agreementPublicId: publicId}=await createCustomRetainer(2,1,plan());
+  await reviewProposal(publicId,1,1,"accept","");
+  const first=await approveFirstCycle(publicId);
+  let w=await customWorkspace(publicId,1);
+  const proposed=structuredClone(w.plan);
+  proposed.cycles[1].startDate=today;
+  proposed.cycles[1].earlyStart=true;
+  await assert.rejects(()=>proposeCustomRetainer(publicId,1,1,proposed));
+  // Isolated database fixture represents an already verified payment.
+  await db.query("UPDATE retainer_cycles SET paid_at=$2,status='paid' WHERE id=$1",[first.id,new Date().toISOString()]);
+  const paidBefore=(await customWorkspace(publicId,1)).cycles[0];
+  await proposeCustomRetainer(publicId,1,1,proposed);
+  w=await customWorkspace(publicId,2);
+  assert.equal(w.cycles[1].canWork,false);
+  await reviewProposal(publicId,2,2,"decline","Keep the dates");
+  w=await customWorkspace(publicId,1);
+  assert.equal(w.cycles[1].canWork,false);
+  await proposeCustomRetainer(publicId,2,2,proposed);
+  await reviewProposal(publicId,1,3,"accept","");
+  w=await customWorkspace(publicId,1);
+  assert.equal(w.cycles[1].period_start,today);
+  assert.equal(w.cycles[1].canWork,true);
+  assert.equal(w.cycles[0].paid_at,paidBefore.paid_at);
+  assert.equal(w.cycles[0].period_end,paidBefore.period_end);
+  assert.equal(w.cycles[0].invoice_id,paidBefore.invoice_id);
+  const malicious=plan(); malicious.cycles[1].earlyStart=true;
+  await assert.rejects(()=>createCustomRetainer(2,1,malicious));
+});
+
+test("date amendments reject overlap and leave active terms intact until accepted", async () => {
+  const {agreementPublicId: publicId}=await createCustomRetainer(1,2,plan());
+  await reviewProposal(publicId,2,1,"accept","");
+  let w=await customWorkspace(publicId,1);
+  const before=w.cycles[1].period_start;
+  const invalid=structuredClone(w.plan);
+  invalid.cycles[1].startDate=today;
+  await assert.rejects(()=>proposeCustomRetainer(publicId,1,1,invalid));
+  const proposed=structuredClone(w.plan);
+  proposed.cycles[1].startDate=nextDate(before,1);
+  proposed.gapsAcknowledged=true;
+  await proposeCustomRetainer(publicId,2,1,proposed);
+  w=await customWorkspace(publicId,1);
+  assert.equal(w.cycles[1].period_start,before);
+  await reviewProposal(publicId,1,2,"accept","");
+  w=await customWorkspace(publicId,1);
+  assert.equal(w.cycles[1].period_start,nextDate(before,1));
+});

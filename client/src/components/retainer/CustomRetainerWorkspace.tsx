@@ -98,7 +98,7 @@ export function CustomProposal({
       </h2>
       {data.feedback && (
         <p className="rounded-xl bg-amber-50 text-amber-900 p-3 text-sm whitespace-pre-wrap">
-          Changes requested: {data.feedback}
+          {data.proposalDecisions?.[0]?.kind === "decline" ? "Proposal declined: " : "Changes requested: "}{data.feedback}
         </p>
       )}
       {data.pending?.requestedChanges && <p className="text-sm">Requested changes addressed by this version: {data.pending.requestedChanges}</p>}
@@ -106,7 +106,7 @@ export function CustomProposal({
         <summary className="cursor-pointer font-medium">What changed in v{data.latestVersion}?</summary>
         <p className="text-xs text-muted-foreground my-2">Proposed by {data.versions[0].created_by === data.clientId ? "client" : "freelancer"} · {new Date(data.versions[0].created_at).toLocaleString("en-GB")}</p>
         <div className="overflow-auto"><table className="w-full text-sm"><thead><tr><th className="text-left">Field</th><th className="text-left">Previous</th><th className="text-left">Revised</th></tr></thead><tbody>
-          {retainerPlanChanges(data.versions[1].snapshot,data.versions[0].snapshot).map((change,i)=><tr key={i} className="border-t"><td className="p-2">{change.field}</td><td className="p-2 whitespace-pre-wrap">{change.before}</td><td className="p-2 whitespace-pre-wrap">{change.after}</td></tr>)}
+          {retainerPlanChanges(data.pending && data.hasAcceptedAgreement ? data.plan : data.versions[1].snapshot,data.versions[0].snapshot).map((change,i)=><tr key={i} className="border-t"><td className="p-2">{change.field}</td><td className="p-2 whitespace-pre-wrap">{change.before}</td><td className="p-2 whitespace-pre-wrap">{change.after}</td></tr>)}
         </tbody></table></div>
         <details className="mt-3"><summary className="cursor-pointer">Earlier proposal versions</summary>{data.versions.slice(1).map((v:any)=><details key={v.version_number} className="mt-3"><summary className="cursor-pointer">Version {v.version_number} · {v.accepted_by_client_at && v.accepted_by_freelancer_at ? "Agreed" : "Proposed"}</summary><PlanSummary plan={v.snapshot}/></details>)}</details>
       </details>}

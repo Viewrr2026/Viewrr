@@ -1,3 +1,4 @@
+import { RetainerChangeRequest, RetainerChangeRequests } from "@/components/retainer/RetainerChangeRequest";
 import { CustomRetainerOverview, CustomRetainerHistory, CustomPaymentSuccess } from "@/components/retainer/CustomRetainerProgress";
 import { useCustomRetainer, CustomProposal, CustomCyclePanel, CyclePayment } from "@/components/retainer/CustomRetainerWorkspace";
 import { useState, useMemo } from "react";
@@ -981,8 +982,9 @@ export default function RetainerWorkspace() {
         </div>
       )}
 
+      {isCustom && !isPendingProposal && !isDeclined && tab === "requests" && (customQuery.data ? <RetainerChangeRequests data={customQuery.data} publicId={publicId!} userId={user!.id} legacyRequests={requests} onNew={() => setRequestModalOpen(true)} /> : <p>Loading requests…</p>)}
       {/* ── Requests ── */}
-      {!isPendingProposal && !isDeclined && tab === "requests" && (
+      {!isCustom && !isPendingProposal && !isDeclined && tab === "requests" && (
         <div className="space-y-4">
           <div className="p-4 rounded-2xl border border-border bg-card">
             <p className="text-xs font-semibold text-muted-foreground mb-2">Available capacity</p>
@@ -1262,8 +1264,9 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── FR-11: New Request modal ── */}
+      {isCustom && requestModalOpen && customQuery.data && <RetainerChangeRequest data={customQuery.data} publicId={publicId!} onClose={() => setRequestModalOpen(false)} onSent={() => setTab("requests")} />}
       <NewRequestModal
-        open={requestModalOpen}
+        open={!isCustom && requestModalOpen}
         onClose={() => setRequestModalOpen(false)}
         deliverables={deliverables}
         currentCycle={currentCycle}

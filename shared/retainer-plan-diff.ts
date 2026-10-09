@@ -16,6 +16,7 @@ export function retainerPlanChanges(before: CustomRetainerPlan, after: CustomRet
     for (const [key,title] of [['name','Name'],['startDate','Start'],['endDate','End'],['revisionAllowance','Revisions'],['paymentDays','Payment days after acceptance']] as const)
       compare(`${label} · ${title}`,a[key],b[key]);
     compare(`${label} · Price`,money(a.amountPence),money(b.amountPence));
+    compare(`${label} · Early start after previous cycle payment`,a.earlyStart ? 'Yes' : 'No',b.earlyStart ? 'Yes' : 'No');
     for (const did of Array.from(new Set([...a.deliverables,...b.deliverables].map(d=>d.id)))) {
       const x=a.deliverables.find(d=>d.id===did),y=b.deliverables.find(d=>d.id===did);
       compare(`${label} · ${y?.name ?? x!.name}`,x?`${x.quantity} × ${x.name}; ${x.brief}; item briefs: ${(x.itemBriefs??[]).join(' / ')}`:'Not included',y?`${y.quantity} × ${y.name}; ${y.brief}; item briefs: ${(y.itemBriefs??[]).join(' / ')}`:'Removed');
