@@ -50,3 +50,9 @@ test('mismatched Stripe currency rolls back without altering financial state',as
   await assert.rejects(syncChargeRefunds(bad as any,'ch_test',transaction),/does not match/);
   assert.equal((await payment()).refunded_pence,1000);
 });
+test('cancelled, failed and unconfirmed attempts never contribute earned income', () => {
+  for (const status of ['cancelled','canceled','failed','pending','processing','requires_payment_method','authorised']) {
+    assert.equal(adjustedEarnings({status,freelancer_pence:89}),0,status);
+  }
+  assert.equal(adjustedEarnings({status:'succeeded',freelancer_pence:89}),89);
+});

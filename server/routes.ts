@@ -1,3 +1,4 @@
+import { runStripeEventJob } from "./stripe-event-job";
 import { invitationEstimate } from "../shared/project-estimate";
 import { createCompatibleConnectAccount } from "./connect-account-create";
 import { registerProjectEstimateRoutes } from "./project-estimate-routes";
@@ -6433,7 +6434,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const lifetimeVolume = Number(totals?.lifetime_volume ?? 0);
 
       const recentPayments = await db`
-        SELECT p.public_id, p.gross_pence, (p.freelancer_pence-p.transfer_reversed_pence+p.fee_refunded_pence) AS freelancer_pence, p.platform_fee_pence, p.refunded_pence,
+        SELECT p.public_id, p.gross_pence, p.freelancer_pence, p.transfer_reversed_pence, p.fee_refunded_pence, p.platform_fee_pence, p.refunded_pence,
                p.status, p.succeeded_at, p.created_at,
                pr.title AS project_title,
                pt.stripe_transfer_id, pt.status AS transfer_status
@@ -6478,7 +6479,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       res.json({ lifetimeEarnedPence: lifetimeEarned, lifetimeVolumePence: lifetimeVolume,
         availableBalancePence: availablePence, pendingBalancePence: pendingPence,
-        nextPayout, payouts, recentPayments });
+        nextPayout, payouts, recentPayments: recentPayments.map(p => ({ ...p, freelancer_pence: adjustedEarnings(p) })) });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -7145,48 +7146,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     await configureAutoDailyPayout(userId, stripeAccountId);
   });
 
-  // WS-A: process_stripe_event job handler — used by replay endpoint and recovery
+  // Replay/refund recovery uses Neon query(), compatible with the installed driver.
   registerJobHandler("process_stripe_event", async (payload, attemptCount) => {
-    const { stripeEventId } = payload as { stripeEventId: string };
-    if (!stripeEventId) return; // nothing to do
-
-    // Fetch the event record from DB to verify it exists and isn't already processed
     const sqlClient = neon(process.env.DATABASE_URL!);
-    const rows = await sqlClient(
-      "SELECT stripe_event_id, processing_status, raw_payload FROM stripe_events WHERE stripe_event_id = $1 LIMIT 1",
-      [stripeEventId]
-    ) as Array<{ stripe_event_id: string; processing_status: string; raw_payload: string | null }>;
-
-    if (!rows.length) {
-      console.warn(`[process_stripe_event] Event not found in DB: ${stripeEventId}`);
-      return; // idempotent no-op
-    }
-
-    const row = rows[0];
-    if (row.processing_status === "processed") {
-      console.log(`[process_stripe_event] Already processed, skipping: ${stripeEventId}`);
-      return; // idempotent no-op
-    }
-
-    // Reconstruct event from raw_payload if available, else fetch from Stripe
-    let event: Stripe.Event;
-    if (row.raw_payload) {
-      event = JSON.parse(row.raw_payload) as Stripe.Event;
-    } else if (stripe) {
-      event = await stripe.events.retrieve(stripeEventId);
-    } else {
-      console.error(`[process_stripe_event] No raw_payload and Stripe not configured: ${stripeEventId}`);
-      return;
-    }
-
-    const requestId = `job_${stripeEventId}_attempt${attemptCount ?? 1}`;
-    try {
-      await processStripeEvent(event, requestId);
-      await markEventProcessed(stripeEventId);
-    } catch (e: any) {
-      await markEventProcessed(stripeEventId, e.message);
-      throw e; // re-throw so job-queue can apply retry/backoff
-    }
+    await runStripeEventJob(payload, attemptCount ?? 1, {
+      query: (text, values) => sqlClient.query(text, values) as any,
+      retrieve: async id => {
+        if (!stripe) throw new Error("Stripe is not configured");
+        return stripe.events.retrieve(id);
+      },
+      process: processStripeEvent,
+      mark: markEventProcessed,
+    });
   });
 
   // Account deletion executor.

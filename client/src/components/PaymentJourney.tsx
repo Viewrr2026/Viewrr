@@ -1,3 +1,4 @@
+import { hasSettledPayment, paymentStatusLabel } from "@shared/payment-display";
 /**
  * PRD-011 — Payment Education & Transparency Centre
  * FR-01: Visual payment journey
@@ -6,7 +7,7 @@
  * FR-06: Estimated arrival display
  */
 
-import { useState } from "react";
+import React, { useState } from "react";
 import { CheckCircle2, Circle, Clock, ChevronDown, ChevronUp, Info, Calendar } from "lucide-react";
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
@@ -128,7 +129,7 @@ function currentStageIndex(
   if (ps === "paid") return 5; // bank_deposit
   if (ps === "in_transit" || ps === "pending") return 4; // automatic_payout
   if (ts === "transferred") return 3; // stripe_availability
-  if (s === "succeeded") return 2; // funds_allocated
+  if (s === "succeeded") return 1; // payment_confirmed
   if (s === "authorised" || s === "processing") return 1; // payment_confirmed
   return 0; // client_paid
 }
@@ -142,6 +143,8 @@ interface PaymentJourneyBarProps {
   grossPence?: number;
   freelancerPence?: number;
   platformFeePence?: number;
+  refundedPence?: number;
+  feeRefundedPence?: number;
   timestamps?: {
     paid?: string | null;
     authorised?: string | null;
@@ -161,6 +164,8 @@ export function PaymentJourneyBar({
   grossPence,
   freelancerPence,
   platformFeePence,
+  refundedPence,
+  feeRefundedPence = 0,
   timestamps,
   role = "freelancer",
   compact = false,
@@ -170,6 +175,18 @@ export function PaymentJourneyBar({
   const activeIdx = currentStageIndex(paymentStatus, transferStatus, payoutStatus);
   const fmt = (p: number) =>
     `£${(p / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  if (!hasSettledPayment(paymentStatus) || paymentStatus === "partially_refunded" || paymentStatus === "refunded") {
+    return <div className="rounded-xl border border-border p-3 text-xs space-y-2">
+      <p className="font-semibold">{paymentStatusLabel(paymentStatus)}</p>
+      {hasSettledPayment(paymentStatus) ? <>
+        <p>The original payment was confirmed.{refundedPence != null && <> {fmt(refundedPence)} has been refunded to the client.</>}</p>
+        {role !== "client" && platformFeePence != null && <p>Original fee: {fmt(platformFeePence)} · Returned: {fmt(feeRefundedPence)} · Retained: {fmt(platformFeePence - feeRefundedPence)}</p>}
+        {role !== "client" && freelancerPence != null && <p>Earnings after adjustments: <strong>{fmt(freelancerPence)}</strong></p>}
+        <p className="text-muted-foreground">See payout history for bank payout status. A refund does not confirm bank arrival.</p>
+      </> : <p className="text-muted-foreground">No confirmed earnings from this payment attempt.</p>}
+    </div>;
+  }
 
   if (compact) {
     // Compact horizontal pill bar for table rows

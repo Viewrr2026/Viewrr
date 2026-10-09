@@ -1,3 +1,4 @@
+import { hasSettledPayment, paymentStatusLabel } from "@shared/payment-display";
 /**
  * Earnings & Payouts Hub — PRD: Viewrr_PRD_Freelancer_Earnings_Payouts_Hub
  *
@@ -900,8 +901,10 @@ function EarningsAndHistory({ userId, onViewBreakdown }: { userId: number; onVie
     grossPence:        p.gross_pence,
     freelancerPence:   p.freelancer_pence,
     platformFeePence:  p.platform_fee_pence,
+    refundedPence: p.refunded_pence,
+    feeRefundedPence: p.fee_refunded_pence,
     timestamps: {
-      paid:        p.succeeded_at ?? p.created_at,
+      paid:        p.succeeded_at,
       authorised:  p.succeeded_at,
       transferred: p.transferred_at ?? null,
     },
@@ -1003,7 +1006,7 @@ function EarningsAndHistory({ userId, onViewBreakdown }: { userId: number; onVie
                         <div className="flex-1 min-w-0">
                           <p className="text-xs font-semibold truncate">{p.project_title ?? "Payment"}</p>
                           <p className="text-[11px] text-muted-foreground">
-                            Net {netFmt} · {p.status ?? "—"}
+                            Net {netFmt} · {paymentStatusLabel(p.status)}
                           </p>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
@@ -1027,7 +1030,7 @@ function EarningsAndHistory({ userId, onViewBreakdown }: { userId: number; onVie
                         <div className="grid grid-cols-3 gap-2">
                           {[
                             { label: "Gross",       value: grossFmt },
-                            { label: "Viewrr fee",  value: feeFmt },
+                            { label: hasSettledPayment(p.status) ? "Original fee" : "Estimated fee", value: feeFmt },
                             { label: "Net to you",  value: netFmt },
                           ].map(r => (
                             <div key={r.label} className="flex flex-col gap-0.5 p-2 rounded-lg bg-secondary/30 border border-border">
@@ -1049,6 +1052,8 @@ function EarningsAndHistory({ userId, onViewBreakdown }: { userId: number; onVie
                           grossPence={jStatus.grossPence}
                           freelancerPence={jStatus.freelancerPence}
                           platformFeePence={jStatus.platformFeePence}
+                          refundedPence={jStatus.refundedPence}
+                          feeRefundedPence={jStatus.feeRefundedPence}
                           timestamps={jStatus.timestamps}
                           role="freelancer"
                         />
@@ -1259,15 +1264,15 @@ function EarningsPage({ userId }: { userId: number }) {
             const fee = fmtGBP(b.platformFeePence);
             const net = fmtGBP(b.freelancerPence);
             const saved = b.isPro && b.savedPence > 0 ? fmtGBP(b.savedPence) : null;
-            const commissionLabel = b.isPro
-              ? `Pro Viewrr commission — ${(b.commissionRateBps / 100).toFixed(0)}%`
-              : `Viewrr commission — ${b.commissionRateBps ? (b.commissionRateBps / 100).toFixed(0) : "11"}%`;
+            const commissionLabel = !hasSettledPayment(b.status) ? "Estimated commission (not charged)" : b.isPro
+              ? `Original Pro Viewrr commission — ${(b.commissionRateBps / 100).toFixed(0)}%`
+              : `Original Viewrr commission — ${b.commissionRateBps ? (b.commissionRateBps / 100).toFixed(0) : "11"}%`;
             return (
               <div className="space-y-3">
                 <p className="text-xs text-muted-foreground font-medium truncate">{b.projectTitle}</p>
                 <div className="space-y-2">
                   <div className="flex justify-between items-center py-2 border-b border-border">
-                    <span className="text-xs text-muted-foreground">Client paid</span>
+                    <span className="text-xs text-muted-foreground">{hasSettledPayment(b.status) ? "Client paid" : "Invoice amount (not received)"}</span>
                     <span className="text-xs font-semibold">{gross}</span>
                   </div>
                   <div className="flex justify-between items-center py-2 border-b border-border">
@@ -1279,13 +1284,13 @@ function EarningsPage({ userId }: { userId: number }) {
                   </div>
                   {b.refundedPence > 0 && <div className="flex justify-between text-xs"><span>Refunded to client</span><span>{fmtGBP(b.refundedPence)}</span></div>}
                   {b.transferReversedPence > 0 && <div className="flex justify-between text-xs"><span>Transfer reversed</span><span>−{fmtGBP(b.transferReversedPence)}</span></div>}
-                  {b.feeRefundedPence > 0 && <div className="flex justify-between text-xs"><span>Commission returned</span><span>+{fmtGBP(b.feeRefundedPence)}</span></div>}
+                  {b.feeRefundedPence > 0 && <><div className="flex justify-between text-xs"><span>Commission returned</span><span>+{fmtGBP(b.feeRefundedPence)}</span></div><div className="flex justify-between text-xs"><span>Commission retained</span><span>{fmtGBP(b.platformFeePence - b.feeRefundedPence)}</span></div></>}
                   <div className="flex justify-between items-center py-2">
                     <span className="text-xs font-bold">Your earnings after adjustments</span>
                     <span className="text-sm font-bold" style={{ color: "#FF5A1F" }}>{net}</span>
                   </div>
                 </div>
-                {saved && (
+                {saved && hasSettledPayment(b.status) && (
                   <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium" style={{ background: "rgba(255,90,31,0.08)", border: "1px solid rgba(255,90,31,0.2)" }}>
                     <Star size={12} style={{ color: "#FF5A1F" }} />
                     <span style={{ color: "#FF5A1F" }}>You saved {saved} with Pro Viewrr on this project.</span>
@@ -1293,7 +1298,7 @@ function EarningsPage({ userId }: { userId: number }) {
                 )}
                 <div className="flex justify-between text-xs text-muted-foreground pt-1">
                   <span>Status</span>
-                  <span className="capitalize">{b.status ?? "—"}</span>
+                  <span className="capitalize">{paymentStatusLabel(b.status)}</span>
                 </div>
                 {b.succeededAt && (
                   <div className="flex justify-between text-xs text-muted-foreground">

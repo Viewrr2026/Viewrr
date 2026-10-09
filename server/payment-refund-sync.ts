@@ -1,8 +1,10 @@
 import type Stripe from 'stripe';
+import { hasSettledPayment } from '../shared/payment-display';
 import { retainerTransaction, type RetainerDb } from './retainer-v1-db';
 
 const objectId = (value: any): string | null => typeof value === 'string' ? value : value?.id ?? null;
 export function adjustedEarnings(payment: any): number {
+  if (!hasSettledPayment(payment.status)) return 0;
   return Number(payment.freelancer_pence ?? 0) - Number(payment.transfer_reversed_pence ?? 0) + Number(payment.fee_refunded_pence ?? 0);
 }
 
