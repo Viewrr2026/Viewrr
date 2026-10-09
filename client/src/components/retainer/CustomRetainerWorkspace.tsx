@@ -1,5 +1,5 @@
 import { retainerPlanChanges } from "@shared/retainer-plan-diff";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Elements,
@@ -325,6 +325,8 @@ function WorkItem({
     [note, setNote] = useState(""),
     [feedback, setFeedback] = useState(""),
     [deliverableUrl, setDeliverableUrl] = useState(""),
+    [submittedLocally, setSubmittedLocally] = useState(false),
+    [expanded, setExpanded] = useState(false),
     [preview, setPreview] = useState<{ url: string; mime: string } | null>(
       null,
     );
@@ -334,6 +336,10 @@ function WorkItem({
     ),
     latest = subs[0];
   const isApproved = latest?.status === "approved" || task.status === "complete";
+  const awaitingReview = latest?.status === "submitted" || submittedLocally;
+  useEffect(() => {
+    setSubmittedLocally(false);
+  }, [latest?.id, latest?.status]);
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
@@ -362,13 +368,13 @@ function WorkItem({
     } else setPreview({ url: response.url, mime: m.mime_type });
   }
   return (
-    <details className="p-4">
-      <summary className="cursor-pointer flex justify-between gap-2 text-sm"><span aria-hidden="true">▸</span><span className="text-xs text-muted-foreground">{isApproved ? "View approved delivery" : "Expand to submit / review"}</span>
+    <details className="p-4" onToggle={(e) => setExpanded(e.currentTarget.open)}>
+      <summary className="cursor-pointer flex justify-between gap-2 text-sm"><span aria-hidden="true">{expanded ? "▾" : "▸"}</span><span className="text-xs text-muted-foreground">{isApproved ? "View approved delivery" : awaitingReview ? "View submitted delivery" : "Expand to submit / review"}</span>
         <span className="font-medium">{task.title}</span>
         <span className={isApproved
           ? "inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
           : "text-xs text-muted-foreground"}>
-          {isApproved ? "✓ Approved" : task.status.replaceAll("_", " ")}
+          {isApproved ? "✓ Approved" : awaitingReview ? "Waiting for client approval" : task.status.replaceAll("_", " ")}
         </span>
       </summary>
       <div className="mt-4 space-y-3">
@@ -376,6 +382,11 @@ function WorkItem({
         {isApproved && (
           <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
             Approved by the client. Your delivery and submission history are available below.
+          </p>
+        )}
+        {awaitingReview && !isApproved && (
+          <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+            {isClient ? "This delivery is ready for your review." : "Submitted — waiting for client approval. You can submit a revision if the client requests changes."}
           </p>
         )}
         {subs.map((s: any) => (
@@ -432,7 +443,12 @@ function WorkItem({
             </button>
           </div>
         )}
-        {!isClient && cycle.canWork && !isApproved && (
+        {!isClient && awaitingReview && !isApproved && (
+          <button type="button" className={buttonClass + " bg-muted text-muted-foreground cursor-not-allowed"} disabled>
+            Waiting for client approval
+          </button>
+        )}
+        {!isClient && cycle.canWork && !isApproved && !awaitingReview && (
           <div className="space-y-3">
             <label className="block text-sm">
               Delivery link
@@ -468,13 +484,14 @@ function WorkItem({
                 !deliverableUrl.trim()
               }
               onClick={() =>
-                run(() =>
-                  apiRequest(
+                run(async () => {
+                  await apiRequest(
                     "POST",
                     `/api/custom-retainers/${publicId}/tasks/${task.public_id}/submit`,
                     { deliverableUrl: deliverableUrl.trim(), note },
-                  ),
-                )
+                  );
+                  setSubmittedLocally(true);
+                })
               }
             >
               Submit for client review
@@ -595,12 +612,13 @@ export function CyclePayment({
           }
         }}
       >
-        <DialogContent>
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90dvh] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+          <DialogHeader className="shrink-0 px-6 pt-6 pb-4 pr-12">
             <DialogTitle>
               Pay cycle invoice · {gbp(cycle.amount_pence ?? cycle.amountPence)}
             </DialogTitle>
           </DialogHeader>
+          <div className="min-h-0 overflow-y-auto overscroll-contain px-6 pb-6">
           {checkout && stripe && (
             <Elements
               stripe={stripe}
@@ -614,6 +632,7 @@ export function CyclePayment({
               />
             </Elements>
           )}
+          </div>
         </DialogContent>
       </Dialog>
     </>
@@ -637,7 +656,7 @@ function CheckoutForm({ onConfirmed }: { onConfirmed: () => void }) {
       if (error) setMessage(error.message ?? "Payment could not be completed");
       else {
         setMessage(
-          "Payment submitted. Files unlock after verified confirmation.",
+          "Payment submitted. The cycle completes after verified confirmation.",
         );
         onConfirmed();
       }
@@ -653,7 +672,7 @@ function CheckoutForm({ onConfirmed }: { onConfirmed: () => void }) {
     <form onSubmit={pay} className="space-y-4">
       <PaymentElement />
       <p className="text-xs text-muted-foreground">
-        Files unlock after the payment provider confirms payment. Freelancer
+        The cycle completes after verified payment confirmation. Freelancer
         bank arrival is tracked separately.
       </p>
       <button className={primaryClass} disabled={!stripe || !elements || busy}>
