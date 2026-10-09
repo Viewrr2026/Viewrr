@@ -333,6 +333,7 @@ function WorkItem({
       (s: any) => s.retainer_cycle_task_id === task.id,
     ),
     latest = subs[0];
+  const isApproved = latest?.status === "approved" || task.status === "complete";
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
@@ -362,16 +363,21 @@ function WorkItem({
   }
   return (
     <details className="p-4">
-      <summary className="cursor-pointer flex justify-between gap-2 text-sm"><span aria-hidden="true">▸</span><span className="text-xs text-muted-foreground">Expand to submit / review</span>
+      <summary className="cursor-pointer flex justify-between gap-2 text-sm"><span aria-hidden="true">▸</span><span className="text-xs text-muted-foreground">{isApproved ? "View approved delivery" : "Expand to submit / review"}</span>
         <span className="font-medium">{task.title}</span>
-        <span className="text-xs text-muted-foreground">
-          {task.status === "complete"
-            ? "Approved"
-            : task.status.replaceAll("_", " ")}
+        <span className={isApproved
+          ? "inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+          : "text-xs text-muted-foreground"}>
+          {isApproved ? "✓ Approved" : task.status.replaceAll("_", " ")}
         </span>
       </summary>
       <div className="mt-4 space-y-3">
         <p className="text-sm whitespace-pre-wrap">{task.description}</p>
+        {isApproved && (
+          <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+            Approved by the client. Your delivery and submission history are available below.
+          </p>
+        )}
         {subs.map((s: any) => (
           <div
             key={s.id}
@@ -426,7 +432,7 @@ function WorkItem({
             </button>
           </div>
         )}
-        {!isClient && cycle.canWork && (
+        {!isClient && cycle.canWork && !isApproved && (
           <div className="space-y-3">
             <label className="block text-sm">
               Delivery link
