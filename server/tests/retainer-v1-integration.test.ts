@@ -567,3 +567,49 @@ test("declined initial retainer remains an invitation record and cannot be activ
   await assert.rejects(reviewProposal(pid, 2, 1, "accept", ""));
   await assert.rejects(proposeCustomRetainer(pid, 1, 1, plan()));
 });
+
+test("external links support revisions and one cycle invoice without private storage", async () => {
+  const { agreementPublicId: publicId } = await createCustomRetainer(2, 1, plan());
+  await reviewProposal(publicId, 1, 1, "accept", "");
+  let w = await customWorkspace(publicId, 2);
+  const first = w.cycles[0];
+  const tasks = w.tasks.filter((t: any) => t.retainer_cycle_id === first.id);
+  const task = tasks[0];
+  const url = "https://docs.google.com/document/d/viewrr-test/edit";
+  for (const invalid of ["javascript:alert(1)", "data:text/html,test", "https://user:password@example.com", "not a url"]) {
+    await assert.rejects(() => submitCustomWork(publicId, 2, task.public_id, undefined, "Review", invalid));
+  }
+  await assert.rejects(() => submitCustomWork(publicId, 1, task.public_id, undefined, "Review", url));
+  await assert.rejects(() => submitCustomWork(publicId, 3, task.public_id, undefined, "Review", url));
+  await assert.rejects(() => submitCustomWork(publicId, 2, task.public_id, undefined, "Review"));
+  await assert.rejects(() => submitCustomWork(publicId, 2, task.public_id, randomUUID(), "Review", url));
+  await submitCustomWork(publicId, 2, task.public_id, undefined, "Review", url);
+  await submitCustomWork(publicId, 2, task.public_id, undefined, "Review", url);
+  w = await customWorkspace(publicId, 1);
+  assert.equal(w.submissions.length, 1);
+  assert.equal(w.submissions[0].deliverable_url, url);
+  assert.equal(w.submissions[0].media_id, null);
+  assert.equal(w.cycles[0].invoice_id, null);
+  await reviewCustomWork(publicId, 1, w.submissions[0].id, "request_changes", "Revise title");
+  await submitCustomWork(publicId, 2, task.public_id, undefined, "Review", url);
+  w = await customWorkspace(publicId, 1);
+  assert.equal(w.submissions[0].version, 2);
+  await reviewCustomWork(publicId, 1, w.submissions[0].id, "approve", "");
+  for (const t of tasks.slice(1)) {
+    await submitCustomWork(publicId, 2, t.public_id, undefined, "Review", url);
+    w = await customWorkspace(publicId, 1);
+    const submission = w.submissions.find((s: any) => s.retainer_cycle_task_id === t.id);
+    await reviewCustomWork(publicId, 1, submission.id, "approve", "");
+  }
+  w = await customWorkspace(publicId, 1);
+  assert.ok(w.cycles[0].invoice_id);
+  assert.ok(w.cycles[0].due_at);
+  assert.equal(w.cycles[0].paid_at, null);
+  assert.equal(w.cycles[0].state, "awaiting_payment");
+  const next = w.cycles[1];
+  const nextTask = w.tasks.find((t: any) => t.retainer_cycle_id === next.id);
+  await db.query("UPDATE retainer_cycles SET period_start=$2 WHERE id=$1", [next.id, today]);
+  await submitCustomWork(publicId, 2, nextTask.public_id, undefined, "Within terms", url);
+  await db.query("UPDATE retainer_cycles SET due_at=$2 WHERE id=$1", [first.id, new Date(Date.now() - 1000).toISOString()]);
+  await assert.rejects(() => submitCustomWork(publicId, 2, nextTask.public_id, undefined, "Overdue revision", url));
+});

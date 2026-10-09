@@ -257,9 +257,9 @@ export function CustomCyclePanel({
         {!cycle.paid_at && (
           <p className="text-xs text-muted-foreground">
             {cycle.invoice_id
-              ? userId === data.clientId ? "This cycle’s invoice is ready. Verified payment releases its clean files." : "The client’s cycle invoice is ready. Work can continue only within the agreed payment terms."
+              ? userId === data.clientId ? "This cycle’s invoice is ready. Verified payment completes the cycle." : "The client’s cycle invoice is ready. Work can continue only within the agreed payment terms."
               : "No payment is due for this cycle yet. Its invoice is issued when the client approves all required deliverables."}
-            {" "}Unpaid originals remain protected.
+            {" "}External delivery links use the hosting provider’s permissions; Viewrr cannot watermark or revoke those files.
           </p>
         )}
         {cycle.paid_at && userId === data.freelancerId && (
@@ -324,13 +324,12 @@ function WorkItem({
     [error, setError] = useState(""),
     [note, setNote] = useState(""),
     [feedback, setFeedback] = useState(""),
-    [selectedMedia, setSelectedMedia] = useState(""),
+    [deliverableUrl, setDeliverableUrl] = useState(""),
     [preview, setPreview] = useState<{ url: string; mime: string } | null>(
       null,
     );
   const isClient = userId === data.clientId;
-  const media = data.media.filter((m: any) => m.task_id === task.id),
-    subs = data.submissions.filter(
+  const subs = data.submissions.filter(
       (s: any) => s.retainer_cycle_task_id === task.id,
     ),
     latest = subs[0];
@@ -346,17 +345,6 @@ function WorkItem({
       setBusy(false);
     }
   };
-  async function upload(file: File) {
-    const body = new FormData();
-    body.append("file", file);
-    const res = await fetch(
-      `/api/custom-retainers/${publicId}/tasks/${task.public_id}/media`,
-      { method: "POST", body, credentials: "include" },
-    );
-    const result = await res.json();
-    if (!res.ok) throw new Error(result.error);
-    setSelectedMedia(result.id);
-  }
   async function openMedia(m: any, original = false) {
     const response = await (
       await apiRequest(
@@ -374,7 +362,7 @@ function WorkItem({
   }
   return (
     <details className="p-4">
-      <summary className="cursor-pointer flex justify-between gap-2 text-sm"><span aria-hidden="true">▸</span><span className="text-xs text-muted-foreground">Expand to upload / review</span>
+      <summary className="cursor-pointer flex justify-between gap-2 text-sm"><span aria-hidden="true">▸</span><span className="text-xs text-muted-foreground">Expand to submit / review</span>
         <span className="font-medium">{task.title}</span>
         <span className="text-xs text-muted-foreground">
           {task.status === "complete"
@@ -399,23 +387,21 @@ function WorkItem({
               </p>
             )}
             <div className="flex gap-2 flex-wrap">
-              <button
-                type="button"
-                className={buttonClass}
-                disabled={busy}
-                onClick={() => run(() => openMedia(s))}
-              >
-                View watermarked preview
-              </button>
-              {cycle.paid_at && s.status === "approved" && (
-                <button
-                  type="button"
-                  className={buttonClass}
-                  disabled={busy}
-                  onClick={() => run(() => openMedia(s, true))}
-                >
-                  Receive clean file
-                </button>
+              {s.deliverable_url ? (
+                <a className={buttonClass} href={s.deliverable_url} target="_blank" rel="noopener noreferrer">
+                  Open delivery link
+                </a>
+              ) : (
+                <>
+                  <button type="button" className={buttonClass} disabled={busy} onClick={() => run(() => openMedia(s))}>
+                    View watermarked preview
+                  </button>
+                  {cycle.paid_at && s.status === "approved" && (
+                    <button type="button" className={buttonClass} disabled={busy} onClick={() => run(() => openMedia(s, true))}>
+                      Receive clean file
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -443,79 +429,22 @@ function WorkItem({
         {!isClient && cycle.canWork && (
           <div className="space-y-3">
             <label className="block text-sm">
-              Upload work
+              Delivery link
               <input
-                aria-label={`Upload ${task.title}`}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm"
+                aria-label={`Delivery link for ${task.title}`}
+                type="url"
+                placeholder="https://"
+                className={fieldClass + " mt-1"}
+                value={deliverableUrl}
+                onChange={(e) => setDeliverableUrl(e.target.value)}
                 disabled={busy}
-                className="block mt-2 text-xs max-w-full"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void run(() => upload(f));
-                  e.target.value = "";
-                }}
               />
             </label>
             <p className="text-xs text-muted-foreground">
-              Images and videos up to 200 MB; videos up to 30 minutes. A
-              protected preview is generated before submission.
+              Share a Google Drive, Dropbox or other hosted link. Give the client permission to review it.
+              External links are not watermarked or payment-protected by Viewrr. Use a preview copy if needed.
+              Submit again after changes to create a new review version, even when using the same link.
             </p>
-            {media.map((m: any) => (
-              <div
-                key={m.id}
-                className="flex flex-wrap gap-2 items-center text-xs"
-              >
-                <span>
-                  {m.filename} · {m.status}
-                </span>
-                {m.status === "ready" && (
-                  <button
-                    type="button"
-                    className={buttonClass}
-                    disabled={busy}
-                    onClick={() => run(() => openMedia(m))}
-                  >
-                    Preview
-                  </button>
-                )}
-                {m.status === "failed" && (
-                  <button
-                    type="button"
-                    className={buttonClass}
-                    disabled={busy}
-                    onClick={() =>
-                      run(() =>
-                        apiRequest(
-                          "POST",
-                          `/api/custom-retainers/${publicId}/media/${m.id}/retry`,
-                          {},
-                        ),
-                      )
-                    }
-                  >
-                    Retry preview
-                  </button>
-                )}
-              </div>
-            ))}
-            <label className="block text-sm">
-              Choose processed file
-              <select
-                className={fieldClass + " mt-1"}
-                value={selectedMedia}
-                onChange={(e) => setSelectedMedia(e.target.value)}
-              >
-                <option value="">Select a ready preview</option>
-                {media
-                  .filter((m: any) => m.status === "ready")
-                  .map((m: any) => (
-                    <option key={m.id} value={m.id}>
-                      {m.filename}
-                    </option>
-                  ))}
-              </select>
-            </label>
             <label className="block text-sm">
               Submission note
               <textarea
@@ -530,16 +459,14 @@ function WorkItem({
               disabled={
                 busy ||
                 !note.trim() ||
-                !media.some(
-                  (m: any) => m.id === selectedMedia && m.status === "ready",
-                )
+                !deliverableUrl.trim()
               }
               onClick={() =>
                 run(() =>
                   apiRequest(
                     "POST",
                     `/api/custom-retainers/${publicId}/tasks/${task.public_id}/submit`,
-                    { mediaId: selectedMedia, note },
+                    { deliverableUrl: deliverableUrl.trim(), note },
                   ),
                 )
               }

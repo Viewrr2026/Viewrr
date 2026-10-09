@@ -415,7 +415,7 @@ export async function customWorkspace(publicId: string, userId: number) {
     ).rows;
     const submissions = (
       await db.query(
-        `SELECT s.id,s.public_id,s.retainer_cycle_task_id,s.version,s.note,s.status,s.client_feedback,s.submitted_at,s.media_id,m.mime_type,m.filename FROM retainer_work_item_submissions s JOIN retainer_cycle_tasks t ON t.id=s.retainer_cycle_task_id JOIN retainer_cycles c ON c.id=t.retainer_cycle_id LEFT JOIN retainer_media m ON m.id=s.media_id WHERE c.retainer_agreement_id=$1 ORDER BY s.version DESC`,
+        `SELECT s.id,s.public_id,s.retainer_cycle_task_id,s.version,s.note,s.status,s.client_feedback,s.submitted_at,s.media_id,s.deliverable_url,m.mime_type,m.filename FROM retainer_work_item_submissions s JOIN retainer_cycle_tasks t ON t.id=s.retainer_cycle_task_id JOIN retainer_cycles c ON c.id=t.retainer_cycle_id LEFT JOIN retainer_media m ON m.id=s.media_id WHERE c.retainer_agreement_id=$1 ORDER BY s.version DESC`,
         [a.id],
       )
     ).rows;
@@ -462,8 +462,9 @@ export async function submitCustomWork(
   publicId: string,
   userId: number,
   taskPublicId: string,
-  mediaId: string,
+  mediaId: string | undefined,
   note: string,
+  deliverableUrl?: string,
 ) {
   return retainerTransaction(async (db) => {
     const a = await lockAgreement(db, publicId, userId);
@@ -478,33 +479,50 @@ export async function submitCustomWork(
     if (!t) retainerError("Work item not found", 404);
     const c = await requireWork(db, a, t.retainer_cycle_id);
     if (!note.trim()) retainerError("Add a submission note", 400);
-    const m = (
-      await db.query(
+    let link: string | null = null;
+    if (deliverableUrl !== undefined) {
+      try {
+        const parsed = new URL(deliverableUrl.trim());
+        if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password || deliverableUrl.length > 4000)
+          throw new Error("Invalid link");
+        link = parsed.href;
+      } catch {
+        retainerError("Enter a valid http or https delivery link without embedded credentials", 400);
+      }
+    }
+    if (Boolean(mediaId) === Boolean(link))
+      retainerError("Choose either a delivery link or a processed file", 400);
+    if (mediaId) {
+      const m = (await db.query(
         "SELECT * FROM retainer_media WHERE id=$1 AND task_id=$2 AND status='ready'",
         [mediaId, t.id],
-      )
-    ).rows[0];
-    if (!m) retainerError("Choose a processed preview for this item");
+      )).rows[0];
+      if (!m) retainerError("Choose a processed preview for this item");
+    }
     const latest = (
       await db.query(
         "SELECT * FROM retainer_work_item_submissions WHERE retainer_cycle_task_id=$1 ORDER BY version DESC LIMIT 1",
         [t.id],
       )
     ).rows[0];
-    if (latest?.media_id === mediaId) return { ok: true };
+    if (latest?.status === "submitted" &&
+        latest.media_id === (mediaId ?? null) &&
+        latest.deliverable_url === link &&
+        latest.note === note.trim().slice(0, 5000)) return { ok: true };
     await db.query(
       "UPDATE retainer_work_item_submissions SET status='superseded' WHERE retainer_cycle_task_id=$1 AND status IN ('submitted','approved')",
       [t.id],
     );
     await db.query(
-      `INSERT INTO retainer_work_item_submissions(public_id,retainer_cycle_task_id,version,submitted_by,note,media_id,status,submitted_at,created_at) VALUES($1,$2,$3,$4,$5,$6,'submitted',$7,$7)`,
+      `INSERT INTO retainer_work_item_submissions(public_id,retainer_cycle_task_id,version,submitted_by,note,media_id,deliverable_url,status,submitted_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'submitted',$8,$8)`,
       [
         id("rws"),
         t.id,
         (latest?.version ?? 0) + 1,
         userId,
         note.trim().slice(0, 5000),
-        mediaId,
+        mediaId ?? null,
+        link,
         new Date().toISOString(),
       ],
     );
