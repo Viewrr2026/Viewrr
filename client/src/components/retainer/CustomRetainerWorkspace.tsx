@@ -179,12 +179,15 @@ export function CustomCyclePanel({
   publicId,
   data,
   userId,
+  initialCycleId,
 }: {
   publicId: string;
   data: any;
   userId: number;
+  initialCycleId?: number;
 }) {
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(initialCycleId ?? null);
+  useEffect(() => { if (initialCycleId !== undefined) setSelected(initialCycleId); }, [initialCycleId]);
   const cycle =
     data.cycles.find((c: any) => c.id === selected) ??
     data.cycles.find((c: any) => c.canWork) ??

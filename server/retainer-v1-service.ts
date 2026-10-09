@@ -437,8 +437,14 @@ export async function customWorkspace(publicId: string, userId: number) {
     const refundHistory = (await db.query(`SELECT p.retainer_cycle_id,r.stripe_refund_id,r.amount_pence,r.status,r.created_at
       FROM payment_refunds r JOIN payments p ON p.id=r.payment_id JOIN retainer_cycles c ON c.id=p.retainer_cycle_id
       WHERE c.retainer_agreement_id=$1 ORDER BY r.created_at DESC`,[a.id])).rows;
+    const satisfaction = (await db.query(
+      "SELECT score FROM retainer_satisfaction_pulses WHERE retainer_agreement_id=$1", [a.id],
+    )).rows;
+    const openRequests = (await db.query(
+      "SELECT COUNT(*)::int AS count FROM retainer_requests WHERE retainer_agreement_id=$1 AND status IN ('pending','accepted','scheduled','clarification')", [a.id],
+    )).rows[0].count;
     return {
-      versions, refundHistory,
+      versions, refundHistory, satisfaction, openRequests,
       plan: await currentPlan(db, a),
       latestPlan: latest.snapshot,
       latestVersion: latest.version_number,

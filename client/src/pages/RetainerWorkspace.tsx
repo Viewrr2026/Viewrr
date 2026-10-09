@@ -1,3 +1,4 @@
+import { CustomRetainerOverview, CustomRetainerHistory, CustomPaymentSuccess } from "@/components/retainer/CustomRetainerProgress";
 import { useCustomRetainer, CustomProposal, CustomCyclePanel, CyclePayment } from "@/components/retainer/CustomRetainerWorkspace";
 import { useState, useMemo } from "react";
 import { useParams } from "wouter";
@@ -118,6 +119,8 @@ export default function RetainerWorkspace() {
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [pauseModalOpen, setPauseModalOpen] = useState(false);
   const [endModalOpen, setEndModalOpen] = useState(false);
+  const [customSelectedCycle, setCustomSelectedCycle] = useState<number | undefined>();
+  const showCustomCycle = (id: number) => { setCustomSelectedCycle(id); setTab("current_cycle"); };
   const [expandedCycle, setExpandedCycle] = useState<string | null>(null);
 
   const workspaceQuery = useWorkspace(publicId, user?.id);
@@ -126,7 +129,11 @@ export default function RetainerWorkspace() {
   const isCustom = agreement?.workflow_version === 1;
   const customQuery = useCustomRetainer(publicId, isCustom);
   const onboarding = data?.onboarding ?? {};
-  const currentCycle = data?.currentCycle;
+  const customCurrent = customQuery.data?.cycles.find((c: any) => !c.paid_at) ?? customQuery.data?.cycles.at(-1);
+  const currentCycle = isCustom && customCurrent ? {
+    ...customCurrent, cycleNumber: customCurrent.cycle_number,
+    periodStart: customCurrent.period_start, periodEnd: customCurrent.period_end,
+  } : data?.currentCycle;
   const cycles: any[] = data?.cycles ?? [];
   const deliverables: any[] = data?.deliverables ?? [];
   const requests: any[] = data?.requests ?? [];
@@ -398,7 +405,7 @@ export default function RetainerWorkspace() {
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Planned cycle end</p>
-                  <p className="text-sm font-bold">{fmtDate(agreement.nextInvoiceDate)}</p>
+                  <p className="text-sm font-bold">{fmtDate(isCustom ? customCurrent?.period_end : agreement.nextInvoiceDate)}</p>
                 </div>
               </div>
               {primaryAction &&
@@ -672,6 +679,7 @@ export default function RetainerWorkspace() {
               </div>
             </div>
           )}
+          {isCustom ? (customQuery.data ? <CustomRetainerOverview data={customQuery.data} onCycle={showCustomCycle} /> : <p>Loading retainer progress…</p>) : <>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-5 rounded-2xl border border-border bg-card flex items-center gap-4">
               <HealthRing score={healthScore} />
@@ -713,6 +721,7 @@ export default function RetainerWorkspace() {
             <MetricTile label="Open requests" value={String(requests.filter(r => r.status === "pending").length)} icon={<Inbox size={13} />} />
           </div>
 
+          </>}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <QuickActionCard icon={<Plus size={15} />} label="New request" onClick={() => setRequestModalOpen(true)} />
             <QuickActionCard icon={<MessageSquare size={15} />} label="Message" onClick={() => setTab("messages")} />
@@ -722,7 +731,7 @@ export default function RetainerWorkspace() {
       )}
 
       {/* ── Current Cycle: individual work items ── */}
-      {isCustom && !isPendingProposal && tab === "current_cycle" && (customQuery.data ? <CustomCyclePanel publicId={publicId!} data={customQuery.data} userId={user!.id}/> : <p>Loading cycle details…</p>)}
+      {isCustom && !isPendingProposal && tab === "current_cycle" && (customQuery.data ? <CustomCyclePanel publicId={publicId!} data={customQuery.data} userId={user!.id} initialCycleId={customSelectedCycle}/> : <p>Loading cycle details…</p>)}
       {!isCustom && !isPendingProposal && !isDeclined && tab === "current_cycle" && (
         <div className="space-y-4">
           {!currentCycle ? (
@@ -1200,8 +1209,10 @@ export default function RetainerWorkspace() {
         </div>
       )}
 
+      {isCustom && customQuery.data && <CustomPaymentSuccess data={customQuery.data} publicId={publicId!} userId={user!.id} onCycle={showCustomCycle} />}
+      {isCustom && !isPendingProposal && !isDeclined && tab === "history" && (customQuery.data ? <CustomRetainerHistory data={customQuery.data} onCycle={showCustomCycle} /> : <p>Loading history…</p>)}
       {/* ── History ── */}
-      {!isPendingProposal && !isDeclined && tab === "history" && (
+      {!isCustom && !isPendingProposal && !isDeclined && tab === "history" && (
         <div className="space-y-2">
           {cycles.filter((c: any) => c.status === "completed").length === 0 && (
             <p className="text-center text-xs text-muted-foreground py-12">No completed cycles yet.</p>
