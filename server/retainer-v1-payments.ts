@@ -5,7 +5,7 @@ import {
   retainerPool,
   retainerError,
 } from "./retainer-v1-db";
-import { lockAgreement, event, notice } from "./retainer-v1-service";
+import { lockAgreement, event, notice, completeCustomRetainer } from "./retainer-v1-service";
 import { VIEWRR_FEE_PERCENT } from "./payment-service";
 
 let testStripe: Stripe | undefined;
@@ -206,7 +206,7 @@ export async function fulfilCustomCyclePayment(
       ])
     ).rows[0];
     validateCycleIntent(p, c, intent);
-    if (c.paid_at) return true;
+    if (c.paid_at) { await completeCustomRetainer(db, a); return true; }
     if (
       !c.accepted_at ||
       p.client_id !== a.client_id ||
@@ -252,6 +252,7 @@ export async function fulfilCustomCyclePayment(
       `payment:${p.id}`,
       `${c.cycle_name}: payment confirmed; this cycle is complete.${c.freeze_notified_at ? " The overdue-payment restriction has been lifted. Other schedule or agreement restrictions still apply." : ""}`,
     );
+    await completeCustomRetainer(db, a);
     return true;
   });
 }

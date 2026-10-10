@@ -1,3 +1,4 @@
+import { startNotificationDeliveryWorker } from "./notification-delivery";
 import { recoverRecentProjectPayments } from "./payment-service";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
@@ -174,6 +175,7 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      startNotificationDeliveryWorker();
       void recoverRecentProjectPayments().catch(error => console.error("[payment-recovery]", error.message));
     },
   );

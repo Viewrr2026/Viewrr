@@ -427,6 +427,7 @@ export default function RetainerWorkspace() {
       </div>
 
       {/* ── Retainer proposal decision ── */}
+      {isCustom && customQuery.data?.status === "completed" && <div className="rounded-xl border border-green-300 bg-green-50 p-4 text-green-900"><strong>Retainer complete</strong><p>All cycles are approved and paid. Your invoices, refund history and deliveries remain available.</p></div>}
       {isCustom && (isPendingProposal || (customQuery.data?.pending && tab !== "agreement")) && customQuery.data && <CustomProposal publicId={publicId!} data={customQuery.data} userId={user!.id}/>}
       {isCustom && customQuery.isError && <p role="alert" className="text-sm text-red-600 mb-4">Unable to load custom cycle details. Please refresh.</p>}
       {!isCustom && isPendingProposal && (
@@ -724,7 +725,7 @@ export default function RetainerWorkspace() {
 
           </>}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <QuickActionCard icon={<Plus size={15} />} label="New request" onClick={() => setRequestModalOpen(true)} />
+            <QuickActionCard icon={<Plus size={15} />} label="New request" disabled={isCustom && customQuery.data?.status === "completed"} onClick={() => setRequestModalOpen(true)} />
             <QuickActionCard icon={<MessageSquare size={15} />} label="Message" onClick={() => setTab("messages")} />
             <QuickActionCard icon={<FileText size={15} />} label="View agreement" onClick={() => setTab("agreement")} />
           </div>
@@ -999,7 +1000,7 @@ export default function RetainerWorkspace() {
           <div className="flex justify-end">
             <button
               type="button"
-              onClick={() => setRequestModalOpen(true)}
+              disabled={isCustom && customQuery.data?.status === "completed"} onClick={() => setRequestModalOpen(true)}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold text-white"
               style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
             >
@@ -1194,14 +1195,14 @@ export default function RetainerWorkspace() {
             <div className="flex flex-col sm:flex-row gap-2">
               <button
                 type="button"
-                onClick={() => setPauseModalOpen(true)}
+                disabled={isCustom && customQuery.data?.status === "completed"} onClick={() => setPauseModalOpen(true)}
                 className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold border border-border bg-card hover:bg-zinc-50"
               >
                 <PauseCircle size={13} /> Pause Retainer
               </button>
               <button
                 type="button"
-                onClick={() => setEndModalOpen(true)}
+                disabled={isCustom && customQuery.data?.status === "completed"} onClick={() => setEndModalOpen(true)}
                 className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold border border-red-300 text-red-700 bg-card hover:bg-red-50"
               >
                 <XCircle size={13} /> End Retainer
@@ -1308,7 +1309,7 @@ export default function RetainerWorkspace() {
         tab !== "requests" && (
         <button
           type="button"
-          onClick={() => setRequestModalOpen(true)}
+          disabled={isCustom && customQuery.data?.status === "completed"} onClick={() => setRequestModalOpen(true)}
           className="fixed bottom-6 right-6 flex items-center gap-1.5 px-4 py-3 rounded-full text-sm font-semibold text-white shadow-lg"
           style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
         >

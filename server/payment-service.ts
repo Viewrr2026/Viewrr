@@ -1,3 +1,4 @@
+import { queuePayoutNotice } from "./notification-delivery";
 import { syncChargeRefunds } from "./payment-refund-sync";
 import { confirmStoredPayment } from "./payment-confirmation";
 import { retainerPool } from "./retainer-v1-db";
@@ -714,7 +715,7 @@ export async function processStripeEvent(
           );
 
           if (status === "paid") {
-            await storage.createNotification({
+            await queuePayoutNotice(`payout:${payout.id}:${status}`, {
               recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
               message: `\u2705 Payment Complete — Your earnings of £${(payout.amount / 100).toFixed(2)} were marked paid by Stripe. Check your bank statement to confirm arrival.`,
@@ -726,7 +727,7 @@ export async function processStripeEvent(
               const arrivalStr = payout.arrival_date
                 ? new Date(payout.arrival_date * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
                 : null;
-              await storage.createNotification({
+              await queuePayoutNotice(`payout:${payout.id}:${status}`, {
                 recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
                 type: "payment_received",
                 message: `\uD83D\uDCB8 Your payout is on its way — Stripe has initiated your payout of \u00a3${(payout.amount / 100).toFixed(2)}.${arrivalStr ? ` Estimated bank arrival: ${arrivalStr}.` : ""}`,
@@ -734,7 +735,7 @@ export async function processStripeEvent(
               });
             }
           } else if (status === "failed") {
-            await storage.createNotification({
+            await queuePayoutNotice(`payout:${payout.id}:${status}`, {
               recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
               message: `A payout of \u00a3${(payout.amount / 100).toFixed(2)} failed. Please check your bank details in your Stripe account.`,
@@ -760,7 +761,7 @@ export async function processStripeEvent(
           const available = (balanceObj.available ?? []).find((b: any) => b.currency === "gbp");
           const amountPence = available?.amount ?? 0;
           if (amountPence > 0) {
-            await storage.createNotification({
+            await queuePayoutNotice(`balance:${event.id}`, {
               recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
               message: `\uD83C\uDF89 Your earnings are now available — Stripe has released \u00a3${(amountPence / 100).toFixed(2)} to your available Stripe balance. Check Stripe for your payout schedule and bank arrival estimate.`,

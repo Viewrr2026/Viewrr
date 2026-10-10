@@ -12,7 +12,7 @@ export function RetainerChangeRequests({ data, publicId, userId, onNew, legacyRe
     <div className="rounded-2xl border bg-card p-5 space-y-3">
       <h2 className="font-semibold">Agreement change requests</h2>
       <p className="text-sm text-muted-foreground">Propose extra deliverables, revised cycle dates or an early start. Current terms stay in effect until both parties agree. Approved or paid cycles retain their original records.</p>
-      <button className={primaryClass} onClick={onNew} disabled={!!data.pending}>New change request</button>
+      <button className={primaryClass} onClick={onNew} disabled={!!data.pending || data.status === "completed"}>New change request</button>
       {data.pending && <p className="text-sm">A proposal is waiting for agreement. Review or counter it below before starting another request.</p>}
     </div>
     <CustomProposal publicId={publicId} data={data} userId={userId} />

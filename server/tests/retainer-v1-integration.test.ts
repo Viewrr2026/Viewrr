@@ -1,3 +1,4 @@
+import { queueDelivery, deliverNotificationBatch } from "../notification-delivery";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -5,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { setRetainerTestDatabase } from "../retainer-v1-db";
 import {
+  completeCustomRetainer,
   customRetainerInvitations,
   unacceptedRetainerProjectIds,
   createCustomRetainer,
@@ -45,6 +47,7 @@ before(async () => {
     "0011_retainer_work_item_submissions.sql",
     "0012_retainer_stage_updates.sql",
     "0013_custom_retainer_cycles.sql",
+    "0016_notification_delivery.sql",
   ])
     await db.exec(
       await readFile(
@@ -52,6 +55,7 @@ before(async () => {
         "utf8",
       ),
     );
+  await db.exec("ALTER TABLE notifications ADD COLUMN target_type TEXT; ALTER TABLE notifications ADD COLUMN target_id INTEGER; ALTER TABLE users ADD COLUMN account_status TEXT DEFAULT 'active'");
   setRetainerTestDatabase({
     query: async (text, values) => (await db.query(text, values)) as any,
     transaction: (fn) =>
@@ -346,6 +350,7 @@ test("verified webhook completes only its cycle and is safe to replay", async ()
   assert.ok(w.cycles[0].paid_at);
   assert.equal(w.cycles[1].paid_at, null);
   assert.equal(w.cycles[2].paid_at, null);
+  assert.equal(w.status, "active", "unpaid future cycles keep the agreement active");
   const events = await db.query<any>(
     "SELECT * FROM retainer_events WHERE event_key=$1",
     [`payment:${p.id}`],
@@ -712,4 +717,53 @@ test("date amendments reject overlap and leave active terms intact until accepte
   await reviewProposal(publicId,1,2,"accept","");
   w=await customWorkspace(publicId,1);
   assert.equal(w.cycles[1].period_start,nextDate(before,1));
+});
+
+test("final verified payment completes agreement and project once, retaining invoices", async () => {
+  const single = plan(); single.cycles = single.cycles.slice(0,1); single.endDate = single.cycles[0].endDate;
+  const {agreementPublicId: publicId} = await createCustomRetainer(2,1,single,randomUUID());
+  await reviewProposal(publicId,1,1,"accept","");
+  const c = await approveFirstCycle(publicId);
+  const a = (await db.query<any>("SELECT * FROM retainer_agreements WHERE public_id=$1",[publicId])).rows[0];
+  const paymentId=`pay_${randomUUID()}`, intentId=`pi_${randomUUID()}`;
+  const p = (await db.query<any>(`INSERT INTO payments(public_id,project_id,invoice_id,retainer_cycle_id,client_id,freelancer_id,gross_pence,platform_fee_pence,freelancer_pence,stripe_payment_intent_id,payment_kind)
+    VALUES($1,$2,$3,$4,1,2,200000,22000,178000,$5,'retainer_cycle') RETURNING *`,[paymentId,a.project_id,c.invoice_id,c.id,intentId])).rows[0];
+  await db.query("UPDATE retainer_cycles SET payment_id=$2 WHERE id=$1",[c.id,p.id]);
+  await db.query("UPDATE retainer_cycles SET paid_at=NOW()::text WHERE id=$1",[c.id]);
+  assert.equal(await completeCustomRetainer({query:async(q,v)=>db.query(q,v) as any},a),false,"a paid flag without verified ledger settlement cannot complete the retainer");
+  await db.query("UPDATE retainer_cycles SET paid_at=NULL WHERE id=$1",[c.id]);
+  const intent:any={id:intentId,status:"succeeded",amount:200000,amount_received:200000,currency:"gbp",latest_charge:"ch_final",
+    metadata:{viewrr_payment_id:paymentId,cyclePublicId:c.public_id,clientUserId:"1"}};
+  await fulfilCustomCyclePayment(intent); await fulfilCustomCyclePayment(intent);
+  for (const role of [1,2]) {
+    const w=await customWorkspace(publicId,role); assert.equal(w.status,"completed");
+    assert.equal(w.cycleInvoices[0].id,c.invoice_id); assert.equal(w.cycles[0].canWork,false);
+  }
+  assert.equal((await db.query<any>("SELECT status FROM projects WHERE id=$1",[a.project_id])).rows[0].status,"completed");
+  assert.equal((await db.query<any>("SELECT * FROM retainer_events WHERE event_key=$1",[`retainer-completed:${a.id}`])).rows.length,1);
+  assert.equal((await db.query<any>("SELECT * FROM retainer_notice_outbox WHERE event_key LIKE $1",[`retainer-completed:${a.id}:%`])).rows.length,2);
+  await assert.rejects(()=>proposeCustomRetainer(publicId,1,1,single),/cannot be revised/);
+});
+
+test("channel delivery retries independently and preserves accepted devices", async () => {
+  await db.exec(`CREATE TABLE IF NOT EXISTS notification_preferences(user_id INTEGER PRIMARY KEY,email_payment_updates BOOLEAN,email_stage_updates BOOLEAN,email_project_invitations BOOLEAN);
+    DELETE FROM notification_delivery_outbox;`);
+  const adapter:any={query:async(text:string,values:any[])=>db.query(text,values)};
+  const notice={recipientId:1,type:"payment_received",message:"Test payout",link:"/your-work"};
+  await queueDelivery(adapter,"payout:test:paid",notice); await queueDelivery(adapter,"payout:test:paid",notice);
+  assert.equal((await db.query("SELECT * FROM notification_delivery_outbox")).rows.length,1);
+  let emails=0,pushes=0;
+  await deliverNotificationBatch({email:async()=>{emails++;},push:async(row,accepted)=>{pushes++;await accepted("accepted-device");throw new Error("second device unavailable");}});
+  let row:any=(await db.query("SELECT * FROM notification_delivery_outbox")).rows[0];
+  assert.equal(row.email_done,true); assert.equal(row.push_done,false); assert.deepEqual(row.accepted_push_tokens,["accepted-device"]);
+  const notificationId=row.notification_id;
+  await db.exec("UPDATE notification_delivery_outbox SET next_attempt_at=NOW()");
+  await deliverNotificationBatch({email:async()=>{emails++;},push:async(row,accepted)=>{pushes++;assert.deepEqual(row.accepted_push_tokens,["accepted-device"]);await accepted("second-device");}});
+  row=(await db.query("SELECT * FROM notification_delivery_outbox")).rows[0];
+  assert.equal(row.notification_id,notificationId); assert.equal(row.push_done,true); assert.equal(emails,1); assert.equal(pushes,2);
+  await deliverNotificationBatch({email:async()=>{assert.fail("must not resend");},push:async()=>{assert.fail("must not resend");}});
+  await db.query("INSERT INTO notification_preferences(user_id,email_payment_updates) VALUES(2,FALSE)");
+  await queueDelivery(adapter,"payout:optout:paid",{...notice,recipientId:2});
+  await deliverNotificationBatch({email:async()=>{assert.fail("opted out email");},push:async()=>{}});
+  row=(await db.query("SELECT * FROM notification_delivery_outbox WHERE recipient_id=2")).rows[0]; assert.equal(row.email_done,true); assert.ok(row.notification_id);
 });

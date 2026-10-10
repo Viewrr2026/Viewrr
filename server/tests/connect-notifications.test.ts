@@ -6,7 +6,7 @@ import { transformSync } from 'esbuild';
 // Run the actual switch cases with database/storage adapters, without Stripe network calls.
 const source = readFileSync(new URL('../payment-service.ts', import.meta.url), 'utf8');
 const cases = source.slice(source.indexOf('    case "payout.created":'), source.indexOf('    case "charge.dispute.created":'));
-const js = transformSync(`async function handle(event, sqlClient, storage, getStripe = () => ({payouts:{retrieve:async()=>event.data.object},balance:{retrieve:async()=>event.data.object}})) { switch(event.type) { ${cases} } }`, { loader: 'ts', target: 'es2022' }).code;
+const js = transformSync(`async function handle(event, sqlClient, storage, getStripe = () => ({payouts:{retrieve:async()=>event.data.object},balance:{retrieve:async()=>event.data.object}})) { const queuePayoutNotice = (key, data) => storage.createNotification(data); switch(event.type) { ${cases} } }`, { loader: 'ts', target: 'es2022' }).code;
 const handle = new Function(`${js}; return handle;`)();
 function setup(failFirst = false) {
   const payouts = new Map();

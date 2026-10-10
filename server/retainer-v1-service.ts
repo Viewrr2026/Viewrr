@@ -40,6 +40,25 @@ export async function notice(
       [a.id, recipient, `${key}:${recipient}`, message],
     );
 }
+// The caller holds the agreement lock. Every cycle needs approved work and a
+// verified ledger payment; merely setting a cycle paid flag cannot finish it.
+export async function completeCustomRetainer(db: RetainerDb, a: any) {
+  const ready = (await db.query(`SELECT a.id FROM retainer_agreements a
+    WHERE a.id=$1 AND a.workflow_version=1 AND a.status IN ('active','paused') AND a.draft_data IS NULL
+    AND EXISTS(SELECT 1 FROM retainer_cycles c WHERE c.retainer_agreement_id=a.id)
+    AND NOT EXISTS(SELECT 1 FROM retainer_cycles c WHERE c.retainer_agreement_id=a.id AND
+      (c.accepted_at IS NULL OR c.paid_at IS NULL OR NOT EXISTS(
+        SELECT 1 FROM payments p WHERE p.id=c.payment_id AND p.retainer_cycle_id=c.id
+        AND p.invoice_id=c.invoice_id AND p.status IN ('succeeded','partially_refunded','refunded') AND p.succeeded_at IS NOT NULL)))
+    AND NOT EXISTS(SELECT 1 FROM retainer_cycle_tasks t JOIN retainer_cycles c ON c.id=t.retainer_cycle_id
+      WHERE c.retainer_agreement_id=a.id AND t.status<>'complete')`,[a.id])).rows[0];
+  if (!ready) return false;
+  await db.query("UPDATE retainer_agreements SET status='completed' WHERE id=$1",[a.id]);
+  await db.query("UPDATE projects SET status='completed' WHERE id=$1",[a.project_id]);
+  await event(db,a,null,`retainer-completed:${a.id}`,"retainer_completed");
+  await notice(db,a,`retainer-completed:${a.id}`,`${a.title}: all cycles are approved and paid. Your retainer is complete. Invoice, refund and delivery history remain available.`);
+  return true;
+}
 export async function lockAgreement(
   db: RetainerDb,
   publicId: string,
@@ -429,6 +448,7 @@ export async function reviewProposal(
       `proposal-review:${a.id}:${version}`,
       `${a.title}: proposal ${action === "accept" ? "accepted" : action === "decline" ? "declined" : "changes requested"}`,
     );
+    await completeCustomRetainer(db, a);
     return { ok: true };
   });
 }
