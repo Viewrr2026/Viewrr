@@ -469,6 +469,10 @@ export async function customWorkspace(publicId: string, userId: number) {
     const refundHistory = (await db.query(`SELECT p.retainer_cycle_id,r.stripe_refund_id,r.amount_pence,r.status,r.created_at
       FROM payment_refunds r JOIN payments p ON p.id=r.payment_id JOIN retainer_cycles c ON c.id=p.retainer_cycle_id
       WHERE c.retainer_agreement_id=$1 ORDER BY r.created_at DESC`,[a.id])).rows;
+    const cycleInvoices = (await db.query(`SELECT i.id,i.invoice_number,i.project_title,i.client_name,
+      i.subtotal_pence,i.total_pence,i.issued_at,i.status,c.id AS cycle_id,u.name AS freelancer_name
+      FROM invoices i JOIN retainer_cycles c ON c.invoice_id=i.id
+      JOIN users u ON u.id=i.freelancer_id WHERE c.retainer_agreement_id=$1`, [a.id])).rows;
     const satisfaction = (await db.query(
       "SELECT score FROM retainer_satisfaction_pulses WHERE retainer_agreement_id=$1", [a.id],
     )).rows;
@@ -476,7 +480,7 @@ export async function customWorkspace(publicId: string, userId: number) {
       "SELECT COUNT(*)::int AS count FROM retainer_requests WHERE retainer_agreement_id=$1 AND status IN ('pending','accepted','scheduled','clarification')", [a.id],
     )).rows[0].count;
     return {
-      versions, refundHistory, satisfaction, openRequests: openRequests + (a.draft_data ? 1 : 0), proposalDecisions,
+      cycleInvoices, versions, refundHistory, satisfaction, openRequests: openRequests + (a.draft_data ? 1 : 0), proposalDecisions,
       plan: await currentPlan(db, a),
       latestPlan: latest.snapshot,
       latestVersion: latest.version_number,

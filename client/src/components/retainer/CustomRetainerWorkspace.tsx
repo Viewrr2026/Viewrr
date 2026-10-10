@@ -274,8 +274,8 @@ export function CustomCyclePanel({
           </p>
         )}
         {!!data.refundHistory?.filter((r:any)=>r.retainer_cycle_id===cycle.id).length && <div className="text-sm"><strong>Cycle refund history</strong>{data.refundHistory.filter((r:any)=>r.retainer_cycle_id===cycle.id).map((r:any)=><p key={r.stripe_refund_id}>{gbp(r.amount_pence)} · {r.status} · {new Date(r.created_at).toLocaleDateString("en-GB")}</p>)}</div>}
-        {cycle.accepted_at && !cycle.paid_at && userId === data.clientId && (
-          <CyclePayment publicId={publicId} cycle={cycle} />
+        {cycle.invoice_id && (
+          <CyclePayment publicId={publicId} cycle={cycle} data={data} userId={userId} />
         )}
       </div>
       {groups.map((group) => (
@@ -558,10 +558,21 @@ function WorkItem({
 export function CyclePayment({
   publicId,
   cycle,
+  data,
+  userId,
 }: {
   publicId: string;
   cycle: any;
+  data: any;
+  userId: number;
 }) {
+  const [open, setOpen] = useState(false);
+  const invoice = data.cycleInvoices?.find((i: any) => i.id === cycle.invoice_id);
+  const tasks = data.tasks.filter((t: any) => t.retainer_cycle_id === cycle.id);
+  const refunds = (data.refundHistory ?? []).filter((r: any) => r.retainer_cycle_id === cycle.id);
+  const refunded = refunds.filter((r: any) => r.status === "succeeded").reduce((n: number, r: any) => n + Number(r.amount_pence), 0);
+  const canPay = !!invoice && !!cycle.accepted_at && !cycle.paid_at && refunded === 0 && userId === data.clientId;
+  const status = refunded >= Number(invoice?.total_pence) && refunded > 0 ? "Fully refunded" : refunded > 0 ? "Partially refunded" : cycle.paid_at ? "Paid" : cycle.due_at && new Date(cycle.due_at).getTime() <= Date.now() ? "Overdue" : "Due";
   const [checkout, setCheckout] = useState<any>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -571,7 +582,9 @@ export function CyclePayment({
       checkout?.publishableKey ? loadStripe(checkout.publishableKey) : null,
     [checkout?.publishableKey],
   );
+  useEffect(() => { if (!canPay) setCheckout(null); }, [canPay]);
   async function start() {
+    if (!canPay || busy) return;
     setBusy(true);
     setError("");
     try {
@@ -597,9 +610,9 @@ export function CyclePayment({
         type="button"
         className={primaryClass}
         disabled={busy}
-        onClick={start}
+        onClick={() => { setOpen(true); setError(""); }}
       >
-        {busy ? "Opening checkout…" : "Pay cycle invoice"}
+        View cycle invoice
       </button>
       {error && (
         <p role="alert" className="text-sm text-red-600">
@@ -607,8 +620,9 @@ export function CyclePayment({
         </p>
       )}
       <Dialog
-        open={!!checkout}
+        open={open}
         onOpenChange={(open) => {
+          setOpen(open);
           if (!open) {
             setCheckout(null);
             refresh();
@@ -618,10 +632,34 @@ export function CyclePayment({
         <DialogContent className="flex max-h-[90dvh] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
           <DialogHeader className="shrink-0 px-6 pt-6 pb-4 pr-12">
             <DialogTitle>
-              Pay cycle invoice · {gbp(cycle.amount_pence ?? cycle.amountPence)}
+              {checkout ? "Pay cycle invoice" : "Cycle invoice"} · {gbp(invoice?.total_pence ?? cycle.amount_pence)}
             </DialogTitle>
           </DialogHeader>
           <div className="min-h-0 overflow-y-auto overscroll-contain px-6 pb-6">
+          {!checkout && <div className="space-y-5 text-sm">
+            {!invoice ? <p role="status">Loading invoice details…</p> : <>
+              <div><h3 className="font-semibold text-base">{invoice.project_title}</h3><p>{cycle.cycle_name} · Cycle {cycle.cycle_number}</p><p className="text-muted-foreground">{cycle.period_start} → {cycle.period_end}</p></div>
+              <dl className="grid grid-cols-2 gap-3">
+                <div><dt className="text-muted-foreground">Invoice number</dt><dd className="break-all">{invoice.invoice_number}</dd></div>
+                <div><dt className="text-muted-foreground">Status</dt><dd className="font-semibold">{status}</dd></div>
+                <div><dt className="text-muted-foreground">From</dt><dd>{invoice.freelancer_name}</dd></div>
+                <div><dt className="text-muted-foreground">Bill to</dt><dd>{invoice.client_name}</dd></div>
+                <div><dt className="text-muted-foreground">Issued</dt><dd>{new Date(invoice.issued_at).toLocaleDateString("en-GB", {timeZone: "Europe/London"})}</dd></div>
+                <div><dt className="text-muted-foreground">Payment deadline</dt><dd>{cycle.due_at ? new Date(cycle.due_at).toLocaleString("en-GB", {timeZone: "Europe/London"}) + " (London)" : "—"}</dd></div>
+              </dl>
+              <section><h4 className="font-semibold mb-2">Deliverables included</h4><ul className="divide-y divide-border rounded-lg border border-border px-3">{tasks.map((t: any) => <li key={t.id} className="flex justify-between gap-3 py-3"><span>{t.title}</span><span className="shrink-0 text-muted-foreground">{t.status === "complete" ? "Approved" : "Awaiting approval"}</span></li>)}</ul></section>
+              <div className="border-t border-border pt-3 space-y-2">
+                <p className="flex justify-between gap-3"><span>Agreed cycle price</span><span>{gbp(invoice.subtotal_pence)}</span></p>
+                <p className="text-xs text-muted-foreground">Includes mutually agreed scope changes invoiced for this cycle. Deliverables are paid together, without individual item prices.</p>
+                <p className="flex justify-between gap-3 text-base font-semibold"><span>Total (GBP)</span><span>{gbp(invoice.total_pence)}</span></p>
+              </div>
+              {!!refunds.length && <section><h4 className="font-semibold">Refund history</h4><p className="text-xs text-muted-foreground">The original invoice is preserved. Refunds are recorded separately.</p>{refunds.map((r: any) => <p key={r.stripe_refund_id}>{new Date(r.created_at).toLocaleDateString("en-GB")} · {gbp(r.amount_pence)} · {r.status}</p>)}</section>}
+              {canPay && <button type="button" className={primaryClass + " w-full"} disabled={busy} onClick={start}>{busy ? "Opening secure payment…" : `Pay ${gbp(invoice.total_pence)}`}</button>}
+              {!canPay && !cycle.paid_at && userId !== data.clientId && <p className="text-muted-foreground">The client can pay this invoice from their account.</p>}
+            </>}
+            {error && <p role="alert" className="text-red-600">{error}</p>}
+          </div>}
+          {checkout && <button type="button" className={buttonClass + " mb-4"} onClick={() => setCheckout(null)}>Back to invoice</button>}
           {checkout && stripe && (
             <Elements
               stripe={stripe}

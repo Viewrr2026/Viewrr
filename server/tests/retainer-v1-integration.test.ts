@@ -232,6 +232,12 @@ test("submission versioning, revision, all-item acceptance and exactly one invoi
   ]);
   assert.equal(invoices.rows.length, 1);
   assert.equal(invoices.rows[0].total_pence, 200000);
+  const clientInvoice = w.cycleInvoices.find((i: any) => i.id === first.invoice_id);
+  assert.equal(clientInvoice?.total_pence, 200000);
+  assert.equal(clientInvoice?.invoice_number, invoices.rows[0].invoice_number);
+  const freelancerWorkspace = await customWorkspace(publicId, 2);
+  assert.deepEqual(freelancerWorkspace.cycleInvoices, w.cycleInvoices);
+  assert.ok(w.cycleInvoices.every((i: any) => w.cycles.some((c: any) => c.id === i.cycle_id && c.invoice_id === i.id)));
   assert.equal(JSON.stringify(w).includes("original/"), false);
 });
 

@@ -1123,7 +1123,7 @@ export default function RetainerWorkspace() {
                   <td className="px-3 py-2.5"><StatusBadge status={isCustom ? (c.paid_at ? "paid" : c.accepted_at ? "awaiting_payment" : "scheduled") : c.paymentStatus ?? c.status} /></td>
                   <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(isCustom ? c.due_at : c.invoiceDate)}</td>
                   <td className="px-3 py-2.5">
-                    {isCustom && isClient && c.accepted_at && !c.paid_at && <CyclePayment publicId={publicId!} cycle={c}/>}
+                    {isCustom && c.invoice_id && customQuery.data && <CyclePayment publicId={publicId!} cycle={c} data={customQuery.data} userId={user!.id}/>}
                     {!isCustom && ["pending", "unpaid", "overdue"].includes(c.paymentStatus) && (
                       <button
                         onClick={() => payCycleMutation.mutate(c.publicId)}
