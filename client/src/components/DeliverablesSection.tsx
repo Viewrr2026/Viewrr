@@ -148,13 +148,13 @@ function WatermarkLayer({ username = "" }: { username?: string }) {
       <div
         className="relative z-10 flex flex-col items-center gap-1.5 px-5 py-3 rounded-2xl border-2"
         style={{
-          background: "rgba(0,0,0,0.72)",
+          background: "rgba(0,0,0,0.38)",
           borderColor: "rgba(255,90,31,0.6)",
           backdropFilter: "blur(4px)",
         }}
       >
         <Lock size={18} style={{ color: "#FF5A1F" }} />
-        <p className="text-white text-xs font-bold tracking-wide uppercase">Watermarked preview</p>
+        <p className="text-white text-xs font-bold tracking-wide uppercase">Viewrr preview</p>
         {username && (
           <p className="text-white/70 text-[10px] font-semibold" style={{ color: "rgba(255,90,31,0.9)" }}>
             @{username} on Viewrr
@@ -191,11 +191,13 @@ function WatermarkLayer({ username = "" }: { username?: string }) {
 function EmbedModal({
   deliverable,
   watermarked,
+  fullyRefunded = false,
   username,
   onClose,
 }: {
   deliverable: Deliverable;
   watermarked: boolean;
+  fullyRefunded?: boolean;
   username?: string;
   onClose: () => void;
 }) {
@@ -204,7 +206,7 @@ function EmbedModal({
   const info = deliverable.url
     ? detectPlatform(deliverable.url)
     : { name: deliverable.platform || "Link", color: "#FF5A1F", embedUrl: null, logo: "\u{1F512}" };
-  const isLocked = deliverable.locked === true || !deliverable.url;
+  const isLocked = fullyRefunded || deliverable.locked === true || !deliverable.url;
 
   return (
     <div
@@ -217,11 +219,11 @@ function EmbedModal({
           <span className="text-lg">{info.logo}</span>
           <div>
             <p className="font-semibold text-white text-sm">{deliverable.label}</p>
-            <p className="text-xs text-white/50">{info.name}</p>
+            <p className="text-xs text-white/70">{info.name} · External provider access and sign-in may be required</p>
           </div>
           {isLocked ? (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: "rgba(255,90,31,0.2)", color: "#FF5A1F", border: "1px solid rgba(255,90,31,0.4)" }}>
-              <Lock size={9} /> Locked until payment
+              <Lock size={9} /> {fullyRefunded ? "Delivery access withdrawn" : "Locked until payment"}
             </span>
           ) : watermarked ? (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: "rgba(255,90,31,0.2)", color: "#FF5A1F", border: "1px solid rgba(255,90,31,0.4)" }}>
@@ -230,7 +232,7 @@ function EmbedModal({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          {deliverable.url && (
+          {!isLocked && deliverable.url && (
             <a href={deliverable.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors px-3 py-1.5 rounded-lg hover:bg-white/10">
               <ExternalLink size={13} /> Open original
             </a>
@@ -243,7 +245,7 @@ function EmbedModal({
 
       {/* Embed + watermark */}
       <div className="flex-1 relative">
-        {deliverable.embedUrl ? (
+        {!isLocked && deliverable.embedUrl ? (
           <iframe
             src={deliverable.embedUrl}
             className="absolute inset-0 w-full h-full"
@@ -255,17 +257,18 @@ function EmbedModal({
         ) : isLocked ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-white/60 text-center px-8">
             <Lock size={40} />
-            <p className="text-sm font-semibold text-white">This deliverable is locked until payment</p>
+            <p className="text-sm font-semibold text-white">{fullyRefunded ? "Fully refunded — delivery access withdrawn." : "This deliverable is locked until payment"}</p>
             <p className="text-xs text-white/50 max-w-sm">
-              Viewrr releases the file link once the project is paid. The link is not
-              sent to the browser before then.
+              {fullyRefunded
+                ? "The original invoice and refund history remain available in the project."
+                : "Viewrr releases the file link once the project is paid. The link is not sent to the browser before then."}
             </p>
           </div>
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-white/50">
             <LinkIcon size={40} />
             <p className="text-sm">This link can't be previewed directly.</p>
-            {deliverable.url && (
+            {!isLocked && deliverable.url && (
               <a href={deliverable.url} target="_blank" rel="noopener noreferrer" className="text-[#FF5A1F] underline text-sm">Open in new tab</a>
             )}
           </div>
@@ -647,7 +650,7 @@ export function StripePaymentDialog({
     }
   }
 
-  const isDismissable = step !== "card";
+  const isDismissable = true; // Closing does not cancel or confirm a payment.
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v && isDismissable) onClose(); }}>
@@ -831,6 +834,11 @@ export default function DeliverablesSection({
   const [invoicePreviewOpen, setInvoicePreviewOpen] = useState(false);
   const [sendingInvoice, setSendingInvoice] = useState(false);
   const [lineItems, setLineItems] = useState([{ description: '', quantity: 1, unitPricePence: 0, priceStr: '' }]);
+  const { data: estimateData } = useQuery<any>({
+    queryKey: ['project-estimates', projectId],
+    queryFn: async () => (await apiRequest('GET', `/api/projects/${projectId}/estimates`)).json(),
+    enabled: isFreelancer,
+  });
   const [invoiceNotes, setInvoiceNotes] = useState('');
   const [vatPercent, setVatPercent] = useState(0);
 
@@ -859,7 +867,7 @@ export default function DeliverablesSection({
   // drift from what the server actually withheld.
   const hasLockedFiles = deliverables.some(d => d.locked === true || !d.url);
 
-  const { data: existingInvoice } = useQuery<{ invoice: any; template: any } | null>({
+  const { data: existingInvoice } = useQuery<{ invoice: any; template: any; refunds?: { status: string; amount_pence: number }[] } | null>({
     queryKey: ['/api/projects', projectId, 'invoice'],
     queryFn: async () => {
       const res = await apiRequest('GET', `/api/projects/${projectId}/invoice`);
@@ -867,7 +875,18 @@ export default function DeliverablesSection({
       return res.json();
     },
     retry: false,
+    staleTime: 0,
+    refetchOnMount: true,
   });
+  const refundedPence = (existingInvoice?.refunds ?? [])
+    .filter(refund => refund.status === "succeeded")
+    .reduce((sum, refund) => sum + Number(refund.amount_pence), 0);
+  const invoiceTotal = Number(existingInvoice?.invoice?.totalPence ?? 0);
+  const fullyRefunded = invoiceTotal > 0 && refundedPence >= invoiceTotal;
+
+  useEffect(() => {
+    if (fullyRefunded) setPaymentDialogOpen(false);
+  }, [fullyRefunded]);
 
   const addMutation = useMutation({
     mutationFn: async () => {
@@ -934,8 +953,15 @@ export default function DeliverablesSection({
           )}
         </div>
 
+        {existingInvoice && <Button variant="outline" size="sm" onClick={() => setLocation(`/invoice/${projectId}`)}><FileText size={14} /> View invoice and refund history</Button>}
+        {fullyRefunded && (
+          <div className="rounded-2xl p-4 border border-border bg-secondary/30" role="status">
+            <p className="text-sm font-semibold">Fully refunded — delivery access withdrawn.</p>
+            <p className="text-xs text-muted-foreground mt-1">The original invoice and refund history remain available above.</p>
+          </div>
+        )}
         {/* ── Client: awaiting payment banner ───────────────────────────────── */}
-        {isClient && (isWatermarked || hasLockedFiles) && deliverables.length > 0 && (
+        {isClient && !fullyRefunded && (isWatermarked || hasLockedFiles) && deliverables.length > 0 && (
           <div className="space-y-2">
             <div
               className="rounded-2xl p-4 flex items-center gap-3 border"
@@ -963,25 +989,25 @@ export default function DeliverablesSection({
                 </Button>
                 <button
                   className="text-xs text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
-                  onClick={() => setPaymentDialogOpen(true)}
+                  disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
                 >
-                  Pay without invoice
+                  Open payment options
                 </button>
               </div>
             ) : (
               <Button
                 className="w-full text-white rounded-xl gap-2 font-semibold text-sm h-10"
                 style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                onClick={() => setPaymentDialogOpen(true)}
+                disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
               >
-                <CreditCard size={14} /> Pay {freelancerName} to unlock →
+                <FileText size={14} /> Waiting for the freelancer’s invoice
               </Button>
             )}
           </div>
         )}
 
         {/* ── Freelancer: awaiting payment status ───────────────────────────── */}
-        {isFreelancer && isWatermarked && deliverables.length > 0 && (
+        {isFreelancer && !fullyRefunded && isWatermarked && deliverables.length > 0 && (
           <div
             className="rounded-2xl p-3.5 flex items-center gap-3 border"
             style={{ background: "rgba(255,90,31,0.06)", borderColor: "rgba(255,90,31,0.2)" }}
@@ -1004,7 +1030,7 @@ export default function DeliverablesSection({
         )}
 
         {/* ── Completed: released banner ─────────────────────────────────────── */}
-        {projectStatus === "completed" && deliverables.length > 0 && (
+        {projectStatus === "completed" && !fullyRefunded && !hasLockedFiles && deliverables.length > 0 && (
           <div
             className="rounded-2xl p-3.5 flex items-center gap-3 border"
             style={{ background: "rgba(34,197,94,0.06)", borderColor: "rgba(34,197,94,0.25)" }}
@@ -1090,7 +1116,7 @@ export default function DeliverablesSection({
                       <p className="text-xs text-muted-foreground">{info.name}{d.createdAt ? ` · ${timeAgo(d.createdAt)}` : ""}</p>
                       {rowLocked ? (
                         <span className="flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: "#FF5A1F" }}>
-                          <Lock size={8} /> Locked until payment
+                          <Lock size={8} /> {fullyRefunded ? "Delivery access withdrawn" : "Locked until payment"}
                         </span>
                       ) : isWatermarked ? (
                         <span className="flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: "#FF5A1F" }}>
@@ -1125,7 +1151,7 @@ export default function DeliverablesSection({
         )}
 
         {/* ── Client: bottom-of-list pay button (if they scrolled past banner) */}
-        {isClient && isWatermarked && deliverables.length > 2 && (
+        {isClient && !fullyRefunded && isWatermarked && deliverables.length > 2 && (
           existingInvoice ? (
             <div className="flex flex-col gap-1.5 mt-1">
               <Button
@@ -1137,18 +1163,18 @@ export default function DeliverablesSection({
               </Button>
               <button
                 className="text-xs text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
-                onClick={() => setPaymentDialogOpen(true)}
+                disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
               >
-                Pay without invoice
+                Open payment options
               </button>
             </div>
           ) : (
             <Button
               className="w-full text-white rounded-xl gap-2 font-semibold mt-1 text-sm h-10"
               style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-              onClick={() => setPaymentDialogOpen(true)}
+              disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
             >
-              <CreditCard size={14} /> Pay {freelancerName} to unlock →
+              <FileText size={14} /> Waiting for the freelancer’s invoice
             </Button>
           )
         )}
@@ -1159,6 +1185,7 @@ export default function DeliverablesSection({
         <EmbedModal
           deliverable={embedTarget}
           watermarked={isWatermarked}
+          fullyRefunded={isClient && fullyRefunded}
           username={freelancerName}
           onClose={() => setEmbedTarget(null)}
         />
@@ -1166,12 +1193,12 @@ export default function DeliverablesSection({
 
       {/* ── Stripe payment dialog ─────────────────────────────────────────── */}
       <StripePaymentDialog
-        open={paymentDialogOpen}
+        open={paymentDialogOpen && !fullyRefunded}
         projectId={projectId}
         projectTitle={projectTitle}
         freelancerName={freelancerName}
         clientUserId={clientId}
-        agreedAmountPence={agreedAmountPence}
+        agreedAmountPence={existingInvoice?.invoice?.totalPence ?? agreedAmountPence}
         onClose={() => setPaymentDialogOpen(false)}
         onPaymentDone={() => {
           setPaymentDialogOpen(false);
@@ -1197,6 +1224,11 @@ export default function DeliverablesSection({
             {/* Line items */}
             <div className="space-y-2">
               <Label className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Line Items</Label>
+              {estimateData?.versions?.[0]?.status === 'accepted' && <button type="button" className="text-sm underline mb-3" onClick={() => {
+                const estimate=estimateData.versions[0].snapshot;
+                setLineItems(estimate.lineItems.map((i:any)=>({...i,priceStr:(i.unitPricePence/100).toFixed(2)})));
+                setVatPercent(estimate.vatPercent);
+              }}>Use the agreed estimate items and prices</button>}
               {lineItems.map((item, i) => (
                 <div key={i} className="grid grid-cols-[1fr,60px,90px,32px] gap-2 items-center">
                   <Input
@@ -1228,7 +1260,7 @@ export default function DeliverablesSection({
                         const raw = e.target.value.replace(/[^0-9.]/g, '');
                         let pence = Math.round(parseFloat(raw || '0') * 100);
                         // Clamp: don't let this item push subtotal over agreed budget
-                        if (agreedAmountPence) {
+                        if (agreedAmountPence && !estimateData?.versions?.length) {
                           const othersPence = lineItems.reduce((s, li, j) => j === i ? s : s + li.unitPricePence * li.quantity, 0);
                           const maxPence = Math.max(0, agreedAmountPence - othersPence);
                           const clamped = Math.min(pence, Math.floor(maxPence / item.quantity));
@@ -1287,7 +1319,7 @@ export default function DeliverablesSection({
               const subtotal = lineItems.reduce((s, i) => s + i.unitPricePence * i.quantity, 0);
               const vat = vatPercent ? Math.round(subtotal * vatPercent / 100) : 0;
               const total = subtotal + vat;
-              const overBudget = agreedAmountPence && subtotal > agreedAmountPence;
+              const overBudget = !estimateData?.versions?.length && agreedAmountPence && subtotal > agreedAmountPence;
               if (subtotal === 0) return null;
               return (
                 <div className="space-y-2">
@@ -1314,7 +1346,7 @@ export default function DeliverablesSection({
 
           {(() => {
             const subtotalCheck = lineItems.reduce((s, i) => s + i.unitPricePence * i.quantity, 0);
-            const isOverBudget = !!(agreedAmountPence && subtotalCheck > agreedAmountPence);
+            const isOverBudget = !!(!estimateData?.versions?.length && agreedAmountPence && subtotalCheck > agreedAmountPence);
             return (
               <div className="flex gap-2 mt-4">
                 <Button variant="outline" className="flex-1" onClick={() => setInvoiceOpen(false)}>Later</Button>

@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { retainerPlanChanges } from "@shared/retainer-plan-diff";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Elements,
@@ -97,9 +98,18 @@ export function CustomProposal({
       </h2>
       {data.feedback && (
         <p className="rounded-xl bg-amber-50 text-amber-900 p-3 text-sm whitespace-pre-wrap">
-          Changes requested: {data.feedback}
+          {data.proposalDecisions?.[0]?.kind === "decline" ? "Proposal declined: " : "Changes requested: "}{data.feedback}
         </p>
       )}
+      {data.pending?.requestedChanges && <p className="text-sm">Requested changes addressed by this version: {data.pending.requestedChanges}</p>}
+      {data.versions?.length > 1 && <details className="rounded-xl border p-3" open={!!data.pending}>
+        <summary className="cursor-pointer font-medium">What changed in v{data.latestVersion}?</summary>
+        <p className="text-xs text-muted-foreground my-2">Proposed by {data.versions[0].created_by === data.clientId ? "client" : "freelancer"} · {new Date(data.versions[0].created_at).toLocaleString("en-GB")}</p>
+        <div className="overflow-auto"><table className="w-full text-sm"><thead><tr><th className="text-left">Field</th><th className="text-left">Previous</th><th className="text-left">Revised</th></tr></thead><tbody>
+          {retainerPlanChanges(data.pending && data.hasAcceptedAgreement ? data.plan : data.versions[1].snapshot,data.versions[0].snapshot).map((change,i)=><tr key={i} className="border-t"><td className="p-2">{change.field}</td><td className="p-2 whitespace-pre-wrap">{change.before}</td><td className="p-2 whitespace-pre-wrap">{change.after}</td></tr>)}
+        </tbody></table></div>
+        <details className="mt-3"><summary className="cursor-pointer">Earlier proposal versions</summary>{data.versions.slice(1).map((v:any)=><details key={v.version_number} className="mt-3"><summary className="cursor-pointer">Version {v.version_number} · {v.accepted_by_client_at && v.accepted_by_freelancer_at ? "Agreed" : "Proposed"}</summary><PlanSummary plan={v.snapshot}/></details>)}</details>
+      </details>}
       {data.status === "declined" && <p role="status">This retainer invitation was declined. No work has started.</p>}
       <PlanSummary plan={data.pending?.plan ?? (data.hasAcceptedAgreement ? data.plan : data.latestPlan)} />
       {data.pending && data.pending.proposedBy !== userId && (
@@ -169,12 +179,15 @@ export function CustomCyclePanel({
   publicId,
   data,
   userId,
+  initialCycleId,
 }: {
   publicId: string;
   data: any;
   userId: number;
+  initialCycleId?: number;
 }) {
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(initialCycleId ?? null);
+  useEffect(() => { if (initialCycleId !== undefined) setSelected(initialCycleId); }, [initialCycleId]);
   const cycle =
     data.cycles.find((c: any) => c.id === selected) ??
     data.cycles.find((c: any) => c.canWork) ??
@@ -188,6 +201,16 @@ export function CustomCyclePanel({
   );
   return (
     <div className="space-y-4">
+      <details className="rounded-xl border p-4">
+        <summary className="cursor-pointer font-semibold">Whole-retainer estimate · {gbp(data.cycles.reduce((n:number,c:any)=>n+c.amount_pence,0))}</summary>
+        <p className="text-sm text-muted-foreground my-3">This is the agreed estimate, not an additional bill. Each cycle is invoiced once, after its required deliverables are approved.</p>
+        <div className="flex flex-wrap gap-4 text-sm mb-3">
+          <span>Invoiced: {gbp(data.cycles.filter((c:any)=>c.invoice_id).reduce((n:number,c:any)=>n+c.amount_pence,0))}</span>
+          <span>Paid before refunds: {gbp(data.cycles.filter((c:any)=>c.paid_at).reduce((n:number,c:any)=>n+c.amount_pence,0))}</span>
+          <span>Remaining scheduled: {gbp(data.cycles.filter((c:any)=>!c.paid_at).reduce((n:number,c:any)=>n+c.amount_pence,0))}</span>
+        </div>
+        <PlanSummary plan={data.plan}/>
+      </details>
       <label className="block text-sm font-semibold">
         Cycle
         <select
@@ -236,8 +259,10 @@ export function CustomCyclePanel({
         )}
         {!cycle.paid_at && (
           <p className="text-xs text-muted-foreground">
-            Pay the cycle invoice to receive clean files. Unpaid originals
-            remain protected.
+            {cycle.invoice_id
+              ? userId === data.clientId ? "This cycle’s invoice is ready. Verified payment completes the cycle." : "The client’s cycle invoice is ready. Work can continue only within the agreed payment terms."
+              : "No payment is due for this cycle yet. Its invoice is issued when the client approves all required deliverables."}
+            {" "}External delivery links use the hosting provider’s permissions; Viewrr cannot watermark or revoke those files.
           </p>
         )}
         {cycle.paid_at && userId === data.freelancerId && (
@@ -248,6 +273,7 @@ export function CustomCyclePanel({
             </a>
           </p>
         )}
+        {!!data.refundHistory?.filter((r:any)=>r.retainer_cycle_id===cycle.id).length && <div className="text-sm"><strong>Cycle refund history</strong>{data.refundHistory.filter((r:any)=>r.retainer_cycle_id===cycle.id).map((r:any)=><p key={r.stripe_refund_id}>{gbp(r.amount_pence)} · {r.status} · {new Date(r.created_at).toLocaleDateString("en-GB")}</p>)}</div>}
         {cycle.accepted_at && !cycle.paid_at && userId === data.clientId && (
           <CyclePayment publicId={publicId} cycle={cycle} />
         )}
@@ -301,16 +327,22 @@ function WorkItem({
     [error, setError] = useState(""),
     [note, setNote] = useState(""),
     [feedback, setFeedback] = useState(""),
-    [selectedMedia, setSelectedMedia] = useState(""),
+    [deliverableUrl, setDeliverableUrl] = useState(""),
+    [submittedLocally, setSubmittedLocally] = useState(false),
+    [expanded, setExpanded] = useState(false),
     [preview, setPreview] = useState<{ url: string; mime: string } | null>(
       null,
     );
   const isClient = userId === data.clientId;
-  const media = data.media.filter((m: any) => m.task_id === task.id),
-    subs = data.submissions.filter(
+  const subs = data.submissions.filter(
       (s: any) => s.retainer_cycle_task_id === task.id,
     ),
     latest = subs[0];
+  const isApproved = latest?.status === "approved" || task.status === "complete";
+  const awaitingReview = latest?.status === "submitted" || submittedLocally;
+  useEffect(() => {
+    setSubmittedLocally(false);
+  }, [latest?.id, latest?.status]);
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
@@ -323,17 +355,6 @@ function WorkItem({
       setBusy(false);
     }
   };
-  async function upload(file: File) {
-    const body = new FormData();
-    body.append("file", file);
-    const res = await fetch(
-      `/api/custom-retainers/${publicId}/tasks/${task.public_id}/media`,
-      { method: "POST", body, credentials: "include" },
-    );
-    const result = await res.json();
-    if (!res.ok) throw new Error(result.error);
-    setSelectedMedia(result.id);
-  }
   async function openMedia(m: any, original = false) {
     const response = await (
       await apiRequest(
@@ -350,17 +371,27 @@ function WorkItem({
     } else setPreview({ url: response.url, mime: m.mime_type });
   }
   return (
-    <details className="p-4">
-      <summary className="cursor-pointer flex justify-between gap-2 text-sm">
+    <details className="p-4" onToggle={(e) => setExpanded(e.currentTarget.open)}>
+      <summary className="cursor-pointer flex justify-between gap-2 text-sm"><span aria-hidden="true">{expanded ? "▾" : "▸"}</span><span className="text-xs text-muted-foreground">{isApproved ? "View approved delivery" : awaitingReview ? "View submitted delivery" : "Expand to submit / review"}</span>
         <span className="font-medium">{task.title}</span>
-        <span className="text-xs text-muted-foreground">
-          {task.status === "complete"
-            ? "Approved"
-            : task.status.replaceAll("_", " ")}
+        <span className={isApproved
+          ? "inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+          : "text-xs text-muted-foreground"}>
+          {isApproved ? "✓ Approved" : awaitingReview ? "Waiting for client approval" : task.status.replaceAll("_", " ")}
         </span>
       </summary>
       <div className="mt-4 space-y-3">
         <p className="text-sm whitespace-pre-wrap">{task.description}</p>
+        {isApproved && (
+          <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+            Approved by the client. Your delivery and submission history are available below.
+          </p>
+        )}
+        {awaitingReview && !isApproved && (
+          <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+            {isClient ? "This delivery is ready for your review." : "Submitted — waiting for client approval. You can submit a revision if the client requests changes."}
+          </p>
+        )}
         {subs.map((s: any) => (
           <div
             key={s.id}
@@ -376,23 +407,21 @@ function WorkItem({
               </p>
             )}
             <div className="flex gap-2 flex-wrap">
-              <button
-                type="button"
-                className={buttonClass}
-                disabled={busy}
-                onClick={() => run(() => openMedia(s))}
-              >
-                View watermarked preview
-              </button>
-              {cycle.paid_at && s.status === "approved" && (
-                <button
-                  type="button"
-                  className={buttonClass}
-                  disabled={busy}
-                  onClick={() => run(() => openMedia(s, true))}
-                >
-                  Receive clean file
-                </button>
+              {s.deliverable_url ? (
+                <a className={buttonClass} href={s.deliverable_url} target="_blank" rel="noopener noreferrer">
+                  Open delivery link
+                </a>
+              ) : (
+                <>
+                  <button type="button" className={buttonClass} disabled={busy} onClick={() => run(() => openMedia(s))}>
+                    View watermarked preview
+                  </button>
+                  {cycle.paid_at && s.status === "approved" && (
+                    <button type="button" className={buttonClass} disabled={busy} onClick={() => run(() => openMedia(s, true))}>
+                      Receive clean file
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -417,82 +446,30 @@ function WorkItem({
             </button>
           </div>
         )}
-        {!isClient && cycle.canWork && (
+        {!isClient && awaitingReview && !isApproved && (
+          <button type="button" className={buttonClass + " bg-muted text-muted-foreground cursor-not-allowed"} disabled>
+            Waiting for client approval
+          </button>
+        )}
+        {!isClient && cycle.canWork && !isApproved && !awaitingReview && (
           <div className="space-y-3">
             <label className="block text-sm">
-              Upload work
+              Delivery link
               <input
-                aria-label={`Upload ${task.title}`}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm"
+                aria-label={`Delivery link for ${task.title}`}
+                type="url"
+                placeholder="https://"
+                className={fieldClass + " mt-1"}
+                value={deliverableUrl}
+                onChange={(e) => setDeliverableUrl(e.target.value)}
                 disabled={busy}
-                className="block mt-2 text-xs max-w-full"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void run(() => upload(f));
-                  e.target.value = "";
-                }}
               />
             </label>
             <p className="text-xs text-muted-foreground">
-              Images and videos up to 200 MB; videos up to 30 minutes. A
-              protected preview is generated before submission.
+              Share a Google Drive, Dropbox or other hosted link. Give the client permission to review it.
+              External links are not watermarked or payment-protected by Viewrr. Use a preview copy if needed.
+              Submit again after changes to create a new review version, even when using the same link.
             </p>
-            {media.map((m: any) => (
-              <div
-                key={m.id}
-                className="flex flex-wrap gap-2 items-center text-xs"
-              >
-                <span>
-                  {m.filename} · {m.status}
-                </span>
-                {m.status === "ready" && (
-                  <button
-                    type="button"
-                    className={buttonClass}
-                    disabled={busy}
-                    onClick={() => run(() => openMedia(m))}
-                  >
-                    Preview
-                  </button>
-                )}
-                {m.status === "failed" && (
-                  <button
-                    type="button"
-                    className={buttonClass}
-                    disabled={busy}
-                    onClick={() =>
-                      run(() =>
-                        apiRequest(
-                          "POST",
-                          `/api/custom-retainers/${publicId}/media/${m.id}/retry`,
-                          {},
-                        ),
-                      )
-                    }
-                  >
-                    Retry preview
-                  </button>
-                )}
-              </div>
-            ))}
-            <label className="block text-sm">
-              Choose processed file
-              <select
-                className={fieldClass + " mt-1"}
-                value={selectedMedia}
-                onChange={(e) => setSelectedMedia(e.target.value)}
-              >
-                <option value="">Select a ready preview</option>
-                {media
-                  .filter((m: any) => m.status === "ready")
-                  .map((m: any) => (
-                    <option key={m.id} value={m.id}>
-                      {m.filename}
-                    </option>
-                  ))}
-              </select>
-            </label>
             <label className="block text-sm">
               Submission note
               <textarea
@@ -507,18 +484,17 @@ function WorkItem({
               disabled={
                 busy ||
                 !note.trim() ||
-                !media.some(
-                  (m: any) => m.id === selectedMedia && m.status === "ready",
-                )
+                !deliverableUrl.trim()
               }
               onClick={() =>
-                run(() =>
-                  apiRequest(
+                run(async () => {
+                  await apiRequest(
                     "POST",
                     `/api/custom-retainers/${publicId}/tasks/${task.public_id}/submit`,
-                    { mediaId: selectedMedia, note },
-                  ),
-                )
+                    { deliverableUrl: deliverableUrl.trim(), note },
+                  );
+                  setSubmittedLocally(true);
+                })
               }
             >
               Submit for client review
@@ -639,12 +615,13 @@ export function CyclePayment({
           }
         }}
       >
-        <DialogContent>
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90dvh] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+          <DialogHeader className="shrink-0 px-6 pt-6 pb-4 pr-12">
             <DialogTitle>
               Pay cycle invoice · {gbp(cycle.amount_pence ?? cycle.amountPence)}
             </DialogTitle>
           </DialogHeader>
+          <div className="min-h-0 overflow-y-auto overscroll-contain px-6 pb-6">
           {checkout && stripe && (
             <Elements
               stripe={stripe}
@@ -658,6 +635,7 @@ export function CyclePayment({
               />
             </Elements>
           )}
+          </div>
         </DialogContent>
       </Dialog>
     </>
@@ -681,7 +659,7 @@ function CheckoutForm({ onConfirmed }: { onConfirmed: () => void }) {
       if (error) setMessage(error.message ?? "Payment could not be completed");
       else {
         setMessage(
-          "Payment submitted. Files unlock after verified confirmation.",
+          "Payment submitted. The cycle completes after verified confirmation.",
         );
         onConfirmed();
       }
@@ -697,7 +675,7 @@ function CheckoutForm({ onConfirmed }: { onConfirmed: () => void }) {
     <form onSubmit={pay} className="space-y-4">
       <PaymentElement />
       <p className="text-xs text-muted-foreground">
-        Files unlock after the payment provider confirms payment. Freelancer
+        The cycle completes after verified payment confirmation. Freelancer
         bank arrival is tracked separately.
       </p>
       <button className={primaryClass} disabled={!stripe || !elements || busy}>

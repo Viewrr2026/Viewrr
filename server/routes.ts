@@ -1,3 +1,9 @@
+import { runStripeEventJob } from "./stripe-event-job";
+import { invitationEstimate } from "../shared/project-estimate";
+import { createCompatibleConnectAccount } from "./connect-account-create";
+import { registerProjectEstimateRoutes } from "./project-estimate-routes";
+import { issueProjectInvoice,requireProjectEstimate,acceptEstimatedInvitation } from "./project-estimates";
+import { adjustedEarnings } from "./payment-refund-sync";
 import { hasVerifiedProjectPayment, rejectClientPaymentConfirmation } from "./project-payment-verification";
 import { registerCustomRetainerRoutes, guardCustomRetainerLegacy } from "./retainer-v1-routes";
 import { startRetainerWorker } from "./retainer-v1-worker";
@@ -97,12 +103,14 @@ import path from "path";
 import fs from "fs";
 import os from "os";
 import Stripe from "stripe";
+import { verifyStripeWebhook } from "./stripe-webhook-verification";
 
 // ── Stripe setup ──────────────────────────────────────────────────
 const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2025-02-24.acacia" as any })
   : null;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
+const STRIPE_CONNECT_WEBHOOK_SECRET = process.env.STRIPE_CONNECT_WEBHOOK_SECRET ?? "";
 const VIEWRR_FEE_PERCENT = 11; // 11% platform fee
 const APP_BASE_URL = process.env.APP_BASE_URL ?? "https://www.viewrr.co.uk";
 
@@ -470,6 +478,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.use(requireBrowserOrigin);
   app.use(guardCustomRetainerLegacy);
   registerCustomRetainerRoutes(app);
+  registerProjectEstimateRoutes(app);
   // ─── Version / health ─────────────────────────────────────────────────────
   // ─── P0-07: Rate limiting ──────────────────────────────────────────────────
   const loginLimiter = rateLimit({
@@ -2808,6 +2817,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (pw.project.status === "completed") {
         return res.status(400).json({ error: "Cannot advance a completed project" });
       }
+      await requireProjectEstimate(projectId, (pw.project.currentStage ?? 0) >= 4);
       const updated = await storage.advanceProjectStage(projectId, note || "", callerId);
       if (!updated) return res.status(404).json({ error: "Project not found" });
       // Notify the client
@@ -3087,6 +3097,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { recipientId, title, description, category, budget, timeline, startStage,
               isRetainer, billingCycle, deliverablesPerCycle, totalCycles } = req.body;
       if (!recipientId || !title) return res.status(400).json({ error: "Missing fields" });
+      if (!isRetainer) {
+        try { invitationEstimate(String(title),budget); }
+        catch(e:any) { return res.status(400).json({error:e.message}); }
+      }
       // A0: senderId is always the authenticated caller
       const inv = await storage.createInvitation({
         senderId: req.auth!.userId, recipientId: Number(recipientId),
@@ -3141,6 +3155,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const existing = await db.select().from(schema.projectInvitations).where(eq(schema.projectInvitations.id, Number(req.params.id))).limit(1);
     if (!existing.length) return res.status(404).json({ error: "Not found" });
     if (req.auth!.userId !== existing[0].recipientId) return res.status(403).json({ error: "Forbidden." });
+    if (!existing[0].isRetainer) {
+      try {
+        const result=await acceptEstimatedInvitation(Number(req.params.id),req.auth!.userId);
+        if(!result.replayed) await notify({recipientId:existing[0].senderId,actorId:req.auth!.userId,actorName:"Viewrr",actorAvatar:null,
+          type:"project_accepted",message:`Your project invitation and provisional estimate for "${existing[0].title}" were accepted.`,link:"/your-work",read:0,targetType:"project",targetId:Number(result.project.id)});
+        return res.json(result);
+      } catch(e:any) { return res.status(e.status??500).json({error:e.status?e.message:"Unable to accept the invitation"}); }
+    }
     const inv = await storage.updateInvitationStatus(Number(req.params.id), "accepted");
     if (!inv) return res.status(404).json({ error: "Not found" });
     const sender = await storage.getUser(inv.senderId);
@@ -3205,6 +3227,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const existingDecline = await db.select().from(schema.projectInvitations).where(eq(schema.projectInvitations.id, Number(req.params.id))).limit(1);
     if (!existingDecline.length) return res.status(404).json({ error: "Not found" });
     if (req.auth!.userId !== existingDecline[0].recipientId) return res.status(403).json({ error: "Forbidden." });
+    if (existingDecline[0].status !== "pending") return res.status(409).json({error:"This invitation is no longer pending"});
     const inv = await storage.updateInvitationStatus(Number(req.params.id), "declined");
     if (!inv) return res.status(404).json({ error: "Not found" });
     const recipient = await storage.getUser(inv.recipientId);
@@ -3606,6 +3629,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
       if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
+      await requireProjectEstimate(stage.projectId);
       const updated = await startStage(stage.id);
       await logStageEvent(stage.projectId, freelancerId, "stage_started", undefined, stage.id);
       res.json(updated);
@@ -3621,6 +3645,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
       if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
+      await requireProjectEstimate(stage.projectId, (await getProjectStages(stage.projectId)).at(-1)?.id === stage.id);
       const updated = await submitStageForReview(stage.id);
       await logStageEvent(stage.projectId, freelancerId, "stage_submitted", undefined, stage.id);
       await notify({ recipientId: pw.project.clientId, actorId: freelancerId,
@@ -3667,6 +3692,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!stage) return res.status(404).json({ error: "Stage not found" });
       const pw = await storage.getProject(stage.projectId);
       if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
+      await requireProjectEstimate(stage.projectId, (await getProjectStages(stage.projectId)).at(-1)?.id === stage.id);
       const updated = await completeStage(stage.id);
       await logStageEvent(stage.projectId, freelancerId, "stage_completed", undefined, stage.id);
       // Auto-start next upcoming stage
@@ -4643,8 +4669,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
 
       // ─ STEP 3: Create new Stripe account ───────────────────────────────
-      const idempotencyKey = `connect_account:${req.auth!.userId}:v1`;
-      const account = await stripe.accounts.create({
+      const account = await createCompatibleConnectAccount(stripe,req.auth!.userId,{
         type: "express",
         country: "GB",
         email: user.email,
@@ -4652,7 +4677,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
         business_profile: { product_description: "Freelance creative services via Viewrr" },
         metadata: { viewrr_user_id: String(req.auth!.userId) },
-      }, { idempotencyKey });
+      });
 
       await storage.updateStripeAccount(user.id, { stripeAccountId: account.id, stripeOnboarded: 0 });
       await syncConnectAccount(user.id, account.id);
@@ -4781,7 +4806,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         projectTitle: p.project_title ?? "Project",
         grossPence: gross,
         platformFeePence: fee,
-        freelancerPence: freelancerEarnings,
+        freelancerPence: adjustedEarnings(p),
+        originalFreelancerPence: freelancerEarnings,
+        refundedPence: Number(p.refunded_pence ?? 0),
+        feeRefundedPence: Number(p.fee_refunded_pence ?? 0),
+        transferReversedPence: Number(p.transfer_reversed_pence ?? 0),
         commissionRateBps,
         isPro,
         savedPence,
@@ -4989,13 +5018,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       try {
         if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
         const sig = req.headers["stripe-signature"] as string;
-        if (!sig || !STRIPE_WEBHOOK_SECRET) {
+        if (!sig || (!STRIPE_WEBHOOK_SECRET && !STRIPE_CONNECT_WEBHOOK_SECRET)) {
           return res.status(400).json({ error: "Missing signature or webhook secret" });
         }
 
         let event: Stripe.Event;
         try {
-          event = stripe.webhooks.constructEvent((req as any).rawBody, sig, STRIPE_WEBHOOK_SECRET);
+          event = verifyStripeWebhook(stripe, (req as any).rawBody, sig, {
+            platform: STRIPE_WEBHOOK_SECRET,
+            connect: STRIPE_CONNECT_WEBHOOK_SECRET,
+          });
         } catch (err: any) {
           console.error("[webhook] Signature failed:", err.message);
           return res.status(400).json({ error: "Invalid signature" });
@@ -5664,7 +5696,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (!invoice) return res.status(404).json({ error: 'No invoice found' });
       // Also attach the freelancer's template for rendering
       const template = await storage.getInvoiceTemplate(invoice.freelancerId);
-      res.json({ invoice, template: template || null });
+      const db = neon(process.env.DATABASE_URL!);
+      const refunds = await db`SELECT r.stripe_refund_id,r.amount_pence,r.status,r.created_at
+        FROM payment_refunds r JOIN payments p ON p.id=r.payment_id
+        WHERE p.invoice_id=${invoice.id} ORDER BY r.created_at DESC`;
+      res.json({ invoice, template: template || null, refunds });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -5713,28 +5749,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           // Non-fatal — allow invoice creation if Stripe is unreachable
         }
       }
-      // Calculate totals
-      const subtotalPence = lineItems.reduce((sum: number, item: any) => sum + (item.totalPence || 0), 0);
-      const vatPence = vatPercent ? Math.round(subtotalPence * vatPercent / 100) : 0;
-      const totalPence = subtotalPence + vatPence;
-      // Get next invoice number
-      const invoiceNumber = await storage.getNextInvoiceNumber(freelancerId);
-      const invoice = await storage.createInvoice({
-        invoiceNumber,
-        projectId,
-        freelancerId,
-        clientId: resolvedClientId,
-        clientName: clientName || '',
-        clientEmail: clientEmail || '',
-        projectTitle: projectTitle || pw.project.title || '',
-        lineItems: JSON.stringify(lineItems),
-        subtotalPence,
-        vatPence,
-        totalPence,
-        notes: notes || '',
-        status: 'sent',
-        issuedAt: new Date().toISOString(),
-      });
+      const invoice = await issueProjectInvoice(projectId,freelancerId,req.body);
       // Notify client that invoice has been sent
       try {
         const freelancerUser = await storage.getUser(freelancerId);
@@ -5753,7 +5768,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       } catch {}
       res.json(invoice);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(e.status ?? (e.name === "ZodError" ? 400 : 500)).json({ error: e.message });
     }
   });
 
@@ -6385,11 +6400,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const uid = req.auth!.userId;
       if (uid === payment.client_id) visibility = "client";
       else if (uid === payment.freelancer_id) visibility = "freelancer";
+      else return res.status(403).json({ error: "Forbidden" });
 
       const events = await db`
         SELECT * FROM payment_timeline_events
         WHERE payment_id = ${payment.id}
-          AND (visibility = 'both' OR visibility = ${visibility} OR visibility = 'admin')
+          AND (visibility = 'both' OR visibility = ${visibility})
         ORDER BY occurred_at ASC
       `;
       res.json({ paymentPublicId, events });
@@ -6410,21 +6426,21 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const [totals] = await db`
         SELECT
-          COALESCE(SUM(CASE WHEN status='succeeded' THEN freelancer_pence ELSE 0 END),0) AS lifetime_earned,
-          COALESCE(SUM(CASE WHEN status='succeeded' THEN gross_pence ELSE 0 END),0) AS lifetime_volume
+          COALESCE(SUM(CASE WHEN status IN ('succeeded','partially_refunded','refunded') THEN freelancer_pence-transfer_reversed_pence+fee_refunded_pence ELSE 0 END),0) AS lifetime_earned,
+          COALESCE(SUM(CASE WHEN status IN ('succeeded','partially_refunded','refunded') THEN gross_pence ELSE 0 END),0) AS lifetime_volume
         FROM payments WHERE freelancer_id = ${userId}
       `;
       const lifetimeEarned = Number(totals?.lifetime_earned ?? 0);
       const lifetimeVolume = Number(totals?.lifetime_volume ?? 0);
 
       const recentPayments = await db`
-        SELECT p.public_id, p.gross_pence, p.freelancer_pence, p.platform_fee_pence,
+        SELECT p.public_id, p.gross_pence, p.freelancer_pence, p.transfer_reversed_pence, p.fee_refunded_pence, p.platform_fee_pence, p.refunded_pence,
                p.status, p.succeeded_at, p.created_at,
                pr.title AS project_title,
                pt.stripe_transfer_id, pt.status AS transfer_status
         FROM payments p
         LEFT JOIN projects pr ON pr.id = p.project_id
-        LEFT JOIN payment_transfers pt ON pt.payment_id = p.id AND pt.status = 'transferred'
+        LEFT JOIN LATERAL (SELECT stripe_transfer_id,status FROM payment_transfers WHERE payment_id=p.id ORDER BY id DESC LIMIT 1) pt ON TRUE
         WHERE p.freelancer_id = ${userId}
         ORDER BY p.created_at DESC
         LIMIT 20
@@ -6463,7 +6479,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       res.json({ lifetimeEarnedPence: lifetimeEarned, lifetimeVolumePence: lifetimeVolume,
         availableBalancePence: availablePence, pendingBalancePence: pendingPence,
-        nextPayout, payouts, recentPayments });
+        nextPayout, payouts, recentPayments: recentPayments.map(p => ({ ...p, freelancer_pence: adjustedEarnings(p) })) });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
@@ -7130,48 +7146,18 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     await configureAutoDailyPayout(userId, stripeAccountId);
   });
 
-  // WS-A: process_stripe_event job handler — used by replay endpoint and recovery
+  // Replay/refund recovery uses Neon query(), compatible with the installed driver.
   registerJobHandler("process_stripe_event", async (payload, attemptCount) => {
-    const { stripeEventId } = payload as { stripeEventId: string };
-    if (!stripeEventId) return; // nothing to do
-
-    // Fetch the event record from DB to verify it exists and isn't already processed
     const sqlClient = neon(process.env.DATABASE_URL!);
-    const rows = await sqlClient(
-      "SELECT stripe_event_id, processing_status, raw_payload FROM stripe_events WHERE stripe_event_id = $1 LIMIT 1",
-      [stripeEventId]
-    ) as Array<{ stripe_event_id: string; processing_status: string; raw_payload: string | null }>;
-
-    if (!rows.length) {
-      console.warn(`[process_stripe_event] Event not found in DB: ${stripeEventId}`);
-      return; // idempotent no-op
-    }
-
-    const row = rows[0];
-    if (row.processing_status === "processed") {
-      console.log(`[process_stripe_event] Already processed, skipping: ${stripeEventId}`);
-      return; // idempotent no-op
-    }
-
-    // Reconstruct event from raw_payload if available, else fetch from Stripe
-    let event: Stripe.Event;
-    if (row.raw_payload) {
-      event = JSON.parse(row.raw_payload) as Stripe.Event;
-    } else if (stripe) {
-      event = await stripe.events.retrieve(stripeEventId);
-    } else {
-      console.error(`[process_stripe_event] No raw_payload and Stripe not configured: ${stripeEventId}`);
-      return;
-    }
-
-    const requestId = `job_${stripeEventId}_attempt${attemptCount ?? 1}`;
-    try {
-      await processStripeEvent(event, requestId);
-      await markEventProcessed(stripeEventId);
-    } catch (e: any) {
-      await markEventProcessed(stripeEventId, e.message);
-      throw e; // re-throw so job-queue can apply retry/backoff
-    }
+    await runStripeEventJob(payload, attemptCount ?? 1, {
+      query: (text, values) => sqlClient.query(text, values) as any,
+      retrieve: async id => {
+        if (!stripe) throw new Error("Stripe is not configured");
+        return stripe.events.retrieve(id);
+      },
+      process: processStripeEvent,
+      mark: markEventProcessed,
+    });
   });
 
   // Account deletion executor.

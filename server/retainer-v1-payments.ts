@@ -250,7 +250,7 @@ export async function fulfilCustomCyclePayment(
       db,
       a,
       `payment:${p.id}`,
-      `${c.cycle_name}: payment confirmed; clean files are available.${c.freeze_notified_at ? " The overdue-payment restriction has been lifted. Other schedule or agreement restrictions still apply." : ""}`,
+      `${c.cycle_name}: payment confirmed; this cycle is complete.${c.freeze_notified_at ? " The overdue-payment restriction has been lifted. Other schedule or agreement restrictions still apply." : ""}`,
     );
     return true;
   });

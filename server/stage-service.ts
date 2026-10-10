@@ -11,6 +11,7 @@
  */
 
 import { db } from "./storage";
+import { syncCustomProjectCompletion } from "./project-payment-verification";
 import * as schema from "../shared/schema";
 import { eq, asc, and } from "drizzle-orm";
 import { drizzleSql } from "./storage";
@@ -201,11 +202,17 @@ export async function submitStageForReview(stageId: number): Promise<schema.Proj
 }
 
 export async function approveStage(stageId: number): Promise<schema.ProjectStage> {
-  return updateProjectStage(stageId, { status: "approved", approvedAt: new Date().toISOString() });
+  const stage = await updateProjectStage(stageId, { status: "approved", approvedAt: new Date().toISOString() });
+  await syncCustomProjectCompletion(stage.projectId);
+  return stage;
 }
 
 export async function completeStage(stageId: number): Promise<schema.ProjectStage> {
-  return updateProjectStage(stageId, { status: "completed", completedAt: new Date().toISOString() });
+  const current = await getProjectStage(stageId);
+  if (current?.approvalRequired) throw new Error("This stage requires client approval. Submit it for review.");
+  const stage = await updateProjectStage(stageId, { status: "completed", completedAt: new Date().toISOString() });
+  await syncCustomProjectCompletion(stage.projectId);
+  return stage;
 }
 
 export async function requestStageChanges(stageId: number, message: string): Promise<schema.ProjectStage> {

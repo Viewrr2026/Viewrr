@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   customRetainerSchema,
   cycleAccess,
+  londonDate,
   type CustomRetainerPlan,
 } from "../shared/retainer-v1";
 import {
@@ -87,24 +88,41 @@ async function validateAmendment(
   a: any,
   plan: CustomRetainerPlan,
 ) {
-  if (a.status !== "active" && a.status !== "paused") return;
+  if (a.status !== "active" && a.status !== "paused") {
+    if (plan.cycles.some(c => c.earlyStart)) retainerError("Early starts can only amend an accepted retainer");
+    return;
+  }
   const original = await currentPlan(db, a);
   const cycles = await loadCycles(db, a.id);
+  for (const [index, cp] of plan.cycles.entries()) {
+    if (!cp.earlyStart) continue;
+    const before = original.cycles.find(p => p.id === cp.id);
+    const previous = index > 0 && cycles.find(c => c.plan_key === plan.cycles[index - 1].id);
+    if (!previous || !previous.paid_at)
+      retainerError("An early start requires the previous cycle's verified payment");
+    if (before && cp.startDate !== before.startDate && cp.startDate < londonDate(new Date()))
+      retainerError("Choose today or a future date for an early start");
+  }
   for (const c of cycles) {
     const before = original.cycles.find((p) => p.id === c.plan_key)!;
     const after = plan.cycles.find((p) => p.id === c.plan_key);
     if (c.started_at || c.accepted_at || c.paid_at) {
       if (!after || plan.cycles.indexOf(after) !== c.cycle_number - 1)
         retainerError("Started cycles must keep their position");
-      const frozen = c.accepted_at || c.paid_at;
-      const compare = (p: any) =>
-        frozen ? p : { ...p, startDate: "", endDate: "" };
-      if (!isDeepStrictEqual(compare(before), compare(after)))
-        retainerError(
-          frozen
-            ? "Approved and paid cycles cannot change"
-            : "Only dates can change on a started cycle",
-        );
+      const frozen = c.accepted_at || c.paid_at || c.invoice_id;
+      if (frozen) {
+        if (!isDeepStrictEqual(before, after))
+          retainerError("Approved, invoiced and paid cycles cannot change");
+      } else {
+        const stable = (p: any) => ({ ...p, startDate: "", endDate: "", amountPence: 0, deliverables: [], earlyStart: false });
+        if (!isDeepStrictEqual(stable(before), stable(after)) ||
+            after.deliverables.length < before.deliverables.length ||
+            !before.deliverables.every((d, i) => isDeepStrictEqual(d, after.deliverables[i])))
+          retainerError("Preserve existing work; only append deliverables or revise dates and price on a started cycle");
+        const added = after.deliverables.length > before.deliverables.length;
+        if (added ? after.amountPence <= before.amountPence : after.amountPence !== before.amountPence)
+          retainerError("Extra deliverables need an additional agreed price; date-only changes retain the price");
+      }
     }
   }
 }
@@ -131,9 +149,13 @@ async function materialize(db: RetainerDb, a: any, plan: CustomRetainerPlan) {
     );
     if (existing) {
       await db.query(
-        "UPDATE retainer_cycles SET period_start=$2,period_end=$3,start_date=$2 WHERE id=$1",
-        [existing.id, cp.startDate, cp.endDate],
+        "UPDATE retainer_cycles SET period_start=$2,period_end=$3,start_date=$2,amount_pence=$4 WHERE id=$1",
+        [existing.id, cp.startDate, cp.endDate, cp.amountPence],
       );
+      if (!existing.accepted_at && !existing.paid_at) {
+        await appendGroups(db, a, existing, cp);
+        await db.query("UPDATE retainer_cycle_tasks SET due_date=$2 WHERE retainer_cycle_id=$1 AND status!='complete'", [existing.id, cp.endDate]);
+      }
       continue;
     }
     const c = (
@@ -155,8 +177,14 @@ async function materialize(db: RetainerDb, a: any, plan: CustomRetainerPlan) {
         ],
       )
     ).rows[0];
+    await appendGroups(db, a, c, cp);
+  }
+}
+async function appendGroups(db: RetainerDb, a: any, c: any, cp: CustomRetainerPlan["cycles"][number]) {
     for (const groupIndex of cp.deliverables.map((_, i) => i)) {
       const group = cp.deliverables[groupIndex];
+      const alreadyExists = (await db.query("SELECT id FROM retainer_deliverables WHERE cycle_id=$1 AND plan_key=$2", [c.id, group.id])).rows[0];
+      if (alreadyExists) continue;
       const d = (
         await db.query(
           `INSERT INTO retainer_deliverables(public_id,retainer_agreement_id,cycle_id,plan_key,name,quantity,frequency,notes,sort_order) VALUES($1,$2,$3,$4,$5,$6,'per_cycle',$7,$8) RETURNING id`,
@@ -189,14 +217,15 @@ async function materialize(db: RetainerDb, a: any, plan: CustomRetainerPlan) {
           ],
         );
     }
-  }
 }
+
 export async function createCustomRetainer(
   userId: number,
   recipientId: number,
   raw: unknown,
 ) {
   const plan = customRetainerSchema.parse(raw);
+  if (plan.cycles.some(c => c.earlyStart)) retainerError("Early starts can only amend an accepted retainer", 400);
   if (userId === recipientId) retainerError("Choose another person", 400);
   return retainerTransaction(async (db) => {
     await db.query("SELECT pg_advisory_xact_lock($1)", [userId]);
@@ -324,7 +353,7 @@ export async function proposeCustomRetainer(
     await writeVersion(db, a, plan, version, userId);
     await db.query(
       `UPDATE retainer_agreements SET draft_data=$2,proposal_feedback=NULL,status=CASE WHEN status IN ('active','paused') THEN status ELSE 'awaiting_client_acceptance' END WHERE id=$1`,
-      [a.id, JSON.stringify({ plan, version, proposedBy: userId })],
+      [a.id, JSON.stringify({ plan, version, proposedBy: userId, requestedChanges: a.proposal_feedback })],
     );
     await notice(
       db,
@@ -415,7 +444,7 @@ export async function customWorkspace(publicId: string, userId: number) {
     ).rows;
     const submissions = (
       await db.query(
-        `SELECT s.id,s.public_id,s.retainer_cycle_task_id,s.version,s.note,s.status,s.client_feedback,s.submitted_at,s.media_id,m.mime_type,m.filename FROM retainer_work_item_submissions s JOIN retainer_cycle_tasks t ON t.id=s.retainer_cycle_task_id JOIN retainer_cycles c ON c.id=t.retainer_cycle_id LEFT JOIN retainer_media m ON m.id=s.media_id WHERE c.retainer_agreement_id=$1 ORDER BY s.version DESC`,
+        `SELECT s.id,s.public_id,s.retainer_cycle_task_id,s.version,s.note,s.status,s.client_feedback,s.submitted_at,s.media_id,s.deliverable_url,m.mime_type,m.filename FROM retainer_work_item_submissions s JOIN retainer_cycle_tasks t ON t.id=s.retainer_cycle_task_id JOIN retainer_cycles c ON c.id=t.retainer_cycle_id LEFT JOIN retainer_media m ON m.id=s.media_id WHERE c.retainer_agreement_id=$1 ORDER BY s.version DESC`,
         [a.id],
       )
     ).rows;
@@ -431,7 +460,23 @@ export async function customWorkspace(publicId: string, userId: number) {
         [a.id],
       )
     ).rows[0];
+    const versions = (await db.query(`SELECT version_number,snapshot,created_by,created_at,
+      accepted_by_client_at,accepted_by_freelancer_at FROM retainer_agreement_versions
+      WHERE retainer_agreement_id=$1 ORDER BY version_number DESC`,[a.id])).rows;
+    const proposalDecisions = (await db.query(
+      "SELECT kind,detail,created_at FROM retainer_events WHERE agreement_id=$1 AND kind IN ('accept','decline','request_changes') ORDER BY created_at DESC", [a.id],
+    )).rows;
+    const refundHistory = (await db.query(`SELECT p.retainer_cycle_id,r.stripe_refund_id,r.amount_pence,r.status,r.created_at
+      FROM payment_refunds r JOIN payments p ON p.id=r.payment_id JOIN retainer_cycles c ON c.id=p.retainer_cycle_id
+      WHERE c.retainer_agreement_id=$1 ORDER BY r.created_at DESC`,[a.id])).rows;
+    const satisfaction = (await db.query(
+      "SELECT score FROM retainer_satisfaction_pulses WHERE retainer_agreement_id=$1", [a.id],
+    )).rows;
+    const openRequests = (await db.query(
+      "SELECT COUNT(*)::int AS count FROM retainer_requests WHERE retainer_agreement_id=$1 AND status IN ('pending','accepted','scheduled','clarification')", [a.id],
+    )).rows[0].count;
     return {
+      versions, refundHistory, satisfaction, openRequests: openRequests + (a.draft_data ? 1 : 0), proposalDecisions,
       plan: await currentPlan(db, a),
       latestPlan: latest.snapshot,
       latestVersion: latest.version_number,
@@ -455,8 +500,9 @@ export async function submitCustomWork(
   publicId: string,
   userId: number,
   taskPublicId: string,
-  mediaId: string,
+  mediaId: string | undefined,
   note: string,
+  deliverableUrl?: string,
 ) {
   return retainerTransaction(async (db) => {
     const a = await lockAgreement(db, publicId, userId);
@@ -471,33 +517,50 @@ export async function submitCustomWork(
     if (!t) retainerError("Work item not found", 404);
     const c = await requireWork(db, a, t.retainer_cycle_id);
     if (!note.trim()) retainerError("Add a submission note", 400);
-    const m = (
-      await db.query(
+    let link: string | null = null;
+    if (deliverableUrl !== undefined) {
+      try {
+        const parsed = new URL(deliverableUrl.trim());
+        if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password || deliverableUrl.length > 4000)
+          throw new Error("Invalid link");
+        link = parsed.href;
+      } catch {
+        retainerError("Enter a valid http or https delivery link without embedded credentials", 400);
+      }
+    }
+    if (Boolean(mediaId) === Boolean(link))
+      retainerError("Choose either a delivery link or a processed file", 400);
+    if (mediaId) {
+      const m = (await db.query(
         "SELECT * FROM retainer_media WHERE id=$1 AND task_id=$2 AND status='ready'",
         [mediaId, t.id],
-      )
-    ).rows[0];
-    if (!m) retainerError("Choose a processed preview for this item");
+      )).rows[0];
+      if (!m) retainerError("Choose a processed preview for this item");
+    }
     const latest = (
       await db.query(
         "SELECT * FROM retainer_work_item_submissions WHERE retainer_cycle_task_id=$1 ORDER BY version DESC LIMIT 1",
         [t.id],
       )
     ).rows[0];
-    if (latest?.media_id === mediaId) return { ok: true };
+    if (latest?.status === "submitted" &&
+        latest.media_id === (mediaId ?? null) &&
+        latest.deliverable_url === link &&
+        latest.note === note.trim().slice(0, 5000)) return { ok: true };
     await db.query(
       "UPDATE retainer_work_item_submissions SET status='superseded' WHERE retainer_cycle_task_id=$1 AND status IN ('submitted','approved')",
       [t.id],
     );
     await db.query(
-      `INSERT INTO retainer_work_item_submissions(public_id,retainer_cycle_task_id,version,submitted_by,note,media_id,status,submitted_at,created_at) VALUES($1,$2,$3,$4,$5,$6,'submitted',$7,$7)`,
+      `INSERT INTO retainer_work_item_submissions(public_id,retainer_cycle_task_id,version,submitted_by,note,media_id,deliverable_url,status,submitted_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'submitted',$8,$8)`,
       [
         id("rws"),
         t.id,
         (latest?.version ?? 0) + 1,
         userId,
         note.trim().slice(0, 5000),
-        mediaId,
+        mediaId ?? null,
+        link,
         new Date().toISOString(),
       ],
     );

@@ -1,3 +1,4 @@
+import { syncChargeRefunds } from "./payment-refund-sync";
 import { confirmStoredPayment } from "./payment-confirmation";
 import { retainerPool } from "./retainer-v1-db";
 import { fulfilVerifiedProjectPayment } from "./project-payment-verification";
@@ -597,7 +598,7 @@ export async function processStripeEvent(
       const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
       if (viewrrPaymentId) {
         await sqlClient.query(
-          "UPDATE payments SET status='failed', failed_at=$1, version=version+1 WHERE public_id=$2 AND status NOT IN ('succeeded','refunded')",
+          "UPDATE payments SET status='failed', failed_at=$1, version=version+1 WHERE public_id=$2 AND status NOT IN ('succeeded','refunded','partially_refunded')",
           [new Date().toISOString(), viewrrPaymentId]
         );
         await auditLog({
@@ -615,7 +616,7 @@ export async function processStripeEvent(
       const viewrrPaymentId = intent.metadata?.viewrr_payment_id;
       if (viewrrPaymentId) {
         await sqlClient.query(
-          "UPDATE payments SET status='cancelled', cancelled_at=$1, version=version+1 WHERE public_id=$2",
+          "UPDATE payments SET status='cancelled', cancelled_at=$1, version=version+1 WHERE public_id=$2 AND status NOT IN ('succeeded','refunded','partially_refunded')",
           [new Date().toISOString(), viewrrPaymentId]
         );
       }
@@ -623,31 +624,27 @@ export async function processStripeEvent(
     }
 
     case "charge.refunded": {
-      const charge = event.data.object as Stripe.Charge;
-      console.log("[webhook] charge.refunded:", charge.id, "amount_refunded:", charge.amount_refunded);
+      await syncChargeRefunds(getStripe(), (event.data.object as Stripe.Charge).id);
       break;
     }
-
     case "refund.created":
-    case "refund.updated": {
+    case "refund.updated":
+    case "refund.failed": {
       const refund = event.data.object as Stripe.Refund;
-      const viewrrRefundId = refund.metadata?.viewrr_refund_id;
-      if (viewrrRefundId && refund.status) {
-        const newStatus = refund.status === "succeeded" ? "succeeded" : refund.status === "failed" ? "failed" : "processing";
-        await sqlClient.query(
-          "UPDATE payment_refunds SET status=$1, stripe_refund_id=$2 WHERE public_id=$3",
-          [newStatus, refund.id, viewrrRefundId]
-        );
-      }
+      const chargeId = typeof refund.charge === "string" ? refund.charge : refund.charge?.id;
+      if (chargeId) await syncChargeRefunds(getStripe(), chargeId);
       break;
     }
-
+    case "application_fee.refunded": {
+      const fee = event.data.object as Stripe.ApplicationFee;
+      const chargeId = typeof fee.charge === "string" ? fee.charge : fee.charge?.id;
+      if (chargeId) await syncChargeRefunds(getStripe(), chargeId);
+      break;
+    }
     case "transfer.reversed": {
       const transfer = event.data.object as Stripe.Transfer;
-      await sqlClient.query(
-        "UPDATE payment_transfers SET status='partially_reversed', reversed_pence=$1 WHERE stripe_transfer_id=$2",
-        [transfer.amount_reversed, transfer.id]
-      );
+      const chargeId = typeof transfer.source_transaction === "string" ? transfer.source_transaction : transfer.source_transaction?.id;
+      if (chargeId) await syncChargeRefunds(getStripe(), chargeId);
       break;
     }
 
@@ -687,7 +684,7 @@ export async function processStripeEvent(
     case "payout.updated":
     case "payout.paid":
     case "payout.failed": {
-      const payout = event.data.object as Stripe.Payout;
+      let payout = event.data.object as Stripe.Payout;
       const accountId = (event as any).account as string | undefined;
       if (accountId) {
         const users = await sqlClient.query(
@@ -696,15 +693,13 @@ export async function processStripeEvent(
         ) as Array<{ id: number }>;
         if (users.length) {
           const freelancerId = users[0].id;
-          const status =
-            event.type === "payout.paid" ? "paid" :
-            event.type === "payout.failed" ? "failed" :
-            event.type === "payout.created" ? "pending" : "in_transit";
+          payout = await getStripe().payouts.retrieve(payout.id, {}, { stripeAccount: accountId });
+          const status = payout.status;
 
           await sqlClient.query(
             `INSERT INTO payment_payouts (freelancer_id, stripe_payout_id, amount_pence, currency, status, arrival_date, failure_code, created_at, paid_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             ON CONFLICT (stripe_payout_id) DO UPDATE SET status=$5, paid_at=$9`,
+             ON CONFLICT (stripe_payout_id) DO UPDATE SET status=$5, paid_at=$9, failure_code=$7, arrival_date=$6`,
             [
               freelancerId,
               payout.id,
@@ -714,33 +709,33 @@ export async function processStripeEvent(
               payout.arrival_date ? new Date(payout.arrival_date * 1000).toISOString() : null,
               (payout as any).failure_code ?? null,
               new Date().toISOString(),
-              event.type === "payout.paid" ? new Date().toISOString() : null,
+              status === "paid" ? new Date().toISOString() : null,
             ]
           );
 
-          if (event.type === "payout.paid") {
+          if (status === "paid") {
             await storage.createNotification({
-              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
-              message: `\u2705 Payment Complete — Your earnings of £${(payout.amount / 100).toFixed(2)} have successfully reached your bank account.`,
+              message: `\u2705 Payment Complete — Your earnings of £${(payout.amount / 100).toFixed(2)} were marked paid by Stripe. Check your bank statement to confirm arrival.`,
               link: "/your-work", read: 0,
             });
-          } else if (event.type === "payout.created" || event.type === "payout.updated") {
-            const isInTransit = (event.data.object as any).status === "in_transit";
+          } else if (status === "pending" || status === "in_transit") {
+            const isInTransit = status === "in_transit";
             if (isInTransit) {
               const arrivalStr = payout.arrival_date
                 ? new Date(payout.arrival_date * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
                 : null;
               await storage.createNotification({
-                recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+                recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
                 type: "payment_received",
                 message: `\uD83D\uDCB8 Your payout is on its way — Stripe has initiated your payout of \u00a3${(payout.amount / 100).toFixed(2)}.${arrivalStr ? ` Estimated bank arrival: ${arrivalStr}.` : ""}`,
                 link: "/your-work", read: 0,
               });
             }
-          } else if (event.type === "payout.failed") {
+          } else if (status === "failed") {
             await storage.createNotification({
-              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
               message: `A payout of \u00a3${(payout.amount / 100).toFixed(2)} failed. Please check your bank details in your Stripe account.`,
               link: "/your-work", read: 0,
@@ -761,14 +756,14 @@ export async function processStripeEvent(
         ) as Array<{ id: number }>;
         if (users.length) {
           const freelancerId = users[0].id;
-          const balanceObj = event.data.object as any;
+          const balanceObj = await getStripe().balance.retrieve({}, { stripeAccount: accountId });
           const available = (balanceObj.available ?? []).find((b: any) => b.currency === "gbp");
           const amountPence = available?.amount ?? 0;
           if (amountPence > 0) {
             await storage.createNotification({
-              recipientId: freelancerId, actorId: null, actorName: "Viewrr", actorAvatar: null,
+              recipientId: freelancerId, actorId: freelancerId, actorName: "Viewrr", actorAvatar: null,
               type: "payment_received",
-              message: `\uD83C\uDF89 Your earnings are now available — Stripe has released \u00a3${(amountPence / 100).toFixed(2)} and will automatically send it to your bank according to your payout schedule.`,
+              message: `\uD83C\uDF89 Your earnings are now available — Stripe has released \u00a3${(amountPence / 100).toFixed(2)} to your available Stripe balance. Check Stripe for your payout schedule and bank arrival estimate.`,
               link: "/your-work", read: 0,
             });
           }
@@ -1251,7 +1246,7 @@ export async function initiateRefund(req: RefundRequest): Promise<schema.Payment
 
   const payment = paymentRows[0];
 
-  if (payment.status !== "succeeded")
+  if (!["succeeded", "partially_refunded"].includes(payment.status))
     throw Object.assign(new Error("Can only refund a succeeded payment"), { status: 409 });
 
   // Calculate maximum refundable (gross minus already refunded)
@@ -1357,13 +1352,7 @@ export async function initiateRefund(req: RefundRequest): Promise<schema.Payment
       })
       .where(eq(schema.paymentRefunds.id, refundRecord.id));
 
-    // Update payment status
-    const newPaymentStatus =
-      req.amountPence === payment.grossPence ? "refunded" : "partially_refunded";
-    await db
-      .update(schema.payments)
-      .set({ status: newPaymentStatus, version: payment.version + 1 })
-      .where(eq(schema.payments.id, payment.id));
+    await syncChargeRefunds(stripe, payment.stripeChargeId!);
 
     await auditLog({
       paymentId: payment.id,
@@ -1373,7 +1362,7 @@ export async function initiateRefund(req: RefundRequest): Promise<schema.Payment
     });
 
     // Notify parties (FR-16: accurate messaging)
-    if (req.notifyParties) {
+    if (req.notifyParties && newStatus === "succeeded") {
       await sendRefundNotifications(payment, req.amountPence);
     }
 
@@ -1467,7 +1456,7 @@ async function sendRefundNotifications(
 
     await (storage as any).createNotification({
       recipientId: payment.clientId,
-      actorId: null,
+      actorId: payment.clientId,
       actorName: "Viewrr",
       actorAvatar: null,
       type: "payment_received",
@@ -1476,14 +1465,13 @@ async function sendRefundNotifications(
       read: 0,
     });
 
-    const reversedPence = Math.round(amountPence * ((100 - VIEWRR_FEE_PERCENT) / 100));
     await (storage as any).createNotification({
       recipientId: payment.freelancerId,
-      actorId: null,
+      actorId: payment.clientId,
       actorName: "Viewrr",
       actorAvatar: null,
       type: "payment_received",
-      message: `A refund was processed and £${(reversedPence / 100).toFixed(2)} of the related transfer has been reversed.`,
+      message: `A refund of £${(amountPence / 100).toFixed(2)} was processed. View the invoice refund history and Stripe balance for the resulting adjustments.`,
       link: "/your-work",
       read: 0,
     });

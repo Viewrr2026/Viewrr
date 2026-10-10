@@ -106,27 +106,12 @@ app.use((req: any, res: any, next: NextFunction) => {
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       const requestId = (req as any).requestId;
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (requestId) logLine = `[${requestId}] ${logLine}`;
-      if (capturedJsonResponse) {
-        // P0-03: Redact sensitive fields before logging. Never log credentials.
-        const redacted = redactForLog(capturedJsonResponse);
-        const serialised = JSON.stringify(redacted);
-        // Truncate very long responses to avoid log flooding
-        logLine += ` :: ${serialised.length > 500 ? serialised.slice(0, 500) + "…[truncated]" : serialised}`;
-      }
 
       log(logLine);
     }

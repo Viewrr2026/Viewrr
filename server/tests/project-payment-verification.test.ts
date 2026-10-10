@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { setRetainerTestDatabase } from '../retainer-v1-db';
-import { fulfilVerifiedProjectPayment, hasVerifiedProjectPayment, rejectClientPaymentConfirmation } from '../project-payment-verification';
+import { fulfilVerifiedProjectPayment, syncCustomProjectCompletion, hasVerifiedProjectPayment, rejectClientPaymentConfirmation } from '../project-payment-verification';
 process.env.NODE_ENV = 'test';
 const db = new PGlite();
 const details = { chargeId: 'ch_test', balanceTxId: null, stripeFeePence: 25, applicationFeeId: null };
@@ -14,11 +14,12 @@ before(async () => {
   await db.exec(await readFile(new URL('./fixtures/retainer-base.sql', import.meta.url), 'utf8'));
   await db.exec(await readFile(new URL('../../migrations/0003_prd007_payment_ledger.sql', import.meta.url), 'utf8'));
   await db.exec("ALTER TABLE projects ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'unpaid'");
+  await db.exec("ALTER TABLE projects ADD COLUMN planning_status TEXT DEFAULT 'legacy'; CREATE TABLE project_stages(project_id INTEGER,status TEXT,approval_required INTEGER)");
   setRetainerTestDatabase({ query: (q, v) => db.query(q,v) as any, transaction: fn => db.transaction(tx => fn({ query: (q,v) => tx.query(q,v) as any })) });
 });
 after(async () => { setRetainerTestDatabase(undefined); await db.close(); });
 async function reset() {
-  await db.exec(`TRUNCATE payments, invoices, projects, payment_refunds RESTART IDENTITY;
+  await db.exec(`TRUNCATE project_stages, payments, invoices, projects, payment_refunds RESTART IDENTITY;
     INSERT INTO projects(id,client_id,freelancer_id,title,created_at) VALUES(1,1,2,'Test','now');
     INSERT INTO invoices(id,invoice_number,project_id,client_id,freelancer_id,total_pence,issued_at,created_at) VALUES(1,'TEST',1,1,2,100,'now','now');
     INSERT INTO payments(id,public_id,project_id,invoice_id,client_id,freelancer_id,gross_pence,platform_fee_pence,freelancer_pence,stripe_payment_intent_id) VALUES(1,'pay_test',1,1,1,2,100,11,89,'pi_test');`);
@@ -106,3 +107,30 @@ test('verified final payment completes an awaiting-payment project, while active
   await reset(); await fulfilVerifiedProjectPayment(intent,details);
   assert.equal((await db.query<any>('SELECT status FROM projects')).rows[0].status,'active');
 });
+
+ test('custom plan completes after verified payment and all approvals, in either order',async()=>{
+  for(const paymentFirst of [true,false]) {
+    await reset();
+    await db.exec("UPDATE projects SET planning_status='confirmed'; INSERT INTO project_stages VALUES(1,'completed',0),(1,'in_progress',1)");
+    if(paymentFirst)await fulfilVerifiedProjectPayment(intent,details);
+    await syncCustomProjectCompletion(1);
+    assert.equal((await db.query<any>('SELECT status FROM projects')).rows[0].status,'active');
+    await db.exec("UPDATE project_stages SET status='approved' WHERE approval_required=1");
+    await syncCustomProjectCompletion(1);
+    assert.equal((await db.query<any>('SELECT status FROM projects')).rows[0].status,paymentFirst?'completed':'awaiting_payment');
+    if(!paymentFirst)await fulfilVerifiedProjectPayment(intent,details);
+    await syncCustomProjectCompletion(1);
+    assert.equal((await db.query<any>('SELECT status FROM projects')).rows[0].status,'completed');
+  }
+ });
+ test('custom completion rejects paid flags alone, missing stages and missing client approval',async()=>{
+  await reset(); await db.exec("UPDATE projects SET planning_status='confirmed',payment_status='paid'; UPDATE invoices SET status='paid'");
+  await syncCustomProjectCompletion(1);
+  assert.equal((await db.query<any>('SELECT status FROM projects')).rows[0].status,'active');
+  await db.exec("INSERT INTO project_stages VALUES(1,'approved',1)");
+  await syncCustomProjectCompletion(1);
+  assert.equal((await db.query<any>('SELECT status FROM projects')).rows[0].status,'awaiting_payment');
+  await db.exec("UPDATE project_stages SET status='completed'");
+  await fulfilVerifiedProjectPayment(intent,details);
+  assert.notEqual((await db.query<any>('SELECT status FROM projects')).rows[0].status,'completed');
+ });

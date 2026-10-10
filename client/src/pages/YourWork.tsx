@@ -1,3 +1,4 @@
+import ProjectEstimate from "@/components/ProjectEstimate";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -844,6 +845,7 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                     ))}
                   </div>
 
+                  <ProjectEstimate projectId={pw.project.id} userId={currentUserId} />
                   {/* Progress tab */}
                   {leftTab === "progress" && (
                     <>
@@ -1083,20 +1085,11 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                       </p>
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <span className="text-[10px] bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded-full">
-                      View Files ↓
-                    </span>
-                    <span className="text-[10px] bg-primary text-white font-semibold px-2.5 py-1 rounded-full">
-                      {pw.project.status === "awaiting_payment" ? "Approve & Pay" : "Approve Stage"}
-                    </span>
-                    <span className="text-[10px] border border-border text-muted-foreground font-semibold px-2.5 py-1 rounded-full">
-                      Request Changes
-                    </span>
-                  </div>
+                  <button type="button" className="text-sm underline text-primary" onClick={() => document.getElementById(`delivery-${pw.project.id}`)?.scrollIntoView({behavior:'smooth',block:'start'})}>Review files, request changes or pay ↓</button>
                 </div>
               )}
 
+              <div id={`delivery-${pw.project.id}`} className="scroll-mt-24" />
               {/* Work delivery — active projects */}
               {pw.project.status !== "completed" || (pw.project as any).paymentStatus === "unpaid" ? (
                 <DeliverablesSection
@@ -1969,7 +1962,7 @@ function InvitationCard({
         )}
         {inv.budget && (
           <span className="px-2.5 py-1 rounded-full text-[11px] bg-secondary text-muted-foreground border border-border">
-            {inv.budget}
+            Provisional estimate: {inv.budget}
           </span>
         )}
         {inv.timeline && (
@@ -2672,7 +2665,7 @@ function FreelancerEarningsPanel({ userId }: { userId: number }) {
                             {(p.status === "succeeded" && !p.transfer_status) && (
                               <div className="mb-3 px-3 py-2.5 rounded-xl text-xs" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.18)" }}>
                                 <p className="font-semibold mb-1" style={{ color: "#FF5A1F" }}>Why haven't I received this yet?</p>
-                                <p className="text-muted-foreground">Your client has paid. Your payment has reached Stripe and is in its standard availability period. Stripe will automatically send it to your bank once this period ends. No action is needed.</p>
+                                <p className="text-muted-foreground">Client payment is confirmed. Check Payouts for current balances, payout status and any action required.</p>
                               </div>
                             )}
                             <PaymentJourneyBar
@@ -2897,8 +2890,8 @@ export default function YourWork() {
     },
   });
 
-  const received = invitations.filter(i => i.recipientId === user?.id);
-  const sent     = invitations.filter(i => i.senderId === user?.id);
+  const received = invitations.filter(i => i.recipientId === user?.id && !["accepted","declined","withdrawn"].includes(i.status));
+  const sent     = invitations.filter(i => i.senderId === user?.id && !["accepted","declined","withdrawn"].includes(i.status));
   const pendingReceived = received.filter(i => i.status === "pending");
 
   const [loginOpen, setLoginOpen] = useState(false);

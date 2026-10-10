@@ -18,6 +18,7 @@ export const customCycleSchema = z.object({
   amountPence: z.number().int().min(50).max(10_000_000),
   revisionAllowance: z.number().int().min(0).max(100),
   paymentDays: z.number().int().min(0).max(365),
+  earlyStart: z.boolean().optional(),
   deliverables: z
     .array(
       z.object({
@@ -56,7 +57,7 @@ export const customRetainerSchema = z
       ) {
         problem(`Cycle ${i + 1} must fit within the retainer dates`);
       }
-      if (i && cycle.startDate <= plan.cycles[i - 1].endDate)
+      if (i && cycle.startDate <= plan.cycles[i - 1].endDate && !cycle.earlyStart)
         problem("Cycles must be in order and cannot overlap");
       cycle.deliverables.forEach((d) => {
         if (ids.has(d.id))
