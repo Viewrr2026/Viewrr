@@ -1,3 +1,5 @@
+import { GbpInput } from "@/components/ui/gbp-input";
+import { invitationEstimate } from "@shared/project-estimate";
 import { useState, useEffect, useRef } from "react";
 import { displayRole } from "@/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -8,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   X, Search, CheckCircle2, Send, User, FileText,
-  Tag, Clock, DollarSign, Loader2, ChevronRight, Plus,
+  Tag, Clock, PoundSterling, Loader2, ChevronRight, Plus,
   Circle, AlertCircle, RefreshCw, Zap, Calendar, LayoutList, Trash2,
 } from "lucide-react";
 
@@ -189,6 +191,7 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
   const sendMutation = useMutation({
     mutationFn: () => {
       setSendError(null);
+      if(!isRetainer) invitationEstimate(title.trim(),budget);
       const payload: Record<string, unknown> = {
         senderId,
         recipientId: recipient!.id,
@@ -451,13 +454,14 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                    <DollarSign size={12} className="text-primary" />
-                    Budget
+                    <PoundSterling size={12} className="text-primary" />
+                    {isRetainer ? "Budget" : "Provisional estimate (£, including any VAT)"}
                   </label>
-                  <Input
+                  <GbpInput
                     value={budget}
-                    onChange={e => setBudget(e.target.value)}
-                    placeholder="e.g. £1,500"
+                    onValueChange={setBudget}
+                    aria-label="Project price in GBP"
+                    placeholder="0.00"
                     className="rounded-xl text-sm"
                     data-testid="input-project-budget"
                   />
@@ -758,7 +762,7 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                 {categories.length > 0 && (
                   <SummaryRow icon={<Tag size={12} />} label="Category" value={categories.join(", ")} />
                 )}
-                {budget && <SummaryRow icon={<DollarSign size={12} />} label="Budget" value={budget} />}
+                {budget && <SummaryRow icon={<PoundSterling size={12} />} label="Provisional estimate" value={`£${Number(budget).toFixed(2)}`} />}
                 {isRetainer ? (
                   <>
                     <SummaryRow icon={<RefreshCw size={12} />} label="Type" value="Retainer" />

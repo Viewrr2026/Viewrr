@@ -18,6 +18,19 @@ export async function hasVerifiedProjectPayment(projectId: number, db: RetainerD
   return result.rows.length > 0;
 }
 
+/** Custom plans complete only after all required sign-offs and a verified payment. */
+export async function syncCustomProjectCompletion(projectId:number, transaction?:RetainerDb):Promise<void> {
+  const sync=async(db:RetainerDb)=>{
+    const {rows:[project]}=await db.query('SELECT * FROM projects WHERE id=$1 FOR UPDATE',[projectId]);
+    if(!project || project.is_retainer===1 || project.planning_status!=='confirmed' || !['active','awaiting_payment'].includes(project.status)) return;
+    const {rows:stages}=await db.query('SELECT status,approval_required FROM project_stages WHERE project_id=$1',[projectId]);
+    if(!stages.length || stages.some(s=>s.status!=='approved' && !(s.status==='completed' && !s.approval_required))) return;
+    const paid=await hasVerifiedProjectPayment(projectId,db);
+    await db.query('UPDATE projects SET status=$2 WHERE id=$1',[projectId,paid?'completed':'awaiting_payment']);
+  };
+  if(transaction) await sync(transaction); else await retainerTransaction(sync);
+}
+
 export function rejectClientPaymentConfirmation(_req: unknown, res: any) {
   return res.status(409).json({ error: 'Payment is confirmed automatically after Stripe verification.', code: 'payment_verification_required' });
 }
@@ -52,7 +65,9 @@ export async function fulfilVerifiedProjectPayment(intent: Stripe.PaymentIntent,
         details.stripeFeePence === null ? null : p.platform_fee_pence-details.stripeFeePence]);
     // Replays also repair incomplete fulfilment left by older deployments.
     await db.query("UPDATE invoices SET status='paid', paid_at=COALESCE(paid_at,$2) WHERE id=$1", [i.id, p.succeeded_at || now]);
-    await db.query("UPDATE projects SET payment_status='paid', status=CASE WHEN status='awaiting_payment' THEN 'completed' ELSE status END WHERE id=$1", [j.id]);
+    await db.query("UPDATE projects SET payment_status='paid' WHERE id=$1",[j.id]);
+    if(j.planning_status==='confirmed') await syncCustomProjectCompletion(j.id,db);
+    else await db.query("UPDATE projects SET status='completed' WHERE id=$1 AND status='awaiting_payment'",[j.id]);
     return firstSuccess;
   });
 }

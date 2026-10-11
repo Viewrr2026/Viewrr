@@ -1,24 +1,6 @@
 import type { ProjectStage, WorkProject } from "@/api/work";
 
-/**
- * The single place that decides who may do what to a stage.
- *
- * Why this exists as one module rather than as conditions inside StageActions:
- * the server checks only WHO is calling. `POST /api/projects/:id/stages/:stageId/
- * {approve|complete|request-changes}` does not validate that the transition is
- * legal for the stage's current status, does not enforce `approvalRequired`, and
- * does not enforce `revisionAllowance`. So the client is, today, the only thing
- * standing between a mistap and an illegal stage state. That logic must be
- * inspectable in one file, not scattered across a render tree.
- *
- * Two hard rules encoded here:
- *   • Decision 11 — a project with `planningStatus === "legacy"` is READ-ONLY.
- *     No stage action is ever offered for one, and the historical six-stage
- *     model is rendered instead. Mobile must never mutate a legacy project
- *     through the new stage logic.
- *   • Decision 12 — retainers are out of mobile V1. A retainer project offers
- *     no cycle actions; the list and detail show status plus "Manage on web".
- */
+/** UI mirrors server transition checks; the server remains authoritative. */
 
 /** Where the viewer stands in relation to this project. */
 export type Party = "client" | "freelancer" | "observer";
@@ -48,12 +30,11 @@ export function isRetainer(project: WorkProject): boolean {
 export function isProjectMutable(project: WorkProject): boolean {
   if (project.deletedAt) return false;
   if (isLegacyProject(project)) return false;
-  return project.status === "active" || project.status === "paused";
+  return project.status === "active" && project.planningStatus === "confirmed";
 }
 
 /**
- * Revision allowance is FREE TEXT with a default of "none" and no server-side
- * validation whatsoever — `revision_allowance text NOT NULL DEFAULT 'none'`.
+ * Revision allowance is free text with a default of "none" — `revision_allowance text NOT NULL DEFAULT 'none'`.
  * The only claim mobile is entitled to make is "the plan says revisions are
  * included" versus "the plan says none". Counting revisions consumed is not
  * possible: no endpoint reports per-stage change-request counts.
@@ -64,7 +45,7 @@ export function allowsRevisions(stage: ProjectStage): boolean {
   return true;
 }
 
-export type StageActionKind = "approve" | "request-changes" | "complete";
+export type StageActionKind = "approve" | "request-changes" | "complete" | "start" | "submit";
 
 export type StageAction = {
   kind: StageActionKind;
@@ -89,24 +70,7 @@ export type StageGating = {
 
 const ACTIVE_STATUSES = new Set(["in_progress", "awaiting_client", "changes_requested"]);
 
-/**
- * The gating matrix.
- *
- *  stage.status        │ client                        │ freelancer
- * ─────────────────────┼───────────────────────────────┼──────────────────────────────
- *  upcoming            │ —                             │ —  (start is web-only)
- *  in_progress         │ —                             │ Mark complete, iff
- *                      │                               │ approvalRequired = 0
- *  awaiting_client     │ Approve;                      │ — (awaiting the client)
- *                      │ Request changes iff allowance │
- *  changes_requested    │ —                            │ Mark complete, iff
- *                      │                               │ approvalRequired = 0
- *  approved            │ —                             │ Mark complete
- *  completed           │ —                             │ —
- *
- * `observer` never gets an action. A legacy, retainer-locked, completed,
- * cancelled or deleted project never gets an action.
- */
+/** Role-specific actions. The screen and server also check stage order. */
 export function gateStage(
   project: WorkProject,
   stage: ProjectStage,
@@ -162,31 +126,12 @@ export function gateStage(
     };
   }
 
-  if (stage.status === "approved") {
-    return {
-      actions: [
-        {
-          kind: "complete",
-          label: "Mark stage complete",
-          emphasis: "primary",
-          hint: "Approved by your client. Completing moves the project on.",
-        },
-      ],
-      note: null,
-      active,
-    };
-  }
-
+  if (stage.status === "approved") return { actions: [], note: "Approved by your client.", active };
+  if (stage.status === "upcoming") return { actions: [{ kind: "start", label: "Start stage", emphasis: "primary" }], note: null, active };
   if (stage.status === "in_progress" || stage.status === "changes_requested") {
     if (approvalRequired) {
-      // There is no project-scoped "submit for review" endpoint in the frozen
-      // contract, so mobile does not offer one, and it certainly does not
-      // complete a stage the plan says the client must approve first.
-      return {
-        actions: [],
-        note: "This stage needs client approval. Send it for review on the web to continue.",
-        active,
-      };
+      return { actions: [{ kind: "submit", label: "Submit for client review", emphasis: "primary" }],
+        note: "Share your work in Deliverables before submitting this stage.", active };
     }
 
     return {

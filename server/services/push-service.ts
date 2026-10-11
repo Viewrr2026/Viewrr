@@ -425,6 +425,9 @@ const TYPE_TO_PREF: Record<string, PushPreferenceKey> = {
   counter_offered: "pushInterests",
 
   // ── Money
+  retainer_payment: "pushPayments",
+  retainer_proposal: "pushProjectUpdates",
+  retainer_update: "pushProjectUpdates",
   payment_confirmed: "pushPayments",
   payment_requested: "pushPayments",
   payment_received: "pushPayments",
@@ -611,6 +614,9 @@ export type PushDispatchInput = {
   targetType?: NotificationTargetType | string | null;
   targetId?: number | null;
   notificationId?: number | null;
+  reliable?: boolean;
+  skipTokens?: string[];
+  onAccepted?: (token: string) => Promise<void>;
 };
 
 export type PushDispatchResult = {
@@ -679,7 +685,7 @@ export async function dispatchPush(input: PushDispatchInput): Promise<PushDispat
   };
   if (input.notificationId != null) data.notificationId = input.notificationId;
 
-  const messages: ExpoMessage[] = tokens.map((to) => ({
+  const messages: ExpoMessage[] = tokens.filter(t => !input.skipTokens?.includes(t)).map((to) => ({
     to,
     title: titleFor(input.type),
     body: input.message,
@@ -692,22 +698,27 @@ export async function dispatchPush(input: PushDispatchInput): Promise<PushDispat
 
   let sent = 0;
   let invalidated = 0;
+  let failed = false;
 
   for (const batch of chunk(messages, EXPO_BATCH_LIMIT)) {
     const tickets = await postToExpo(batch, accessToken);
-    if (!tickets) continue;
+    if (!tickets) { failed = true; continue; }
 
     for (let i = 0; i < batch.length; i++) {
       const ticket = tickets[i];
-      if (!ticket) continue;
+      if (!ticket) { failed = true; continue; }
       if (ticket.status === "ok") {
         sent++;
+        await input.onAccepted?.(batch[i].to);
         continue;
       }
       invalidated += await handleTicketError(batch[i].to, ticket);
+      if (ticket.details?.error === "DeviceNotRegistered") await input.onAccepted?.(batch[i].to);
+      else failed = true;
     }
   }
 
+  if (input.reliable && failed) throw new Error("Push provider did not accept every device delivery");
   return { sent, skipped: null, invalidated };
 }
 

@@ -100,8 +100,9 @@ export function registerCustomRetainerRoutes(app: Express) {
         publicId(req),
         req.auth!.userId,
         String(req.params.taskId),
-        z.string().uuid().parse(req.body.mediaId),
+        z.string().uuid().optional().parse(req.body.mediaId),
         z.string().max(5000).parse(req.body.note),
+        z.string().max(4000).optional().parse(req.body.deliverableUrl),
       ),
     ),
   );

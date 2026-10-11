@@ -1,3 +1,6 @@
+import { retainerTransaction } from "./retainer-v1-db";
+import { applyStageTransition, confirmStagePlan } from "./stage-transitions";
+import type { StageAction } from "../shared/stage-transition";
 /**
  * PRD-014 — Dynamic Project Stage Service
  * Single source of truth for all project stage operations.
@@ -11,6 +14,7 @@
  */
 
 import { db } from "./storage";
+import { syncCustomProjectCompletion } from "./project-payment-verification";
 import * as schema from "../shared/schema";
 import { eq, asc, and } from "drizzle-orm";
 import { drizzleSql } from "./storage";
@@ -192,24 +196,30 @@ export async function setPlanningStatus(projectId: number, status: string, extra
 
 // ── Stage status transitions ───────────────────────────────────────────────────
 
+async function transitionStage(stageId: number, action: StageAction, message = ""): Promise<schema.ProjectStage> {
+  return retainerTransaction(async tx => await applyStageTransition(tx, stageId, action, message) as schema.ProjectStage);
+}
 export async function startStage(stageId: number): Promise<schema.ProjectStage> {
-  return updateProjectStage(stageId, { status: "in_progress", startedAt: new Date().toISOString() });
+  return transitionStage(stageId, "start");
 }
-
 export async function submitStageForReview(stageId: number): Promise<schema.ProjectStage> {
-  return updateProjectStage(stageId, { status: "awaiting_client", submittedAt: new Date().toISOString() });
+  return transitionStage(stageId, "submit");
 }
-
 export async function approveStage(stageId: number): Promise<schema.ProjectStage> {
-  return updateProjectStage(stageId, { status: "approved", approvedAt: new Date().toISOString() });
+  const stage = await transitionStage(stageId, "approve");
+  await syncCustomProjectCompletion(stage.projectId);
+  return stage;
 }
-
 export async function completeStage(stageId: number): Promise<schema.ProjectStage> {
-  return updateProjectStage(stageId, { status: "completed", completedAt: new Date().toISOString() });
+  const stage = await transitionStage(stageId, "complete");
+  await syncCustomProjectCompletion(stage.projectId);
+  return stage;
 }
-
 export async function requestStageChanges(stageId: number, message: string): Promise<schema.ProjectStage> {
-  return updateProjectStage(stageId, { status: "changes_requested", clientChangeRequest: message });
+  return transitionStage(stageId, "request-changes", message);
+}
+export async function confirmProjectPlan(projectId: number, freelancerId: number) {
+  return retainerTransaction(tx => confirmStagePlan(tx, projectId, freelancerId));
 }
 
 // ── Progress calculation (dynamic) ────────────────────────────────────────────

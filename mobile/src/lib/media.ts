@@ -7,10 +7,7 @@
  * web app renders an iframe. /mobile is an isolated package, so the logic is
  * transcribed rather than imported.
  *
- * Mobile difference: there is no iframe. A parsed video renders as its poster
- * frame with a play affordance and opens in the system browser / native app on
- * tap. Embedding would need react-native-webview, which is not a dependency and
- * is not worth adding for Stage 2.
+ * Portfolio playback uses the in-app PortfolioPlayer.
  */
 
 export type VideoProvider = "vimeo" | "youtube";

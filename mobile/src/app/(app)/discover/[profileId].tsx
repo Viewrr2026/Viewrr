@@ -1,3 +1,4 @@
+import { PortfolioPlayer } from "@/components/PortfolioPlayer";
 import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
@@ -13,7 +14,7 @@ import {
   UserX,
 } from "lucide-react-native";
 import { useCallback, useMemo, useState } from "react";
-import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { loadSavedProfiles, loadTalentDetail, toggleSaved } from "@/api/talent";
 import { blockUser } from "@/api/trust";
@@ -634,11 +635,7 @@ function ProfileActions({
 /**
  * One portfolio entry.
  *
- * Videos open in the system browser rather than an embedded player: adding a
- * webview dependency for a Vimeo iframe is not worth it in Alpha, and the
- * native share sheet and full-screen controls are better than anything we would
- * wrap. Vimeo and YouTube thumbnails come from the same helpers the web app
- * uses.
+ * Portfolio media opens in a dismissible in-app player.
  */
 function PortfolioTile({
   item,
@@ -650,6 +647,7 @@ function PortfolioTile({
   shadows: ReturnType<typeof useTheme>["shadows"];
 }) {
   const [failed, setFailed] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const video = parseVideoUrl(item.url);
   // A portfolio entry is either a film (poster frame from Vimeo/YouTube) or a
   // still, in which case the image is its own preview.
@@ -657,8 +655,10 @@ function PortfolioTile({
     item.thumbnail ?? (video ? video.thumbnailUrl : isHttpUrl(item.url) ? item.url : null);
 
   return (
+    <>
+    {playing && <PortfolioPlayer url={item.url} title={item.title ?? "Portfolio video"} onClose={() => setPlaying(false)} />}
     <Pressable
-      onPress={() => void Linking.openURL(item.url).catch(() => undefined)}
+      onPress={() => setPlaying(true)}
       accessibilityRole="link"
       accessibilityLabel={`Open ${item.title}`}
       style={({ pressed }) => [
@@ -699,6 +699,7 @@ function PortfolioTile({
         ) : null}
       </View>
     </Pressable>
+    </>
   );
 }
 

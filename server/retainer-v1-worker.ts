@@ -1,8 +1,18 @@
 import { Resend } from "resend";
+import { queueDelivery } from "./notification-delivery";
 import { retainerPool, retainerTransaction } from "./retainer-v1-db";
-import { lockAgreement, notice, loadCycles } from "./retainer-v1-service";
+import { lockAgreement, notice, loadCycles, completeCustomRetainer } from "./retainer-v1-service";
 import { processNextRetainerMedia } from "./retainer-v1-media";
 export async function scanRetainerDeadlines() {
+  const finished = (await retainerPool().query(`SELECT a.public_id FROM retainer_agreements a
+    WHERE a.workflow_version=1 AND a.status IN ('active','paused') AND a.draft_data IS NULL
+    AND EXISTS(SELECT 1 FROM retainer_cycles c WHERE c.retainer_agreement_id=a.id)
+    AND NOT EXISTS(SELECT 1 FROM retainer_cycles c WHERE c.retainer_agreement_id=a.id AND (c.paid_at IS NULL OR c.accepted_at IS NULL)) LIMIT 20`)).rows;
+  for (const row of finished) await retainerTransaction(async db => {
+    const a = await lockAgreement(db,row.public_id);
+    await completeCustomRetainer(db,a);
+  });
+
   const agreements = (
     await retainerPool().query(
       `SELECT DISTINCT a.public_id FROM retainer_agreements a JOIN retainer_cycles c ON c.retainer_agreement_id=a.id WHERE a.workflow_version=1 AND c.accepted_at IS NOT NULL AND c.paid_at IS NULL AND c.due_at IS NOT NULL`,
@@ -45,14 +55,20 @@ export async function scanRetainerDeadlines() {
   await retainerTransaction(async (db) => {
     const batch = (
       await db.query(
-        `SELECT n.*,a.public_id FROM retainer_notice_outbox n JOIN retainer_agreements a ON a.id=n.agreement_id WHERE n.delivered_at IS NULL ORDER BY n.id LIMIT 100 FOR UPDATE OF n SKIP LOCKED`,
+        `SELECT n.*,a.public_id,a.project_id FROM retainer_notice_outbox n JOIN retainer_agreements a ON a.id=n.agreement_id WHERE n.delivered_at IS NULL ORDER BY n.id LIMIT 100 FOR UPDATE OF n SKIP LOCKED`,
       )
     ).rows;
     for (const n of batch) {
-      await db.query(
-        `INSERT INTO notifications(recipient_id,actor_id,actor_name,type,message,link) VALUES($1,$1,'Viewrr',$4,$2,$3)`,
-        [n.recipient_id, n.message, `/retainer/${n.public_id}`, n.event_key.startsWith("proposal:") ? "retainer_proposal" : "retainer_update"],
+      const notification = await db.query(
+        `INSERT INTO notifications(recipient_id,actor_id,actor_name,type,message,link,target_type,target_id) VALUES($1,$1,'Viewrr',$4,$2,$3,'project',$5) RETURNING id`,
+        [n.recipient_id, n.message, `/retainer/${n.public_id}`, n.event_key.startsWith("proposal:") ? "retainer_proposal" : "retainer_update", n.project_id],
       );
+      const payment = /^(payment|overdue|due-soon|cycle-accepted|retainer-completed):/.test(n.event_key);
+      const proposal = n.event_key.startsWith("proposal");
+      await queueDelivery(db, `retainer:${n.id}`, {recipientId:n.recipient_id,
+        type:payment ? "retainer_payment" : proposal ? "retainer_proposal" : "retainer_update",
+        message:n.message,targetId:n.project_id,link:`/retainer/${n.public_id}`},
+        payment ? "email_payment_updates" : proposal ? "email_project_invitations" : "email_stage_updates", notification.rows[0].id);
       await db.query(
         "UPDATE retainer_notice_outbox SET delivered_at=NOW() WHERE id=$1",
         [n.id],
@@ -69,7 +85,7 @@ async function deliverRetainerEmails() {
       await db.query(`SELECT n.*,a.public_id,u.email,p.email_payment_updates,p.email_stage_updates,p.email_project_invitations
       FROM retainer_notice_outbox n JOIN retainer_agreements a ON a.id=n.agreement_id JOIN users u ON u.id=n.recipient_id
       LEFT JOIN notification_preferences p ON p.user_id=u.id
-      WHERE n.delivered_at IS NOT NULL AND n.email_delivered_at IS NULL ORDER BY n.id LIMIT 10 FOR UPDATE OF n SKIP LOCKED`)
+      WHERE n.delivered_at IS NOT NULL AND n.email_delivered_at IS NULL AND NOT EXISTS(SELECT 1 FROM notification_delivery_outbox o WHERE o.event_key='retainer:' || n.id::text AND o.recipient_id=n.recipient_id) ORDER BY n.id LIMIT 10 FOR UPDATE OF n SKIP LOCKED`)
     ).rows;
     for (const n of rows) {
       const payment = /^(payment|overdue|due-soon|cycle-accepted):/.test(

@@ -313,50 +313,39 @@ export function loadInterestMessages(
 
 /* ── Mutations: stage transitions ─────────────────────────────────────────── */
 
-/**
- * The three project-scoped stage transitions (contract § D).
- *
- * The server does NOT validate transition legality and does NOT enforce
- * `approvalRequired` or `revisionAllowance` — it checks only that the caller is
- * the right party. Legality is therefore gated in the client before any of
- * these is offered; see `components/work/gating.ts`, which is the single place
- * that decides what a given role may do to a given stage.
- *
- * None of these may be called for a project whose `planningStatus` is
- * "legacy" (Decision 11). The gating module refuses that case.
- */
+/** Stage actions shared with web; the server checks role and transition. */
 export function approveStage(
-  projectId: number,
+  _projectId: number,
   stageId: number,
   signal?: AbortSignal,
 ): Promise<ProjectStage> {
   return api.post<ProjectStage>(
-    `/api/projects/${projectId}/stages/${stageId}/approve`,
+    `/api/stages/${stageId}/approve`,
     undefined,
     { signal },
   );
 }
 
 export function completeStage(
-  projectId: number,
+  _projectId: number,
   stageId: number,
   signal?: AbortSignal,
 ): Promise<ProjectStage> {
   return api.post<ProjectStage>(
-    `/api/projects/${projectId}/stages/${stageId}/complete`,
+    `/api/stages/${stageId}/complete`,
     undefined,
     { signal },
   );
 }
 
 export function requestStageChanges(
-  projectId: number,
+  _projectId: number,
   stageId: number,
   message: string,
   signal?: AbortSignal,
 ): Promise<ProjectStage> {
   return api.post<ProjectStage>(
-    `/api/projects/${projectId}/stages/${stageId}/request-changes`,
+    `/api/stages/${stageId}/request-changes`,
     { message },
     { signal },
   );
@@ -496,4 +485,11 @@ export async function loadBriefDetail(
     interests: (rows ?? []).filter((row) => row.briefId === briefId),
     interestsFailed: rows === null,
   };
+}
+
+export function startStage(_projectId: number, stageId: number): Promise<ProjectStage> {
+  return api.post(`/api/stages/${stageId}/start`);
+}
+export function submitStage(_projectId: number, stageId: number): Promise<ProjectStage> {
+  return api.post(`/api/stages/${stageId}/submit`);
 }

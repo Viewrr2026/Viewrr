@@ -758,6 +758,9 @@ export async function anonymiseUserAccount(userId: number): Promise<Anonymisatio
     { name: "notifications (actor)", run: async () => {
       await sql`UPDATE notifications SET actor_name = '[deleted user]', actor_avatar = NULL WHERE actor_id = ${userId}`;
     }},
+    { name: "notification_delivery_outbox", optional: "notification_delivery_outbox", run: async () => {
+      await sql`DELETE FROM notification_delivery_outbox WHERE recipient_id = ${userId}`;
+    }},
     { name: "notifications (recipient)", run: async () => {
       await sql`DELETE FROM notifications WHERE recipient_id = ${userId}`;
     }},

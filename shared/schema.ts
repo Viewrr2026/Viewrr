@@ -673,6 +673,9 @@ export const payments = pgTable("payments", {
   grossPence: integer("gross_pence").notNull(),
   platformFeePence: integer("platform_fee_pence").notNull(),
   freelancerPence: integer("freelancer_pence").notNull(),
+  refundedPence: integer("refunded_pence").notNull().default(0),
+  feeRefundedPence: integer("fee_refunded_pence").notNull().default(0),
+  transferReversedPence: integer("transfer_reversed_pence").notNull().default(0),
   stripeFeePence: integer("stripe_fee_pence"),             // filled after charge succeeds
   netPlatformRevenuePence: integer("net_platform_revenue_pence"), // grossFee - stripeFee
   status: text("status").notNull().default("pending"),
