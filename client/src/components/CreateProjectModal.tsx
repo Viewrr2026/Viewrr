@@ -1,3 +1,4 @@
+import { GbpInput } from "@/components/ui/gbp-input";
 import { invitationEstimate } from "@shared/project-estimate";
 import { useState, useEffect, useRef } from "react";
 import { displayRole } from "@/lib/utils";
@@ -456,10 +457,11 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                     <PoundSterling size={12} className="text-primary" />
                     {isRetainer ? "Budget" : "Provisional estimate (£, including any VAT)"}
                   </label>
-                  <Input
+                  <GbpInput
                     value={budget}
-                    onChange={e => setBudget(e.target.value)}
-                    placeholder="e.g. £1,500"
+                    onValueChange={setBudget}
+                    aria-label="Project price in GBP"
+                    placeholder="0.00"
                     className="rounded-xl text-sm"
                     data-testid="input-project-budget"
                   />
@@ -760,7 +762,7 @@ export default function CreateProjectModal({ senderId, onClose, onSent }: Props)
                 {categories.length > 0 && (
                   <SummaryRow icon={<Tag size={12} />} label="Category" value={categories.join(", ")} />
                 )}
-                {budget && <SummaryRow icon={<PoundSterling size={12} />} label="Provisional estimate" value={budget} />}
+                {budget && <SummaryRow icon={<PoundSterling size={12} />} label="Provisional estimate" value={`£${Number(budget).toFixed(2)}`} />}
                 {isRetainer ? (
                   <>
                     <SummaryRow icon={<RefreshCw size={12} />} label="Type" value="Retainer" />

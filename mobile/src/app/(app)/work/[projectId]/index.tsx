@@ -142,6 +142,10 @@ export default function ProjectDetail() {
               {/* ── Parties ──────────────────────────────────────────── */}
               <Card>
                 <CardLabel>People</CardLabel>
+                {party !== "observer" && <ListRow title={party === "client" ? "Message your freelancer" : "Message your client"}
+                  subtitle="Discuss feedback, changes and next steps"
+                  onPress={() => router.push({ pathname: "/(app)/messages/[conversationId]", params: { conversationId: String(party === "client" ? project.freelancerId : project.clientId) } })} />}
+
                 <ListRow
                   title={client?.name ?? project.clientName ?? "Client"}
                   subtitle={
@@ -191,8 +195,7 @@ export default function ProjectDetail() {
                       {legacyStage ?? "Original timeline"}
                     </Text>
                     <Text style={[styles.copy, { color: colors.mutedForeground }]}>
-                      This project uses Viewrr&apos;s original six-stage timeline. It is shown
-                      read-only on mobile — stage changes are made on the website.
+                      This project uses Viewrr&apos;s original six-stage timeline. Open Stages below to follow or progress the work.
                     </Text>
                     <ProgressBar
                       percent={null}
@@ -320,7 +323,7 @@ export default function ProjectDetail() {
                   title="Stages"
                   subtitle={
                     legacy
-                      ? "Original six-stage timeline, read-only"
+                      ? "Original six-stage timeline"
                       : plan
                         ? `${plan.stageCount} ${plan.stageCount === 1 ? "stage" : "stages"}`
                         : "Stage timeline"

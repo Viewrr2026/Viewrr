@@ -29,6 +29,9 @@ type StageActionsProps = {
   error: string | null;
   onApprove: () => void;
   onComplete: () => void;
+  onStart: () => void;
+  onSubmit: () => void;
+  disabled?: boolean;
   onRequestChanges: (message: string) => void;
 };
 
@@ -41,6 +44,9 @@ export function StageActions({
   error,
   onApprove,
   onComplete,
+  onStart,
+  onSubmit,
+  disabled = false,
   onRequestChanges,
 }: StageActionsProps) {
   const { colors } = useTheme();
@@ -80,7 +86,7 @@ export function StageActions({
             <Button
               label="Send request"
               onPress={() => onRequestChanges(message.trim())}
-              disabled={message.trim().length === 0}
+              disabled={disabled || pending !== null || message.trim().length === 0}
               loading={pending === "request-changes"}
               size="compact"
               block={false}
@@ -108,11 +114,13 @@ export function StageActions({
               size="compact"
               block={false}
               loading={pending === action.kind}
-              disabled={pending !== null && pending !== action.kind}
+              disabled={disabled || pending !== null}
               style={styles.grow}
               onPress={() => {
                 if (action.kind === "approve") return onApprove();
                 if (action.kind === "complete") return onComplete();
+                if (action.kind === "start") return onStart();
+                if (action.kind === "submit") return onSubmit();
                 setComposing(true);
               }}
             />

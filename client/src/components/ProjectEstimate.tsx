@@ -1,3 +1,4 @@
+import { GbpInput } from "@/components/ui/gbp-input";
 import { useState } from 'react';
 import { useQuery,useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/queryClient';
@@ -27,7 +28,7 @@ export default function ProjectEstimate({projectId,userId}:{projectId:number;use
       {items.map((i,n)=><div key={n} className="grid grid-cols-6 gap-2">
         <input required aria-label="Item description" placeholder="Work / deliverable" className="col-span-3 border rounded p-2 min-w-0 bg-background" value={i.description} onChange={e=>setItems(items.map((v,j)=>j===n?{...v,description:e.target.value}:v))}/>
         <input required aria-label="Quantity" type="number" min="0.01" step="0.01" className="col-span-1 border rounded p-2 min-w-0 bg-background" value={i.quantity} onChange={e=>setItems(items.map((v,j)=>j===n?{...v,quantity:Number(e.target.value)}:v))}/>
-        <input required aria-label="Unit price GBP" type="number" min="0" step="0.01" className="col-span-2 border rounded p-2 min-w-0 bg-background" value={i.unitPricePence/100} onChange={e=>setItems(items.map((v,j)=>j===n?{...v,unitPricePence:Math.round(Number(e.target.value)*100)}:v))}/>
+        <div className="col-span-2"><GbpInput required aria-label="Unit price GBP" value={String(i.unitPricePence/100)} onValueChange={value=>setItems(items.map((v,j)=>j===n?{...v,unitPricePence:Math.round(Number(value || 0)*100)}:v))}/></div>
         {items.length>1&&<button type="button" className="text-xs underline col-span-6 text-left" onClick={()=>setItems(items.filter((_,j)=>j!==n))}>Remove item</button>}
       </div>)}
       <button type="button" className="text-sm underline" onClick={()=>setItems([...items,{description:'',quantity:1,unitPricePence:0}])}>Add item</button>

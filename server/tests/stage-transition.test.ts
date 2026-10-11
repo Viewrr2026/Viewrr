@@ -1,0 +1,54 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { PGlite } from '@electric-sql/pglite';
+import { applyStageTransition, confirmStagePlan } from '../stage-transitions';
+test('stage plan starts immediately; price agreement, role checks, ordering and review remain enforced', async () => {
+  const db = new PGlite();
+  await db.exec(`CREATE TABLE projects(id int primary key, freelancer_id int, status text, planning_status text, is_retainer int, deleted_at text, plan_confirmed_at text);
+    CREATE TABLE project_stages(id int primary key, project_id int, position int, status text, approval_required int, revision_allowance text, started_at text, submitted_at text, approved_at text, completed_at text, updated_at text, client_change_request text);
+    CREATE TABLE project_estimate_versions(project_id int, version int, status text);
+    CREATE TABLE project_stage_events(project_id int, actor_id int, event_type text, created_at text);
+    INSERT INTO projects VALUES(1,9,'active','plan_draft',0,NULL,NULL);
+    INSERT INTO project_stages(id,project_id,position,status,approval_required,revision_allowance) VALUES(1,1,0,'upcoming',1,'1'),(2,1,1,'upcoming',0,'none');
+    INSERT INTO project_estimate_versions VALUES(1,1,'pending');`);
+  const confirm = (user = 9) => db.transaction(tx => confirmStagePlan(tx as any, 1, user));
+  const act = (id: number, action: Parameters<typeof applyStageTransition>[2], message?: string) => db.transaction(tx => applyStageTransition(tx as any, id, action, message));
+  try {
+    await assert.rejects(confirm(8), /Not authorised/);
+    await assert.rejects(confirm(), /estimate/);
+    await db.exec("UPDATE project_estimate_versions SET status='accepted'");
+    assert.equal((await confirm()).status, 'confirmed');
+    await confirm();
+    assert.equal((await db.query<any>('SELECT count(*)::int AS n FROM project_stage_events')).rows[0].n, 1);
+    await assert.rejects(act(2, 'start'), /earlier stages/);
+    await assert.rejects(act(1, 'complete'), /client approval/);
+    await assert.rejects(act(1, 'approve'), /not awaiting/);
+    await act(1, 'submit');
+    await assert.rejects(act(1, 'submit'), /in progress/);
+    await act(1, 'request-changes', 'Please revise the intro');
+    await act(1, 'submit');
+    await act(1, 'approve');
+    await act(2, 'start');
+    await db.exec("UPDATE projects SET status='paused'");
+    await assert.rejects(act(2, 'complete'), /not active/);
+    await db.exec("UPDATE projects SET status='active'");
+    await act(2, 'complete');
+    await assert.rejects(act(2, 'start'), /already started/);
+    assert.equal((await db.query<any>('SELECT client_change_request FROM project_stages WHERE id=1')).rows[0].client_change_request, null);
+  } finally { await db.close(); }
+});
+test('mobile offers submit and review actions without completing an approved stage again', async () => {
+  const { gateStage } = await import('../../mobile/src/components/work/gating');
+  const project: any = { status: 'active', planningStatus: 'confirmed', isRetainer: 0 };
+  const stage: any = { status: 'in_progress', approvalRequired: 1, revisionAllowance: '1' };
+  assert.deepEqual(gateStage(project, stage, 'freelancer').actions.map(a => a.kind), ['submit']);
+  assert.equal(gateStage(project, stage, 'client').actions.length, 0);
+  stage.status = 'awaiting_client';
+  assert.deepEqual(gateStage(project, stage, 'client').actions.map(a => a.kind), ['approve', 'request-changes']);
+  stage.status = 'approved';
+  assert.equal(gateStage(project, stage, 'freelancer').actions.length, 0);
+  stage.status = 'upcoming';
+  assert.equal(gateStage(project, stage, 'freelancer').actions[0].kind, 'start');
+  project.status = 'completed';
+  assert.equal(gateStage(project, stage, 'freelancer').actions.length, 0);
+});

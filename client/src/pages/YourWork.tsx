@@ -912,14 +912,10 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                               />
                             </div>
                           );
-                          // Freelancer waiting
-                          return (
-                            <div className="text-center py-8 space-y-2">
-                              <ClipboardList size={28} className="mx-auto text-muted-foreground" />
-                              <p className="text-sm font-medium">Waiting for {pw.client.name}</p>
-                              <p className="text-xs text-muted-foreground">Your plan has been sent. {pw.client.name} will review and approve before work begins.</p>
-                            </div>
-                          );
+                          return <ProjectPlanBuilder projectId={pw.project.id} projectTitle={pw.project.title}
+                            freelancerId={pw.freelancer.id} freelancerName={pw.freelancer.name} clientId={pw.project.clientId} clientName={pw.client.name}
+                            planningStatus={planStatus} isClient={false}
+                            onPlanConfirmed={() => queryClient.invalidateQueries({ queryKey: ["/api/projects", currentUserId] })} />;
                         }
                         // Confirmed plan — show dynamic timeline
                         if (planStatus === "confirmed") {

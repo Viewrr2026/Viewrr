@@ -259,7 +259,7 @@ export default function ProjectPlanBuilder({
   const [stages, setStages] = useState<DraftStage[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [requireClientApproval, setRequireClientApproval] = useState(true);
+
   const [changeMessage, setChangeMessage] = useState("");
 
   // Fetch existing stages if plan_draft / client_changes
@@ -302,23 +302,19 @@ export default function ProjectPlanBuilder({
   });
 
   const confirmMutation = useMutation({
-    mutationFn: async ({ requireApproval }: { requireApproval: boolean }) => {
+    mutationFn: async () => {
       // First bulk-save current draft
       await bulkMutation.mutateAsync(stages);
       const res = await apiRequest("POST", `/api/projects/${projectId}/plan/confirm`, {
         freelancerId,
-        requireClientApproval: requireApproval,
+
       });
       if (!res.ok) throw new Error((await res.json()).error);
       return res.json();
     },
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/projects", freelancerId] });
-      if (data.status === "awaiting_client") {
-        toast({ title: "Plan sent to client", description: `${clientName} will review and approve before work begins.` });
-      } else {
-        toast({ title: "🚀 Project underway!", description: `Stage 1 is now active.` });
-      }
+      toast({ title: "Project underway!", description: "Stage 1 is now active." });
       setView("done");
       onPlanConfirmed?.();
     },
@@ -467,12 +463,10 @@ export default function ProjectPlanBuilder({
       <div className="text-center space-y-3 py-6">
         <div className="text-3xl">🚀</div>
         <p className="font-bold text-base">
-          {requireClientApproval ? `Plan sent to ${clientName}` : "Project underway!"}
+          Project underway!
         </p>
         <p className="text-sm text-muted-foreground">
-          {requireClientApproval
-            ? `${clientName} will review the plan and approve before work begins.`
-            : "Stage 1 is now active. Time to get to work."}
+          Stage 1 is now active. Time to get to work.
         </p>
         {onClose && <Button variant="outline" size="sm" onClick={onClose}>Close</Button>}
       </div>
@@ -663,27 +657,17 @@ export default function ProjectPlanBuilder({
           ))}
         </div>
 
-        {/* Client approval toggle */}
-        <div className="p-3 rounded-xl border border-border space-y-2">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-semibold">Confirm plan with {clientName}?</p>
-              <p className="text-[10px] text-muted-foreground">Recommended — lets {clientName} approve before work starts.</p>
-            </div>
-            <Switch checked={requireClientApproval} onCheckedChange={setRequireClientApproval} />
-          </div>
-        </div>
+        <p className="text-xs text-muted-foreground">Confirming your stages starts the project. Your client can follow progress and review work at the stages you selected.</p>
 
         <div className="flex flex-col gap-2">
           <Button
             className="w-full text-white gap-2"
             style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-            onClick={() => confirmMutation.mutate({ requireApproval: requireClientApproval })}
+            onClick={() => confirmMutation.mutate()}
             disabled={confirmMutation.isPending}
           >
             <Rocket size={14} />
-            {confirmMutation.isPending ? "Confirming…"
-              : requireClientApproval ? `Send plan to ${clientName}` : "Confirm & Start Project"}
+            {confirmMutation.isPending ? "Starting…" : "Confirm & Start Project"}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setView("builder")} className="text-xs">
             ← Keep editing

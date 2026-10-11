@@ -57,7 +57,7 @@ import { getFreelancerPayoutTimeline, configureAutoDailyPayout, migrateAllAccoun
 import { runExceptionScan, generateDailySummary, reconcilePaymentFull } from "./reconciliation-service";
 import {
   getProjectStages, getProjectStage, addProjectStage, updateProjectStage, deleteProjectStage,
-  reorderProjectStages, bulkCreateStages, setPlanningStatus,
+  reorderProjectStages, bulkCreateStages, setPlanningStatus, confirmProjectPlan,
   startStage, submitStageForReview, approveStage, completeStage, requestStageChanges,
   calcProgress, getActiveStage, logStageEvent, STAGE_TEMPLATES,
 } from "./stage-service";
@@ -2809,6 +2809,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (pw.project.freelancerId !== callerId) {
         return res.status(403).json({ error: "Only the project freelancer can advance stages" });
       }
+      if (pw.project.deletedAt || pw.project.isRetainer || pw.project.status !== "active" || pw.project.planningStatus !== "legacy") {
+        return res.status(409).json({ error: "This project cannot use the original stage timeline" });
+      }
       // Guard against overflow
       if ((pw.project.currentStage ?? 0) >= 5) {
         return res.status(400).json({ error: "Project is already at the final stage" });
@@ -3543,35 +3546,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // POST /api/projects/:id/plan/confirm — freelancer confirms plan, optionally sends to client
+  // POST /api/projects/:id/plan/confirm — freelancer finalizes stages and starts the project
   // PRD-018 A19: requireAuth + session-derived freelancerId
   app.post("/api/projects/:id/plan/confirm", requireAuth, async (req, res) => {
     try {
-      const { requireClientApproval } = req.body;
+
       const freelancerId = req.auth!.userId;
       const projectId = Number(req.params.id);
       const pw = await storage.getProject(projectId);
       if (!pw || pw.project.freelancerId !== freelancerId) return res.status(403).json({ error: "Not authorised" });
-      const stages = await getProjectStages(projectId);
-      if (stages.length === 0) return res.status(400).json({ error: "Add at least one stage before confirming" });
-      const now = new Date().toISOString();
-      if (requireClientApproval) {
-        await setPlanningStatus(projectId, "awaiting_client", { planSentToClientAt: now });
-        await notify({ recipientId: pw.project.clientId, actorId: freelancerId,
-          actorName: pw.freelancer?.name ?? "Freelancer", actorAvatar: pw.freelancer?.avatar ?? null,
-          type: "stage_advanced",
-          message: `${pw.freelancer?.name ?? "Your freelancer"} has shared the project plan for "${pw.project.title}" — review and approve to get started.`,
-          link: "/your-work", read: 0,
-          targetType: "project", targetId: projectId });
-        await logStageEvent(projectId, freelancerId, "plan_sent_to_client");
-        res.json({ status: "awaiting_client" });
-      } else {
-        // Freelancer starts immediately — activate first stage
-        await setPlanningStatus(projectId, "confirmed", { planConfirmedAt: now });
-        if (stages.length > 0) await startStage(stages[0].id);
-        await logStageEvent(projectId, freelancerId, "plan_confirmed");
-        res.json({ status: "confirmed" });
-      }
+      res.json(await confirmProjectPlan(projectId, freelancerId));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 

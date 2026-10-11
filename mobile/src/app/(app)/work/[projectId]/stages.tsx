@@ -1,9 +1,13 @@
+import { Button } from "@/components/Button";
 import { useLocalSearchParams } from "expo-router";
 import { useCallback, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import {
   approveStage,
+  startStage,
+  submitStage,
+  advanceProject,
   completeStage,
   loadStagesSnapshot,
   requestStageChanges,
@@ -31,27 +35,7 @@ import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { useSession } from "@/session/SessionProvider";
 import { spacing, typography, useTheme } from "@/theme";
 
-/**
- * Stage timeline.
- *
- * ── Why the gating is strict ─────────────────────────────────────────────
- * The server does not validate transition legality: `approve`, `complete` and
- * `request-changes` will happily fire on a stage in any status, and neither
- * `approval_required` nor `revision_allowance` is enforced there. The only
- * thing standing between a mis-tap and a corrupted stage record is this client.
- * So every button on this screen comes from `gateStage`, which allows an action
- * only when the viewer's party, the stage's status and the plan's own flags all
- * agree it is legitimate. When in doubt it shows nothing and explains why.
- *
- * ── Legacy projects (Decision 11) ────────────────────────────────────────
- * `planning_status === "legacy"` means the project predates dynamic stages and
- * its progress lives in `projects.current_stage` (0–5). Those projects render
- * the historical six-stage model READ-ONLY. `gateStage` returns no actions for
- * them, and this screen never calls a stage mutation with a legacy project's
- * id: the new endpoints operate on `project_stages` rows that a legacy project
- * does not have, so "working" here would mean silently writing nonsense.
- * `POST /api/projects/:id/advance` is deliberately not surfaced either.
- */
+/** Project stage actions share the authenticated web workflow. */
 
 type Pending = { stageId: number; kind: StageActionKind } | null;
 
@@ -134,9 +118,10 @@ export default function ProjectStages() {
                   <CardLabel>Original timeline</CardLabel>
                   <Text style={[styles.copy, { color: colors.mutedForeground }]}>
                     This project started before Viewrr moved to agreed stage plans, so it still
-                    runs on the original six-stage timeline. It&apos;s read-only here — stage
-                    changes are made on the website.
+                    runs on the original six-stage timeline. Your freelancer can progress it here.
                   </Text>
+                  {party === "freelancer" && !project.isRetainer && project.status === "active" && project.currentStage < 5 && <Button label="Move to next stage" loading={pending !== null} disabled={pending !== null} onPress={() => void run(0, "start", () => advanceProject(project.id))} />}
+                  {failure?.stageId === 0 && <Text accessibilityRole="alert" style={{ color: colors.destructive }}>{failure.message}</Text>}
                   <ProgressBar
                     percent={null}
                     caption={`Stage ${project.currentStage + 1} of ${rows.length}`}
@@ -210,6 +195,7 @@ export default function ProjectStages() {
               <View style={styles.timeline}>
                 {stages.map((stage, index) => {
                   const gating = gateStage(project, stage, party);
+                  if (stages.slice(0, index).some(s => !["approved", "completed"].includes(s.status))) gating.actions = [];
 
                   return (
                     <StageRow
@@ -222,6 +208,9 @@ export default function ProjectStages() {
                     >
                       <StageActions
                         actions={gating.actions}
+                        disabled={pending !== null}
+                        onStart={() => void run(stage.id, "start", () => startStage(project.id, stage.id))}
+                        onSubmit={() => void run(stage.id, "submit", () => submitStage(project.id, stage.id))}
                         note={gating.note}
                         pending={pending?.stageId === stage.id ? pending.kind : null}
                         error={failure?.stageId === stage.id ? failure.message : null}
@@ -257,7 +246,7 @@ export default function ProjectStages() {
  */
 function activeStageId(stages: ProjectStage[]): number | null {
   for (const stage of stages) {
-    if (stage.status !== "completed") return stage.id;
+    if (!["completed", "approved"].includes(stage.status)) return stage.id;
   }
   return null;
 }

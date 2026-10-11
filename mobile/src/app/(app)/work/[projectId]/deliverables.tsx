@@ -1,7 +1,9 @@
+import { api } from "@/api/client";
+import { Button } from "@/components/Button";
 import { useLocalSearchParams } from "expo-router";
 import { ExternalLink } from "lucide-react-native";
-import { useCallback } from "react";
-import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { useCallback, useState } from "react";
+import { Alert, Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { loadProjectDetail, type ProjectDetailSnapshot } from "@/api/work";
 import { AppHeader } from "@/components/AppHeader";
@@ -86,20 +88,6 @@ export default function ProjectDeliverables() {
             );
           }
 
-          if (deliverables.length === 0) {
-            return (
-              <EmptyState
-                title="Nothing shared yet"
-                body={
-                  party === "freelancer"
-                    ? "Deliverables you share on this project will be listed here."
-                    : "When your creative shares work on this project, it'll appear here."
-                }
-                inline
-              />
-            );
-          }
-
           const lockCopy =
             party === "client"
               ? "Locked until the project is paid. Payment is completed on the Viewrr website."
@@ -107,6 +95,9 @@ export default function ProjectDeliverables() {
 
           return (
             <View style={styles.body}>
+              {party === "freelancer" && !project.isRetainer && project.status === "active" && <DeliveryComposer projectId={project.id} onSaved={reload} />}
+              {deliverables.length === 0 && <EmptyState title="Nothing shared yet" body="Shared work will appear here." inline />}
+
               {locked.length > 0 ? (
                 <Card tone="brand">
                   <CardLabel>
@@ -172,3 +163,28 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
 });
+
+function DeliveryComposer({ projectId, onSaved }: { projectId: number; onSaved: () => void }) {
+  const { colors } = useTheme();
+  const [label, setLabel] = useState(''), [url, setUrl] = useState('');
+  const [busy, setBusy] = useState(false), [feedback, setFeedback] = useState('');
+  async function save() {
+    if (busy) return;
+    try {
+      const parsed = new URL(url.trim());
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('Use a public HTTPS delivery link.');
+      setBusy(true); setFeedback('');
+      await api.post(`/api/projects/${projectId}/deliverables`, { label: label.trim(), url: parsed.href, embedUrl: parsed.href, platform: 'link' });
+      setLabel(''); setUrl(''); Alert.alert('Delivery shared', 'You can now submit the stage for client review.'); onSaved();
+    } catch (e) { setFeedback(e instanceof Error ? e.message : 'Could not share delivery. Try again.'); }
+    finally { setBusy(false); }
+  }
+  const input = { color: colors.foreground, borderColor: colors.border, borderWidth: 1, borderRadius: 10, padding: 12 };
+  return <Card><CardLabel>Share work</CardLabel>
+    <TextInput accessibilityLabel="Delivery name" placeholder="Delivery name" placeholderTextColor={colors.mutedForeground} value={label} onChangeText={setLabel} maxLength={200} style={input} />
+    <TextInput accessibilityLabel="Delivery link" placeholder="https://" placeholderTextColor={colors.mutedForeground} value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={input} />
+    <Text style={{ color: colors.mutedForeground }}>Share a hosted link with the right permissions. Viewrr cannot watermark or revoke access to an external link.</Text>
+    <Button label="Share delivery" loading={busy} disabled={busy || !label.trim() || !url.trim()} onPress={() => void save()} />
+    {!!feedback && <Text accessibilityRole="alert" style={{ color: colors.foreground }}>{feedback}</Text>}
+  </Card>;
+}
