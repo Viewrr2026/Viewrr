@@ -45,9 +45,16 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "release:config": "node scripts/check-release.mjs",
-    "release:preflight": "npm run release:config && npm run typecheck && expo install --check",
+    "release:preflight": "npm run release:config && npm run test:dependencies && npm run typecheck && expo install --check",
     "doctor": "npx expo-doctor",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "postinstall": "node scripts/patch-query-string.cjs",
+    "test:dependencies": "node --test scripts/dependency-security.test.cjs"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "shell-quote": "1.11.0",
+    "brace-expansion": "5.0.12",
+    "decode-uri-component": "0.5.0"
+  }
 }
