@@ -54,3 +54,18 @@ test('query parser accepts the Babel-transformed ESM decoder used by mobile tool
   assert.equal(queryModule.exports.parse('name=Caf%C3%A9').name, 'Café');
   assert.equal(queryModule.exports.parse('bad=%C0%AF').bad, '%C0%AF');
 });
+
+test('xcode project IDs retain their format and uniqueness with patched uuid', () => {
+  const project = require('xcode').project('dependency-check.pbxproj');
+  project.hash = { project: { objects: { PBXFileReference: {} } } };
+  const seen = new Set();
+  for (let i = 0; i < 100; i++) {
+    const id = project.generateUuid();
+    assert.match(id, /^[A-F0-9]{24}$/);
+    assert.ok(!seen.has(id));
+    seen.add(id);
+    project.hash.project.objects.PBXFileReference[id] = {};
+  }
+  const uuid = require(require.resolve('uuid', { paths: [require.resolve('xcode')] }));
+  assert.throws(() => uuid.v5('example', uuid.v5.DNS, new Uint8Array(2)), RangeError);
+});
