@@ -65,6 +65,9 @@ export async function uploadCustomMedia(
       )
     ).rows[0];
     if (!t) retainerError("Work item not found", 404);
+    const latest = (await db.query("SELECT status FROM retainer_work_item_submissions WHERE retainer_cycle_task_id=$1 ORDER BY version DESC LIMIT 1", [t.id])).rows[0];
+    if (t.status === "complete" || ["submitted", "approved"].includes(latest?.status))
+      retainerError("Wait for client feedback before uploading another version");
     await requireWork(db, a, t.retainer_cycle_id);
     await db.query(
       "UPDATE retainer_cycles SET started_at=COALESCE(started_at,$2) WHERE id=$1",
@@ -116,6 +119,8 @@ export async function renderRetainerPreview(
       "error",
       "-protocol_whitelist",
       "file,pipe",
+      "-format_whitelist",
+      "jpeg_pipe,png_pipe,webp_pipe,mov,matroska,webm",
       "-show_streams",
       "-show_format",
       "-of",
@@ -148,6 +153,8 @@ export async function renderRetainerPreview(
     "error",
     "-protocol_whitelist",
     "file,pipe",
+    "-format_whitelist",
+    "jpeg_pipe,png_pipe,webp_pipe,mov,matroska,webm",
     "-threads",
     "2",
     "-i",
@@ -269,7 +276,8 @@ export async function customMediaAccess(
     return {
       url: await createPresignedDownloadUrl(
         original ? m.original_key : m.preview_key,
-        60,
+        original ? 60 : 3600,
+        original ? m.filename : undefined,
       ),
     };
   });

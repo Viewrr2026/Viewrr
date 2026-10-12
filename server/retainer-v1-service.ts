@@ -1,3 +1,4 @@
+import { STORAGE_CONFIGURED } from "./object-storage";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import {
@@ -500,6 +501,7 @@ export async function customWorkspace(publicId: string, userId: number) {
       "SELECT COUNT(*)::int AS count FROM retainer_requests WHERE retainer_agreement_id=$1 AND status IN ('pending','accepted','scheduled','clarification')", [a.id],
     )).rows[0].count;
     return {
+      protectedUploadsEnabled: STORAGE_CONFIGURED && process.env.RETAINER_PRIVATE_STORAGE_CONFIRMED === "true",
       cycleInvoices, versions, refundHistory, satisfaction, openRequests: openRequests + (a.draft_data ? 1 : 0), proposalDecisions,
       plan: await currentPlan(db, a),
       latestPlan: latest.snapshot,
@@ -543,6 +545,8 @@ export async function submitCustomWork(
     if (!note.trim()) retainerError("Add a submission note", 400);
     let link: string | null = null;
     if (deliverableUrl !== undefined) {
+      if (process.env.RETAINER_PRIVATE_STORAGE_CONFIRMED === "true")
+        retainerError("Upload a protected image or video instead of an external link",400);
       try {
         const parsed = new URL(deliverableUrl.trim());
         if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password || deliverableUrl.length > 4000)

@@ -262,7 +262,7 @@ export function CustomCyclePanel({
             {cycle.invoice_id
               ? userId === data.clientId ? "This cycle’s invoice is ready. Verified payment completes the cycle." : "The client’s cycle invoice is ready. Work can continue only within the agreed payment terms."
               : "No payment is due for this cycle yet. Its invoice is issued when the client approves all required deliverables."}
-            {" "}External delivery links use the hosting provider’s permissions; Viewrr cannot watermark or revoke those files.
+            {" "}Uploaded originals unlock after verified cycle payment. Older external links remain controlled by their hosting provider.
           </p>
         )}
         {cycle.paid_at && userId === data.freelancerId && (
@@ -327,13 +327,15 @@ function WorkItem({
     [error, setError] = useState(""),
     [note, setNote] = useState(""),
     [feedback, setFeedback] = useState(""),
-    [deliverableUrl, setDeliverableUrl] = useState(""),
+    [mediaId, setMediaId] = useState(""),
     [submittedLocally, setSubmittedLocally] = useState(false),
     [expanded, setExpanded] = useState(false),
     [preview, setPreview] = useState<{ url: string; mime: string } | null>(
       null,
     );
   const isClient = userId === data.clientId;
+  const uploads = (data.media ?? []).filter((m: any) => m.task_id === task.id);
+  const selectedMedia = uploads.find((m: any) => m.id === mediaId);
   const subs = data.submissions.filter(
       (s: any) => s.retainer_cycle_task_id === task.id,
     ),
@@ -365,7 +367,7 @@ function WorkItem({
     if (original) {
       const link = document.createElement("a");
       link.href = response.url;
-      link.target = "_blank";
+      link.download = m.filename || "delivery";
       link.rel = "noopener noreferrer";
       link.click();
     } else setPreview({ url: response.url, mime: m.mime_type });
@@ -409,7 +411,7 @@ function WorkItem({
             <div className="flex gap-2 flex-wrap">
               {s.deliverable_url ? (
                 <a className={buttonClass} href={s.deliverable_url} target="_blank" rel="noopener noreferrer">
-                  Open delivery link
+                  Open legacy external link
                 </a>
               ) : (
                 <>
@@ -418,7 +420,7 @@ function WorkItem({
                   </button>
                   {cycle.paid_at && s.status === "approved" && (
                     <button type="button" className={buttonClass} disabled={busy} onClick={() => run(() => openMedia(s, true))}>
-                      Receive clean file
+                      Download clean original
                     </button>
                   )}
                 </>
@@ -429,7 +431,7 @@ function WorkItem({
         {preview && (
           <div className="rounded-xl bg-zinc-100 p-2">
             {preview.mime.startsWith("video/") ? (
-              <video className="w-full max-h-96" src={preview.url} controls />
+              <video className="w-full max-h-96" src={preview.url} controls playsInline />
             ) : (
               <img
                 className="max-h-96 mx-auto"
@@ -454,22 +456,41 @@ function WorkItem({
         {!isClient && cycle.canWork && !isApproved && !awaitingReview && (
           <div className="space-y-3">
             <label className="block text-sm">
-              Delivery link
-              <input
-                aria-label={`Delivery link for ${task.title}`}
-                type="url"
-                placeholder="https://"
-                className={fieldClass + " mt-1"}
-                value={deliverableUrl}
-                onChange={(e) => setDeliverableUrl(e.target.value)}
-                disabled={busy}
-              />
+              Upload image or video
+              <input type="file" className={fieldClass + " mt-1"}
+                accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm"
+                disabled={busy || !data.protectedUploadsEnabled}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  void run(async () => {
+                    if (file.size > 200 * 1024 * 1024) throw new Error("Maximum file size is 200 MB");
+                    const form = new FormData(); form.append("file", file);
+                    const response = await fetch(`/api/custom-retainers/${publicId}/tasks/${task.public_id}/media`, {
+                      method: "POST", credentials: "include", body: form,
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.error || "Upload failed. Please retry.");
+                    setMediaId(result.id);
+                  });
+                }} />
             </label>
             <p className="text-xs text-muted-foreground">
-              Share a Google Drive, Dropbox or other hosted link. Give the client permission to review it.
-              External links are not watermarked or payment-protected by Viewrr. Use a preview copy if needed.
-              Submit again after changes to create a new review version, even when using the same link.
+              JPEG, PNG, WebP, MP4, MOV or WebM, up to 200 MB and 30 minutes.
+              We create a watermarked preview for review. The clean original stays private until this cycle is paid.
             </p>
+            {!data.protectedUploadsEnabled && <p role="status" className="text-amber-700 text-sm">Protected uploads are not available yet. Please contact Viewrr support.</p>}
+            {uploads.map((m: any) => <div key={m.id} className="rounded-lg border p-3 space-y-2">
+              <p className="text-sm break-all">{m.filename}</p>
+              {m.status === "ready" ? <div className="flex flex-wrap gap-2">
+                <button type="button" className={buttonClass} disabled={busy} onClick={() => setMediaId(m.id)}>{mediaId === m.id ? "Selected for submission" : "Select this file"}</button>
+                <button type="button" className={buttonClass} disabled={busy} onClick={() => run(() => openMedia(m))}>Check watermarked preview</button>
+              </div> : m.status === "failed" ? <>
+                <p role="alert" className="text-sm">Preview generation failed. The original remains private.</p>
+                <button type="button" className={buttonClass} disabled={busy} onClick={() => run(() => apiRequest("POST", `/api/custom-retainers/${publicId}/media/${m.id}/retry`, {}))}>Retry preview</button>
+              </> : <p role="status" className="text-sm">Creating watermarked preview… You can submit when it is ready.</p>}
+            </div>)}
             <label className="block text-sm">
               Submission note
               <textarea
@@ -484,14 +505,14 @@ function WorkItem({
               disabled={
                 busy ||
                 !note.trim() ||
-                !deliverableUrl.trim()
+                selectedMedia?.status !== "ready"
               }
               onClick={() =>
                 run(async () => {
                   await apiRequest(
                     "POST",
                     `/api/custom-retainers/${publicId}/tasks/${task.public_id}/submit`,
-                    { deliverableUrl: deliverableUrl.trim(), note },
+                    { mediaId, note },
                   );
                   setSubmittedLocally(true);
                 })
@@ -555,6 +576,13 @@ function WorkItem({
     </details>
   );
 }
+function pendingPayment(key: string, value?: boolean): boolean {
+  try {
+    if (value === true) sessionStorage.setItem(key, "true");
+    if (value === false) sessionStorage.removeItem(key);
+    return sessionStorage.getItem(key) === "true";
+  } catch { return value === true; }
+}
 export function CyclePayment({
   publicId,
   cycle,
@@ -567,6 +595,9 @@ export function CyclePayment({
   userId: number;
 }) {
   const [open, setOpen] = useState(false);
+  const pendingKey = `retainer-payment-pending:${userId}:${cycle.id}`;
+  const [confirming, setConfirming] = useState(() => pendingPayment(pendingKey));
+  const confirmPending = () => { pendingPayment(pendingKey, true); setConfirming(true); setError(""); setCheckout(null); refresh(); };
   const invoice = data.cycleInvoices?.find((i: any) => i.id === cycle.invoice_id);
   const tasks = data.tasks.filter((t: any) => t.retainer_cycle_id === cycle.id);
   const refunds = (data.refundHistory ?? []).filter((r: any) => r.retainer_cycle_id === cycle.id);
@@ -582,9 +613,25 @@ export function CyclePayment({
       checkout?.publishableKey ? loadStripe(checkout.publishableKey) : null,
     [checkout?.publishableKey],
   );
-  useEffect(() => { if (!canPay) setCheckout(null); }, [canPay]);
+  useEffect(() => { setConfirming(pendingPayment(pendingKey)); setCheckout(null); setError(""); }, [pendingKey]);
+  useEffect(() => {
+    if (!canPay) setCheckout(null);
+    if (cycle.paid_at) { setError(""); setConfirming(false); pendingPayment(pendingKey, false); }
+  }, [canPay, cycle.paid_at, pendingKey]);
+  useEffect(() => {
+    if (!confirming || cycle.paid_at) return;
+    // Reconcile after closing/reopening checkout or a delayed/failed payment.
+    const timer = window.setInterval(async () => {
+      try {
+        const result = await (await apiRequest("GET", `/api/custom-retainer-cycles/${cycle.public_id ?? cycle.publicId}/payment-status`)).json();
+        if (result.status !== "confirming") { setConfirming(false); pendingPayment(pendingKey, false); }
+        refresh();
+      } catch { /* Keep checkout disabled while status is uncertain. */ }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [confirming, cycle.paid_at, cycle.id]);
   async function start() {
-    if (!canPay || busy) return;
+    if (!canPay || busy || confirming) return;
     setBusy(true);
     setError("");
     try {
@@ -595,6 +642,7 @@ export function CyclePayment({
           {},
         )
       ).json();
+      if (result.status === "confirming") { confirmPending(); return; }
       if (!result.publishableKey || !result.clientSecret)
         throw new Error("Checkout is not configured");
       setCheckout(result);
@@ -614,6 +662,7 @@ export function CyclePayment({
       >
         View cycle invoice
       </button>
+      {confirming && !cycle.paid_at && <p role="status" className="text-sm">Confirming your payment… Please do not pay again.</p>}
       {error && (
         <p role="alert" className="text-sm text-red-600">
           {error}
@@ -654,7 +703,7 @@ export function CyclePayment({
                 <p className="flex justify-between gap-3 text-base font-semibold"><span>Total (GBP)</span><span>{gbp(invoice.total_pence)}</span></p>
               </div>
               {!!refunds.length && <section><h4 className="font-semibold">Refund history</h4><p className="text-xs text-muted-foreground">The original invoice is preserved. Refunds are recorded separately.</p>{refunds.map((r: any) => <p key={r.stripe_refund_id}>{new Date(r.created_at).toLocaleDateString("en-GB")} · {gbp(r.amount_pence)} · {r.status}</p>)}</section>}
-              {canPay && <button type="button" className={primaryClass + " w-full"} disabled={busy} onClick={start}>{busy ? "Opening secure payment…" : `Pay ${gbp(invoice.total_pence)}`}</button>}
+              {canPay && <button type="button" className={primaryClass + " w-full"} disabled={busy || confirming} onClick={start}>{confirming ? "Confirming your payment…" : busy ? "Opening secure payment…" : `Pay ${gbp(invoice.total_pence)}`}</button>}
               {!canPay && !cycle.paid_at && userId !== data.clientId && <p className="text-muted-foreground">The client can pay this invoice from their account.</p>}
             </>}
             {error && <p role="alert" className="text-red-600">{error}</p>}
@@ -666,10 +715,7 @@ export function CyclePayment({
               options={{ clientSecret: checkout.clientSecret }}
             >
               <CheckoutForm
-                onConfirmed={() => {
-                  setCheckout(null);
-                  refresh();
-                }}
+                onConfirmed={confirmPending}
               />
             </Elements>
           )}
@@ -686,7 +732,7 @@ function CheckoutForm({ onConfirmed }: { onConfirmed: () => void }) {
     [message, setMessage] = useState("");
   async function pay(e: React.FormEvent) {
     e.preventDefault();
-    if (!stripe || !elements) return;
+    if (!stripe || !elements || busy) return;
     setBusy(true);
     try {
       const { error } = await stripe.confirmPayment({
