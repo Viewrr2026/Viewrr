@@ -39,7 +39,7 @@ Clean npm ci applied the patch automatically. Production release:preflight passe
 
 Keep these gates open until verified. A passing preflight does not authorize App Store submission.
 
-## Retainer grace-period test — 12 October follow-up
+## Retainer grace-period test — 12 October follow-up (superseded below)
 
 Read-only staging inspection confirmed the first cycle remains unpaid after the due time and has an overdue marker. The subsequent cycle is unstarted and its planned end date has elapsed. The previous inspection found reminder/overdue delivery jobs for both participants completed without errors; this is not proof of device receipt.
 
@@ -54,3 +54,39 @@ Remaining manual checks:
 Do not edit payment status in SQL or silently extend the agreed schedule. A new production TestFlight build and phone smoke test remain required before App Store submission; build 4 lacks the recent fixes.
 
 Dependency follow-up validation (12 October): installation applied the compatibility patch; six regression tests and mobile TypeScript passed. The online Expo compatibility check timed out at the proxy; the offline check is informational only. The prior online preflight passed before this scoped transitive UUID change. No iOS build was started.
+
+
+## Completed dependency review — 13 October 2026
+
+Reviewed branch head 88bfb133fa1bb25fa3082aeca9f307dfb4020701.
+
+Fresh clean installation applied the decoder compatibility patch. All six dependency regression tests, mobile TypeScript and production release configuration passed. A production iOS Metro JavaScript export (no native archive, no Hermes bytecode) also passed: 3,676 modules. Its source map contains the patched query-string/decode-uri-component modules and contains no braces, node-forge or @expo/code-signing-certificates sources. This establishes the observed JavaScript bundle boundary, not a full native security audit.
+
+Fresh npm audit remains 19 high, zero critical/moderate/low findings. These are propagated package findings from two root advisories:
+
+- braces 3.0.3, GHSA-vfj7-8cjw-p6xm: introduced through micromatch -> metro-file-map (Metro build/file-watching). Registry latest remains 3.0.3; advisory lists no patched version.
+- node-forge 1.4.0, GHSA-86w9-cpqp-85rv: direct parents @expo/code-signing-certificates and @expo/cli. Registry latest remains 1.4.0; advisory lists no patched version.
+
+Engineering recommendation: merge the tested dependency updates with the final release changes, then proceed to a fresh TestFlight candidate under controlled build/signing conditions. Keep Metro private, build reviewed source/configuration and only use trusted signing material. Do not downgrade Expo to the incompatible versions suggested by audit --force, suppress the findings, or introduce an unreviewed cryptography fork. Keep both advisories open and recheck before public submission; they are not remediated by this review. Final native build and device validation remain mandatory.
+
+Sources rechecked 13 October:
+- https://github.com/advisories/GHSA-vfj7-8cjw-p6xm
+- https://github.com/advisories/GHSA-86w9-cpqp-85rv
+
+## Updated readiness and tonight's sequence
+
+User confirmed the overdue freeze, verified Cycle 1 payment, remaining schedule gate, mutually accepted Cycle 2 dates, final-cycle payment and overall completion/paid on both client and freelancer accounts. Client screenshots show 2/2 cycles and GBP 2.00 received. Actual receipt of completion notifications is still unconfirmed; job processing is not proof of delivery to a device/inbox.
+
+- [x] Dependency review and available compatible fixes prepared in PR #10.
+- [x] Portfolio dismissal fix PR #9 already merged into main; absent from installed build 4.
+- [x] Retainer paid/completed on both accounts.
+- [ ] Connect private R2 and FFmpeg on staging; activate/test PR #11 (includes payment confirmation UI).
+- [ ] Audit staging UI and protected uploads/previews/downloads, including slow payment confirmation and notification receipt.
+- [ ] Recheck privacy disclosures and privacy policy against the final storage/SDK behaviour.
+- [ ] Merge the final reviewed changes, including PR #10 and PR #11, and verify production deployment.
+- [ ] Create a NEW production TestFlight build from that final main commit. Do not reuse build 4. PR #8 is already in build 4; PR #9 and PR #10 are not.
+- [ ] Smoke-test that build: portfolio playback/closing, project management, messages/notifications, payment links, login/logout, account deletion and Help.
+- [ ] Select the newly tested build in App Store Connect and complete reviewer access/metadata.
+
+No TestFlight build, App Store submission, merge or production deployment was performed during this review. Payment UI/R2 work is held for tonight per the user's instruction.
+
