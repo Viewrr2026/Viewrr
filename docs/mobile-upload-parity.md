@@ -6,7 +6,7 @@ Photos selection converts unsupported images such as HEIC to JPEG. Supported JPE
 
 ## Remaining differences
 
-- Retainer management and cycle uploads are web handoffs, not native screens.
+- Native retainer uploads now support custom and legacy cycles: Photos/Files, polling, retry, submission notes, preview and server-gated original downloads. Legacy work supports progress-stage updates and final submission. Billing, agreement changes and client review actions remain web workflows.
 - Agency editing has no native screen.
 - Native stage actions and delivery uploads use separate screens, unlike web Send Work.
 - Legacy profile image-link/edit controls remain alongside R2 upload controls.
