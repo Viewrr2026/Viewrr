@@ -145,7 +145,7 @@ export async function renderRetainerPreview(
   )
     throw new Error("File content is not a supported still image");
   const filter =
-    "scale=w='min(1280,iw)':h=-2,drawtext=text='Viewrr / Preview':fontcolor=white@0.78:fontsize='min(w,h)/24':shadowcolor=black@0.25:shadowx=1:shadowy=1:x=(w-tw)/2:y=(h-th)/2";
+    "scale=w='min(1280,iw)':h=-2,drawtext=text='Viewrr / Preview':fontcolor=white@0.95:fontsize='min(w,h)/17':borderw=1:bordercolor=black@0.65:shadowcolor=black@0.6:shadowx=2:shadowy=2:x=(w-tw)/2:y=(h-th)/2";
   const args = [
     "-nostdin",
     "-y",

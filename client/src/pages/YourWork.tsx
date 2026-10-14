@@ -1547,7 +1547,26 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
   const planningStatus = (pw.project as any).planningStatus ?? "legacy";
   const isPlanning = ["planning_required", "plan_draft", "awaiting_client", "client_changes"].includes(planningStatus);
   // PRD-014: Don't show artificial progress % before a plan exists
-  const pct = isPlanning ? 0 : Math.round(((pw.project.currentStage + 1) / 6) * 100);
+  const hasPlan = planningStatus === "confirmed";
+  const { data: planStages, isError: stagesError } = useQuery<Array<{ id: number; title: string; status: string }>>({
+    queryKey: [`/api/projects/${pw.project.id}/stages`],
+    enabled: hasPlan && pw.project.isRetainer !== 1,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  });
+  const done = (status: string) => status === "completed" || status === "approved";
+  const completedCount = (planStages ?? []).filter(stage => done(stage.status)).length;
+  const currentPlanStage = planStages?.find(stage => ["in_progress", "awaiting_client", "changes_requested"].includes(stage.status))
+    ?? planStages?.find(stage => !done(stage.status));
+  const pct = isPlanning ? 0 : hasPlan ? (planStages?.length ? Math.round(completedCount / planStages.length * 100) : 0)
+    : Math.round(((pw.project.currentStage + 1) / STAGES.length) * 100);
+  const cardStages = hasPlan ? (planStages ?? []).map(stage => ({
+    label: stage.title, status: done(stage.status) ? "done" : stage.id === currentPlanStage?.id ? "active" : "pending",
+  })) : STAGES.map((stage, i) => ({ label: stage.label, status: stageStatus(pw.project.currentStage, i) }));
+  const progressLabel = hasPlan
+    ? !planStages ? (stagesError ? "Progress unavailable" : "Loading progress…")
+      : !planStages.length ? "No stages available" : currentPlanStage?.title ?? "All stages complete"
+    : STAGES[pw.project.currentStage]?.label;
   const isCompleted = pw.project.status === "completed";
   const visKey = `project_visibility_${pw.project.id}`;
   const [isPublic, setIsPublic] = useState(() => safeGet(visKey) !== "private");
@@ -1824,9 +1843,9 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
             <div className="mb-2">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs text-muted-foreground">
-                  {STAGES[pw.project.currentStage]?.label}
+                  {progressLabel}
                 </span>
-                <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>{pct}%</span>
+                <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>{hasPlan && !planStages ? "—" : `${pct}%`}</span>
               </div>
               <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                 <div
@@ -1842,8 +1861,8 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
 
           {/* Stage pills */}
           <div className="flex gap-1 mt-3 flex-wrap">
-            {STAGES.map((s, i) => {
-              const status = stageStatus(pw.project.currentStage, i);
+            {cardStages.map((s, i) => {
+              const status = s.status;
               return (
                 <span
                   key={i}
