@@ -22,24 +22,7 @@ import { isHttpUrl, parseVideoUrl } from "@/lib/media";
 import { useSession } from "@/session/SessionProvider";
 import { gutter, hitSlop, radii, spacing, typography, useTheme } from "@/theme";
 
-/**
- * Post composer.
- *
- * Scope is set by the backend, not by taste: `POST /api/feed` accepts a caption,
- * ONE optional media URL, a media type and a JSON tag string, and there is no
- * upload endpoint that will take a post image. `/api/upload/portfolio` exists
- * but its `resourceType` enum excludes posts (`routes.ts:762`), so a native
- * photo picker would have nowhere to send the file. The website has the same
- * limit and asks for a pasted link, which is what this does.
- *
- * → Reported as a product gap, not solved here: native media capture/upload for
- *   feed posts needs a backend upload path first.
- *
- * Gating (PRD 1, Decision 1): `POST /api/feed` requires auth, so a signed-out
- * viewer who taps "share an update" gets SignInPrompt in place of the composer
- * rather than a form that cannot submit. The editor is not rendered at all
- * without a session, so there is no draft to strand and no post to fake.
- */
+/** Compose public feed posts with uploaded media or external links. */
 
 const MAX_CAPTION = 2000;
 const MAX_TAGS = 5;
@@ -73,9 +56,9 @@ export function Composer({
   );
 
   const trimmedLink = link.trim();
-  const video = parseVideoUrl(trimmedLink);
+  const video = trimmedLink.endsWith(".jpg") ? null : parseVideoUrl(trimmedLink);
   const linkValid = trimmedLink.length === 0 || Boolean(video) || isHttpUrl(trimmedLink);
-  const canPost = caption.trim().length > 0 && linkValid && !posting;
+  const canPost = (caption.trim().length > 0 || trimmedLink.length > 0) && linkValid && !posting;
 
   const reset = useCallback(() => {
     setCaption("");
@@ -110,7 +93,7 @@ export function Composer({
       setError(
         cause instanceof ApiError && (cause.kind === "network" || cause.kind === "timeout")
           ? "Your post did not send — check your connection and try again."
-          : "Your post did not send. Try again.",
+          : cause instanceof ApiError ? cause.userMessage : "Your post did not send. Try again.",
       );
     } finally {
       setPosting(false);
@@ -170,7 +153,7 @@ export function Composer({
 
             <View style={styles.field}>
               <Text style={[styles.label, { color: colors.mutedForeground }]}>
-                LINK (OPTIONAL)
+                PHOTO, VIDEO OR LINK (OPTIONAL)
               </Text>
               <MediaUpload scope="feed" onUploaded={url=>setLink(url)} />
               <TextInput
@@ -194,9 +177,9 @@ export function Composer({
               />
               <Text style={[styles.hint, { color: colors.mutedForeground }]}>
                 {video
-                  ? `${video.provider === "vimeo" ? "Vimeo" : "YouTube"} video recognised.`
+                  ? `${video.provider === "upload" ? "Uploaded" : video.provider === "vimeo" ? "Vimeo" : "YouTube"} video ready.`
                   : linkValid
-                    ? "Viewrr posts link to work hosted elsewhere — file upload is not available yet."
+                    ? "Upload a photo or video, or paste a link."
                     : "That does not look like a web address."}
               </Text>
             </View>

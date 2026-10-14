@@ -458,6 +458,9 @@ export default function EditProfile() {
                   <Card>
                     <CardLabel>Showreel and portfolio</CardLabel>
 
+                    <Text style={{ color: colors.mutedForeground }}>Upload a showreel video</Text>
+                    <MediaUpload videosOnly onUploaded={url=>patch({reelUrl:url})} />
+                    <Text style={{ color: colors.mutedForeground }}>Add portfolio photos or videos</Text>
                     <MediaUpload onUploaded={url=>patch({portfolio:[...form.portfolio,{url}]})} />
                     <TextField
                       label="Showreel URL"
@@ -468,7 +471,7 @@ export default function EditProfile() {
                       placeholder="https://vimeo.com/123456789"
                       errorText={
                         form.reelUrl.trim() && !parseVideoUrl(form.reelUrl)
-                          ? "Use a Vimeo or YouTube link."
+                          ? "Upload a video or use a Vimeo or YouTube link."
                           : undefined
                       }
                     />

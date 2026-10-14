@@ -1,15 +1,5 @@
 import { API_BASE_URL } from "@/config/env";
-/**
- * Vimeo / YouTube URL parsing.
- *
- * Ported by value from client/src/lib/videoEmbed.ts — the same regexes, the
- * same thumbnail hosts — because Viewrr has no video upload path anywhere in
- * the product: posts and portfolio items store a Vimeo or YouTube URL and the
- * web app renders an iframe. /mobile is an isolated package, so the logic is
- * transcribed rather than imported.
- *
- * Portfolio playback uses the in-app PortfolioPlayer.
- */
+/** Shared rendering rules for public R2 media and external video links. */
 
 export type VideoProvider = "vimeo" | "youtube" | "upload";
 
@@ -30,7 +20,8 @@ const YOUTUBE =
 
 export function parseVideoUrl(url: string | null | undefined): ParsedVideo | null {
   if (!url || !url.trim()) return null;
-  const clean = url.trim();
+  const trimmed = url.trim();
+  const clean = trimmed.startsWith(`${API_BASE_URL}/api/media/`) ? trimmed.slice(API_BASE_URL.length) : trimmed;
 
   if (/^\/api\/media\/\d+\/[a-f0-9-]+\/(original|preview)\.(jpg|mp4)$/.test(clean)) return {provider:"upload",id:clean,watchUrl:`${API_BASE_URL}${clean}`,thumbnailUrl:clean.endsWith(".jpg")?`${API_BASE_URL}${clean}`:""};
   const vimeo = VIMEO.exec(clean);
@@ -82,7 +73,7 @@ export function postMedia(
   if (!mediaUrl) return null;
 
   const video = parseVideoUrl(mediaUrl);
-  if (video && !mediaUrl.endsWith(".jpg")) return { kind: "video", video };
+  if (video && !mediaUrl.trim().endsWith(".jpg")) return { kind: "video", video };
 
   if (mediaType === "video") return null; // claimed video, unrecognised host
   return isHttpUrl(mediaUrl) ? { kind: "image", uri: mediaUrl.startsWith("/api/media/") ? `${API_BASE_URL}${mediaUrl}` : mediaUrl.trim() } : null;
