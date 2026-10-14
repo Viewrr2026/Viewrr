@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/components/AuthProvider";
@@ -211,18 +212,19 @@ function EmbedModal({
     : { name: deliverable.platform || "Link", color: "#FF5A1F", embedUrl: null, logo: "\u{1F512}" };
   const isLocked = fullyRefunded || deliverable.locked === true || !deliverable.url;
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[9999] flex flex-col bg-black/95"
+      role="dialog" aria-modal="true" aria-label={deliverable.label}
+      className="fixed inset-0 z-[9999] flex min-h-0 flex-col overflow-hidden bg-black/95"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 flex-shrink-0">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           <span className="text-lg">{info.logo}</span>
           <div>
             <p className="font-semibold text-white text-sm">{deliverable.label}</p>
-            <p className="text-xs text-white/70">{info.name} · External provider access and sign-in may be required</p>
+            <p className="text-xs text-white/70">{deliverable.previewUrl ? "Watermarked preview · Original available after payment" : `${info.name} · External provider access and sign-in may be required`}</p>
           </div>
           {isLocked ? (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: "rgba(255,90,31,0.2)", color: "#FF5A1F", border: "1px solid rgba(255,90,31,0.4)" }}>
@@ -240,16 +242,16 @@ function EmbedModal({
               <ExternalLink size={13} /> Open original
             </a>
           )}
-          <button onClick={onClose} className="text-white/60 hover:text-white hover:bg-white/10 rounded-lg p-1.5 transition-colors">
+          <button aria-label="Close preview" onClick={onClose} className="text-white/60 hover:text-white hover:bg-white/10 rounded-lg p-1.5 transition-colors">
             <X size={18} />
           </button>
         </div>
       </div>
 
       {/* Embed + watermark */}
-      <div className="flex-1 relative">
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         {deliverable.previewUrl ? (
-          <div className="h-full flex items-center justify-center">{deliverable.previewUrl.endsWith('.mp4') ? <video src={deliverable.previewUrl} controls playsInline className="max-h-full max-w-full" /> : <img src={deliverable.previewUrl} alt="Watermarked delivery preview" className="max-h-full max-w-full object-contain" />}</div>
+          <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">{deliverable.previewUrl.endsWith('.mp4') ? <video src={deliverable.previewUrl} controls playsInline className="block h-full w-full min-h-0 object-contain" /> : <img src={deliverable.previewUrl} alt="Watermarked delivery preview" className="block h-full w-full min-h-0 object-contain" />}</div>
         ) : !isLocked && deliverable.embedUrl ? (
           <iframe
             src={deliverable.embedUrl}
@@ -278,9 +280,9 @@ function EmbedModal({
             )}
           </div>
         )}
-        {watermarked && !isLocked && <WatermarkLayer username={username} />}
+        {watermarked && !isLocked && !deliverable.previewUrl && <WatermarkLayer username={username} />}
       </div>
-    </div>
+    </div>, document.body
   );
 }
 
@@ -1049,12 +1051,13 @@ export default function DeliverablesSection({
 
         {/* ── Add form (freelancer only) ─────────────────────────────────────── */}
         {isFreelancer && showAdd && (
-          <div className="bg-secondary/40 rounded-xl p-4 space-y-3 border border-border">
-            <p className="text-xs font-semibold text-foreground">Upload or share your work</p>
+          <div className="rounded-2xl border border-border bg-background p-4 space-y-4 shadow-sm">
+            <p className="text-xs font-semibold text-foreground">Share work for review</p>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Upload an image or video for a protected preview, or share an external link. External services control access to linked files.
+              Add a file, choose a label, then share it with your client.
             </p>
             <MediaUpload scope="delivery" projectId={projectId} onUploaded={url=>{setUrlInput(url);setUrlError("");}} />
+            <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider text-muted-foreground"><span className="h-px flex-1 bg-border" />Or paste a link<span className="h-px flex-1 bg-border" /></div>
             <Input value={urlInput} onChange={e => { setUrlInput(e.target.value); setUrlError(""); }} placeholder="https://vimeo.com/… or drive.google.com/…" className="text-sm h-9" />
             {urlInput.trim() && (() => {
               try {
