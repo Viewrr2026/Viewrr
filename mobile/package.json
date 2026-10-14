@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "description": "Viewrr mobile app (React Native + Expo). Isolated package — not part of the root web/server build.",
   "dependencies": {
-    "expo": "~57.0.27",
-    "expo-constants": "~57.0.16",
-    "expo-dev-client": "~57.0.19",
+    "expo": "~57.0.29",
+    "expo-constants": "~57.0.22",
+    "expo-dev-client": "~57.0.20",
     "expo-device": "~57.0.2",
     "expo-document-picker": "~57.0.3",
     "expo-font": "~57.0.2",
@@ -14,14 +14,14 @@
     "expo-image-manipulator": "~57.0.21",
     "expo-image-picker": "~57.0.20",
     "expo-linear-gradient": "~57.0.2",
-    "expo-linking": "~57.0.12",
-    "expo-notifications": "~57.0.22",
-    "expo-router": "~57.0.25",
+    "expo-linking": "~57.0.13",
+    "expo-notifications": "~57.0.23",
+    "expo-router": "~57.0.27",
     "expo-secure-store": "~57.0.4",
-    "expo-splash-screen": "~57.0.9",
+    "expo-splash-screen": "~57.0.10",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.4",
-    "expo-updates": "~57.0.25",
+    "expo-updates": "~57.0.26",
     "lucide-react-native": "^1.37.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -48,9 +48,19 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "release:config": "node scripts/check-release.mjs",
-    "release:preflight": "npm run release:config && npm run typecheck && expo install --check",
+    "release:preflight": "npm run release:config && npm run test:dependencies && npm run typecheck && expo install --check",
     "doctor": "npx expo-doctor",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "postinstall": "node scripts/patch-query-string.cjs",
+    "test:dependencies": "node --test scripts/dependency-security.test.cjs"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "shell-quote": "1.11.0",
+    "brace-expansion": "5.0.12",
+    "decode-uri-component": "0.5.0",
+    "xcode": {
+      "uuid": "11.1.1"
+    }
+  }
 }

@@ -19,4 +19,4 @@ New picker/manipulator dependencies require a new native binary. The EAS preview
 
 Device checks: Photos/Files cancellation, limited Photos access, HEIC, JPEG/PNG, portrait/landscape video, file size rejection, retry, feed reload, portfolio/showreel playback, profile/banner persistence, unpaid preview and paid original download, unrelated-account denial, expired sign-in.
 
-TypeScript, release config and JS bundling do not replace a signed archive and iPhone testing. Native retainer/agency parity, production release, TestFlight and submission remain outstanding.
+TypeScript, release config and JS bundling do not replace a signed archive and iPhone testing. Native retainer uploads are implemented; agency editing and the other web workflows listed above remain separate. See `readiness/2026-10-14-r2-release.md` for the combined release and TestFlight handoff.
