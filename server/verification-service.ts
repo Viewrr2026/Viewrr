@@ -100,6 +100,8 @@ export async function verifyCode(
   const updated = await db`
     UPDATE verification_codes SET used_at = ${now}
     WHERE id = ${record.id} AND used_at IS NULL
+      AND invalidated_at IS NULL AND attempt_count < ${MAX_ATTEMPTS}
+      AND expires_at::timestamptz > NOW()
     RETURNING id
   `;
   if (!updated.length) return { ok: false, error: "Code already used" };

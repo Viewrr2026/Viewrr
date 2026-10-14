@@ -1,3 +1,4 @@
+import { verifySignupEmail } from "./signup-verification";
 import { registerMediaRoutes } from "./media-routes";
 import { runStripeEventJob } from "./stripe-event-job";
 import { invitationEstimate } from "../shared/project-estimate";
@@ -699,7 +700,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // PRD-019: Registration — Argon2id for new hashes; DB-backed session; registerLimiter.
   app.post("/api/auth/register", registerLimiter, async (req, res) => {
     try {
-      const { name, email, role, phone, password } = req.body;
+      const { name, role, phone, password, verificationCode } = req.body;
+      const parsedEmail = z.string().trim().toLowerCase().email().safeParse(req.body.email);
+      if (!parsedEmail.success) return res.status(400).json({ error: "Enter a valid email address" });
+      const email = parsedEmail.data;
       if (!name || !email || !role) return res.status(400).json({ error: "Name, email and role are required" });
       const ALLOWED_ROLES = ["freelancer", "client"];
       if (!ALLOWED_ROLES.includes(role)) return res.status(400).json({ error: "Invalid role" });
@@ -710,6 +714,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (password) {
         userData.passwordHash = await hashPasswordArgon2id(password);
         userData.passwordAlgo = "argon2id";
+      }
+      // The signup form submits the code here, so proof and account state cannot drift.
+      try {
+        Object.assign(userData, await verifySignupEmail(email, verificationCode));
+      } catch (error: any) {
+        if (error.status === 400) return res.status(400).json({ error: error.message, code: "INVALID_VERIFICATION_CODE" });
+        throw error;
       }
       const user = await storage.createUser(userData);
 
@@ -1010,6 +1021,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         role: user.role,
         avatar: user.avatar ?? null,
         isAdmin: user.isAdmin,
+        emailVerified: user.emailVerified,
         sessionType: req.auth!.clientType ?? "web",
       },
     });
