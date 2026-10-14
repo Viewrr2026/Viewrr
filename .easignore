@@ -132,6 +132,6 @@ Thumbs.db
 *.swp
 
 # ---------------------------------------------------------------------------
-# Developer tooling the native build never runs.
+# Mobile install hooks and release checks must stay in the archive.
+# npm ci runs mobile/scripts/patch-query-string.cjs during the native build.
 # ---------------------------------------------------------------------------
-mobile/scripts/

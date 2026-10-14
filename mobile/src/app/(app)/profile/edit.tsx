@@ -1,3 +1,5 @@
+import { API_BASE_URL } from "@/config/env";
+import { MediaUpload } from "@/components/MediaUpload";
 import { Image } from "expo-image";
 import { Camera, Check, Link2, Plus, Trash2, X } from "lucide-react-native";
 import { useCallback, useState } from "react";
@@ -247,6 +249,10 @@ export default function EditProfile() {
               {/* ── Photos ────────────────────────────────────────────── */}
               <Card>
                 <CardLabel>Photos</CardLabel>
+                <Text style={{color:colors.foreground}}>Profile photo</Text>
+                <MediaUpload scope="profile" imagesOnly onUploaded={url=>patch({avatar:`${API_BASE_URL}${url}`})} />
+                <Text style={{color:colors.foreground}}>Banner</Text>
+                <MediaUpload scope="profile" imagesOnly onUploaded={url=>patch({banner:`${API_BASE_URL}${url}`})} />
                 <View style={styles.photoRow}>
                   <Avatar name={form.name || "Your account"} uri={form.avatar} size="lg" ring />
                   <View style={styles.photoCopy}>
@@ -451,6 +457,11 @@ export default function EditProfile() {
                   {/* ── Portfolio video URLs ───────────────────────────── */}
                   <Card>
                     <CardLabel>Showreel and portfolio</CardLabel>
+
+                    <Text style={{ color: colors.mutedForeground }}>Upload a showreel video</Text>
+                    <MediaUpload videosOnly onUploaded={url=>patch({reelUrl:url})} />
+                    <Text style={{ color: colors.mutedForeground }}>Add portfolio photos or videos</Text>
+                    <MediaUpload onUploaded={url=>patch({portfolio:[...form.portfolio,{url}]})} />
                     <TextField
                       label="Showreel URL"
                       value={form.reelUrl}
@@ -460,7 +471,7 @@ export default function EditProfile() {
                       placeholder="https://vimeo.com/123456789"
                       errorText={
                         form.reelUrl.trim() && !parseVideoUrl(form.reelUrl)
-                          ? "Use a Vimeo or YouTube link."
+                          ? "Upload a video or use a Vimeo or YouTube link."
                           : undefined
                       }
                     />

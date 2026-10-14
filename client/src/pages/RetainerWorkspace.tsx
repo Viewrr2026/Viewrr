@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { RetainerChangeRequest, RetainerChangeRequests } from "@/components/retainer/RetainerChangeRequest";
 import { CustomRetainerOverview, CustomRetainerHistory, CustomPaymentSuccess } from "@/components/retainer/CustomRetainerProgress";
 import { useCustomRetainer, CustomProposal, CustomCyclePanel, CyclePayment } from "@/components/retainer/CustomRetainerWorkspace";
@@ -1543,7 +1544,7 @@ function WorkItemSubmissionPanel({
     try {
       const parsed =
         new URL(
-          deliverableUrl.trim(),
+          deliverableUrl.trim(), window.location.origin,
         );
 
       if (
@@ -1613,7 +1614,7 @@ function WorkItemSubmissionPanel({
       try {
         const parsed =
           new URL(
-            deliverableUrl.trim(),
+            deliverableUrl.trim(), window.location.origin,
           );
 
         if (
@@ -1857,7 +1858,7 @@ function WorkItemSubmissionPanel({
 
                     <a
                       href={
-                        update.deliverableUrl
+                        update.deliverableUrl?.startsWith("/api/media/") ? update.deliverableUrl.replace("/original.","/preview.") : update.deliverableUrl
                       }
                       target="_blank"
                       rel="noopener noreferrer"
@@ -1913,14 +1914,22 @@ function WorkItemSubmissionPanel({
                       {submission.deliverableUrl && (
                         <a
                           href={
-                            submission.deliverableUrl
+                            submission.deliverableUrl?.startsWith("/api/media/") ? submission.deliverableUrl.replace("/original.","/preview.") : submission.deliverableUrl
                           }
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-xs font-semibold text-[#FF5A1F] hover:underline"
                         >
-                          Open deliverable link
+                          {submission.deliverableUrl.startsWith("/api/media/") ? "Open watermarked preview" : "Open deliverable link"}
                         </a>
+                      )}
+                      {submission.deliverableUrl?.startsWith("/api/media/") && (
+                        <button type="button" className="text-xs font-semibold text-[#FF5A1F] hover:underline" onClick={async () => {
+                          try {
+                            const result = await (await apiRequest("GET", `${submission.deliverableUrl}?resolve=1`)).json();
+                            window.location.assign(result.url);
+                          } catch { setError("The original is available to the freelancer, or to the client after verified payment."); }
+                        }}>Download original</button>
                       )}
 
                     </div>
@@ -1993,6 +2002,7 @@ function WorkItemSubmissionPanel({
                 className="resize-none text-sm"
               />
 
+              <MediaUpload scope="cycle" retainerId={publicId} taskId={task.publicId} onUploaded={url=>setDeliverableUrl(url)} />
               <input
                 type="url"
                 value={deliverableUrl}
@@ -2056,6 +2066,7 @@ function WorkItemSubmissionPanel({
                 className="resize-none text-sm"
               />
 
+              <MediaUpload scope="cycle" retainerId={publicId} taskId={task.publicId} onUploaded={url=>setDeliverableUrl(url)} />
               <input
                 type="url"
                 value={deliverableUrl}

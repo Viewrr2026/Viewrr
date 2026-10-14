@@ -163,7 +163,7 @@ export default function AgencyProfile() {
           <div className="mt-6">
             <h2 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide mb-3">Showreel</h2>
             <div className="rounded-xl overflow-hidden border border-border">
-              <VideoEmbed embedUrl={reelParsed.embedUrl} platform={reelParsed.platform} />
+              <VideoEmbed url={agency.reelUrl!} />
             </div>
           </div>
         )}

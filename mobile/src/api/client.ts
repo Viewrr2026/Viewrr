@@ -95,11 +95,11 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       method,
       headers: {
         Accept: "application/json",
-        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...(body !== undefined && !(body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
         ...(anonymous ? {} : await attachCredential()),
         ...headers,
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body instanceof FormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
   } catch (cause) {

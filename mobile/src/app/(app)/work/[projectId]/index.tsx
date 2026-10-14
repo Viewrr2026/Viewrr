@@ -279,8 +279,7 @@ export default function ProjectDetail() {
                 <Card tone="brand">
                   <CardLabel>Retainer</CardLabel>
                   <Text style={[styles.copy, { color: colors.foreground }]}>
-                    Cycle sign-off, pausing and billing for retainers aren&apos;t in the mobile
-                    app yet. Everything here is read-only.
+                    Upload and submit cycle work in the app. Manage billing and agreement changes on the website.
                   </Text>
                   <View style={styles.metaRow}>
                     {project.billingCycle ? (
@@ -302,6 +301,10 @@ export default function ProjectDetail() {
                       Per cycle: {project.deliverablesPerCycle}
                     </Text>
                   ) : null}
+                  <Pressable accessibilityRole="button" onPress={() => router.push(`/work/${project.id}/retainer` as never)} style={styles.webLink}>
+                    <Package size={16} color={colors.primary} />
+                    <Text style={[styles.webLinkLabel, { color: colors.primary }]}>Retainer uploads and deliveries</Text>
+                  </Pressable>
                   <Pressable
                     onPress={() => void Linking.openURL(WEB_WORK_URL)}
                     accessibilityRole="link"

@@ -167,6 +167,7 @@ export function hostIsAllowed(host: string): boolean {
 export function checkMediaUrl(rawUrl: string): ModerationRejection | null {
   const value = rawUrl.trim();
   if (!value) return null;
+  if (/^\/api\/media\/\d+\/[a-f0-9-]+\/original\.(jpg|mp4)$/.test(value)) return null;
 
   if (value.length > MEDIA_URL_MAX) {
     return reject("media_url_too_long", `Media links must be under ${MEDIA_URL_MAX} characters.`);

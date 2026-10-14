@@ -4,7 +4,7 @@
  * No file uploads — videos are always hosted on Vimeo/YouTube and embedded here.
  */
 
-export type VideoProvider = "vimeo" | "youtube" | null;
+export type VideoProvider = "vimeo" | "youtube" | "upload" | null;
 
 export interface ParsedVideo {
   provider: VideoProvider;
@@ -21,6 +21,7 @@ export function parseVideoUrl(url: string): ParsedVideo | null {
   if (!url || !url.trim()) return null;
   const clean = url.trim();
 
+  if (/^\/api\/media\/\d+\/[a-f0-9-]+\/(original|preview)\.(jpg|mp4)$/.test(clean)) return {provider:"upload", id:clean, embedUrl:clean, thumbnailUrl:clean.endsWith('.jpg')?clean:''};
   // ── Vimeo ────────────────────────────────────────────────────────────────────
   // Formats: https://vimeo.com/123456789
   //          https://vimeo.com/channels/channelname/123456789

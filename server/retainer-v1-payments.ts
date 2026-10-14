@@ -42,6 +42,17 @@ export function validateCycleIntent(
   )
     throw new Error("Cycle payment verification failed");
 }
+// Read-only reconciliation; never creates another payment attempt.
+export async function customCyclePaymentStatus(cyclePublicId: string, userId: number) {
+  const row = (await retainerPool().query(`SELECT c.paid_at,p.stripe_payment_intent_id
+    FROM retainer_cycles c JOIN retainer_agreements a ON a.id=c.retainer_agreement_id
+    LEFT JOIN payments p ON p.id=c.payment_id WHERE c.public_id=$1 AND a.client_id=$2`, [cyclePublicId,userId])).rows[0];
+  if (!row) retainerError("Cycle not found",404);
+  if (row.paid_at) return {status:"paid"};
+  if (!row.stripe_payment_intent_id) return {status:"payable"};
+  const intent = await stripeClient().paymentIntents.retrieve(row.stripe_payment_intent_id);
+  return {status:["succeeded","processing"].includes(intent.status) ? "confirming" : "payable"};
+}
 export async function createCustomCyclePayment(
   cyclePublicId: string,
   userId: number,
@@ -57,8 +68,8 @@ export async function createCustomCyclePayment(
     const intent = await stripe.paymentIntents.retrieve(
       existing.stripe_payment_intent_id,
     );
-    if (intent.status === "succeeded")
-      retainerError("Payment received. Waiting for verified confirmation.");
+    if (["succeeded", "processing"].includes(intent.status))
+      return { status: "confirming" as const };
     if (intent.status === "canceled")
       await retainerPool().query(
         "UPDATE payments SET status='cancelled' WHERE id=$1 AND status NOT IN ('succeeded','refunded','partially_refunded')",
@@ -170,8 +181,8 @@ export async function createCustomCyclePayment(
     "UPDATE payments SET stripe_payment_intent_id=$2 WHERE id=$1 AND (stripe_payment_intent_id IS NULL OR stripe_payment_intent_id=$2)",
     [record.id, intent.id],
   );
-  if (intent.status === "processing")
-    retainerError("Payment is still processing. You do not need to pay again.");
+  if (["succeeded", "processing"].includes(intent.status))
+    return { status: "confirming" as const };
   if (["succeeded", "canceled"].includes(intent.status))
     retainerError(
       "This payment attempt is no longer payable. Refresh its status.",

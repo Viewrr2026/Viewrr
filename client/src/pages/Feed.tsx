@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useMemo, useCallback } from "react";
 import { displayRole } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -499,6 +500,7 @@ function MediaInput({ onMedia }: { onMedia: (url: string, type: "image" | "video
 
   return (
     <div className="space-y-3">
+      <MediaUpload scope="feed" onUploaded={(url,mime)=>onMedia(url,mime.startsWith("video/")?"video":"image")} />
       {/* Tab switcher */}
       <div className="flex rounded-xl border border-border overflow-hidden">
         <button
@@ -603,7 +605,27 @@ function NewPostModal({ open, onClose }: { open: boolean; onClose: () => void })
       setCaption(""); setMediaUrl(""); setMediaType("image"); setTags([]); setTagInput("");
       onClose();
     },
-    onError: () => toast({ title: "Failed to post", variant: "destructive" }),
+    onError: (error: Error) => {
+      let description = "Your draft is still here. Please try again shortly.";
+      let title = "Could not publish post";
+      const match = error.message.match(/^(\d+):\s*([\s\S]*)$/);
+      if (match) {
+        const status = Number(match[1]);
+        try {
+          const details = JSON.parse(match[2]);
+          if (details.code === "EMAIL_VERIFICATION_REQUIRED") {
+            title = "Confirm your email to publish";
+            description = "Please verify your email address, then return to publish this post. Your draft has been kept.";
+          } else if ([401, 403, 413, 422, 429].includes(status) && typeof details.error === "string") {
+            description = details.error;
+          }
+        } catch {
+          if (status === 429) description = "You have posted too quickly. Wait a moment and try again.";
+        }
+        if (status === 401) description = "Your session has expired. Please sign in again before posting.";
+      }
+      toast({ title, description, variant: "destructive" });
+    },
   });
 
   return (

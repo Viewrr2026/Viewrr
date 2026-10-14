@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useRef, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -258,20 +259,11 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     const entered = codeInput.join("");
     if (entered.length < 6) { setCodeError(true); toast({ title: "Please enter the full 6-digit code", variant: "destructive" }); return; }
 
-    try {
-      const body = verifyMethod === "phone" ? { phone: clientPhone, code: entered } : { email: clientEmail, code: entered };
-      const verifyRes = await fetch("/api/auth/verify-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (!verifyRes.ok) {
-        setCodeError(true);
-        toast({ title: "Incorrect code — please try again", variant: "destructive" });
-        setCodeInput(["", "", "", "", "", ""]); inputRefs.current[0]?.focus(); return;
-      }
-    } catch { toast({ title: "Verification failed — please try again", variant: "destructive" }); return; }
 
     try {
       const regRes = await fetch("/api/auth/register", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: clientName, email: clientEmail, role: "client", phone: clientPhone, password: clientPassword }),
+        body: JSON.stringify({ name: clientName, email: clientEmail, role: "client", phone: clientPhone, password: clientPassword, verificationCode: entered }),
       });
       const data = await regRes.json();
       if (data.user) { login(data.user); }
@@ -279,10 +271,13 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
         toast({ title: "Email already registered", description: "Please sign in instead.", variant: "destructive" });
         handleClose(); return;
       } else {
-        login({ id: 99, name: clientName, email: clientEmail, role: "client", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+        setCodeError(true);
+        toast({ title: "Could not create account", description: data.error || "Please request a new code and try again.", variant: "destructive" });
+        return;
       }
     } catch {
-      login({ id: 99, name: clientName, email: clientEmail, role: "client", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+      toast({ title: "Could not create account", description: "Check your connection and try again. If the code has expired, request a new one.", variant: "destructive" });
+      return;
     }
     setStep("done");
     // Welcome screen stays open — user dismisses via CTA buttons
@@ -293,15 +288,6 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     const entered = codeInput.join("");
     if (entered.length < 6) { setCodeError(true); toast({ title: "Please enter the full 6-digit code", variant: "destructive" }); return; }
 
-    try {
-      const body = verifyMethod === "phone" ? { phone: freePhone, code: entered } : { email: freeEmail, code: entered };
-      const verifyRes = await fetch("/api/auth/verify-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (!verifyRes.ok) {
-        setCodeError(true);
-        toast({ title: "Incorrect code — please try again", variant: "destructive" });
-        setCodeInput(["", "", "", "", "", ""]); inputRefs.current[0]?.focus(); return;
-      }
-    } catch { toast({ title: "Verification failed — please try again", variant: "destructive" }); return; }
 
     // Register freelancer account
     let userId: number | null = null;
@@ -309,7 +295,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     try {
       const regRes = await fetch("/api/auth/register", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: freeName, email: freeEmail, role: "freelancer", phone: freePhone, password: freePassword }),
+        body: JSON.stringify({ name: freeName, email: freeEmail, role: "freelancer", phone: freePhone, password: freePassword, verificationCode: entered }),
       });
       const data = await regRes.json();
       if (data.error === "Email already registered") {
@@ -322,10 +308,13 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
         setNewUserId(userId);
         login(data.user);
       } else {
-        login({ id: 98, name: freeName, email: freeEmail, role: "freelancer", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+        setCodeError(true);
+        toast({ title: "Could not create account", description: data.error || "Please request a new code and try again.", variant: "destructive" });
+        return;
       }
     } catch {
-      login({ id: 98, name: freeName, email: freeEmail, role: "freelancer", avatar: null, location: null, createdAt: new Date().toISOString() } as any);
+      toast({ title: "Could not create account", description: "Check your connection and try again. If the code has expired, request a new one.", variant: "destructive" });
+      return;
     }
 
     // Save profile details (specialisms, skills, experience, bio) right after registration
@@ -1022,6 +1011,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                         )}
                       </div>
 
+                      <MediaUpload onUploaded={url=>setPortfolioItem(index,"url",url)} />
                       {valid && item.url.trim() && (
                         <VideoEmbed url={item.url.trim()} className="rounded-lg" />
                       )}

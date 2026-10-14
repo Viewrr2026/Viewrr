@@ -648,11 +648,12 @@ function PortfolioTile({
 }) {
   const [failed, setFailed] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const video = parseVideoUrl(item.url);
+  const parsedMedia = parseVideoUrl(item.url);
+  const video = item.url.endsWith(".jpg") ? null : parsedMedia;
   // A portfolio entry is either a film (poster frame from Vimeo/YouTube) or a
   // still, in which case the image is its own preview.
   const thumbnail =
-    item.thumbnail ?? (video ? video.thumbnailUrl : isHttpUrl(item.url) ? item.url : null);
+    item.thumbnail ?? (parsedMedia ? parsedMedia.thumbnailUrl : isHttpUrl(item.url) ? item.url : null);
 
   return (
     <>

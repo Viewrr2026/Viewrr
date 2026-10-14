@@ -85,3 +85,23 @@ test("actual image and video processing produces different watermarked preview f
     await rm(folder, { recursive: true, force: true });
   }
 });
+
+
+test("portrait watermark remains inside the image with clear side margins", async () => {
+  const folder = await mkdtemp(join(tmpdir(), "viewrr-portrait-test-"));
+  try {
+    const input = join(folder, "portrait.png"), output = join(folder, "preview.jpg");
+    await exec("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=360x800", "-frames:v", "1", input]);
+    await renderRetainerPreview(input, output, "image/png");
+    const raw = await exec("ffmpeg", ["-v", "error", "-i", output, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { encoding: "buffer", maxBuffer: 5_000_000 });
+    let marked = 0;
+    for (let i = 0; i < raw.stdout.length; i += 3) {
+      if (raw.stdout[i] > 140 && raw.stdout[i + 1] > 140) {
+        const x = (i / 3) % 360;
+        assert.ok(x > 36 && x < 324, "watermark must not clip at portrait edges");
+        marked++;
+      }
+    }
+    assert.ok(marked > 50, "preview must retain a visible burned-in watermark");
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});

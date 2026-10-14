@@ -1,3 +1,4 @@
+import { customCyclePaymentStatus } from "./retainer-v1-payments";
 import rateLimit from "express-rate-limit";
 import type { Express, Request, Response, NextFunction } from "express";
 import { z } from "zod";
@@ -44,6 +45,7 @@ const asyncRoute =
 const publicId = (req: Request) => String(req.params.publicId);
 const positive = z.number().int().positive();
 export function registerCustomRetainerRoutes(app: Express) {
+  app.get("/api/custom-retainer-cycles/:cycleId/payment-status", requireAuth, asyncRoute(req => customCyclePaymentStatus(String(req.params.cycleId),req.auth!.userId)));
   app.get("/api/custom-retainers/config", requireAuth, (_req, res) =>
     res.json({ enabled: process.env.CUSTOM_RETAINERS_ENABLED === "true" }),
   );

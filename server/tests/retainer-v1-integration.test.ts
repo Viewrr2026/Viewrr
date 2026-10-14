@@ -18,6 +18,7 @@ import {
 } from "../retainer-v1-service";
 import {
   createCustomCyclePayment,
+  customCyclePaymentStatus,
   setRetainerStripeForTesting,
   fulfilCustomCyclePayment,
   validateCycleIntent,
@@ -453,20 +454,25 @@ test("interrupted checkout, concurrent retries, declined cards and cancellation 
     (await createCustomCyclePayment(c.public_id, 1)).paymentIntentId,
     intent.id,
   );
+  await assert.rejects(() => customCyclePaymentStatus(c.public_id, 2));
   intent.status = "processing";
-  await assert.rejects(() => createCustomCyclePayment(c.public_id, 1));
+  assert.deepEqual(await customCyclePaymentStatus(c.public_id, 1), {status:"confirming"});
+  assert.deepEqual(await createCustomCyclePayment(c.public_id, 1), {status:"confirming"});
   assert.equal(created, 1);
   intent.status = "canceled";
+  assert.deepEqual(await customCyclePaymentStatus(c.public_id, 1), {status:"payable"});
+  assert.equal(created, 1);
   const retry = await createCustomCyclePayment(c.public_id, 1);
   assert.notEqual(retry.paymentIntentId, intent.id);
   assert.equal(created, 2);
   const paidIntent = intents.get(retry.paymentIntentId);
   paidIntent.status = "succeeded";
   paidIntent.amount_received = paidIntent.amount;
-  await assert.rejects(() => createCustomCyclePayment(c.public_id, 1));
+  assert.deepEqual(await createCustomCyclePayment(c.public_id, 1), {status:"confirming"});
   assert.equal(created, 2);
   assert.equal(await fulfilCustomCyclePayment(paidIntent), true);
-  await assert.rejects(() => createCustomCyclePayment(c.public_id, 1));
+  assert.deepEqual(await customCyclePaymentStatus(c.public_id, 1), {status:"paid"});
+  assert.deepEqual(await createCustomCyclePayment(c.public_id, 1), {status:"confirming"});
   assert.equal(created, 2);
   setRetainerStripeForTesting(undefined);
 });
@@ -481,6 +487,7 @@ test("media authorization rejects unpaid originals, other participants and wrong
   const w = await customWorkspace(publicId, 1),
     task = w.tasks[0],
     media = await readyMedia(task.id);
+  await assert.rejects(() => customMediaAccess(publicId, 1, media, false), (e: any) => e.status === 403);
   await submitCustomWork(publicId, 2, task.public_id, media, "Review");
   await assert.rejects(
     () => customMediaAccess(publicId, 3, media, false),
@@ -766,4 +773,20 @@ test("channel delivery retries independently and preserves accepted devices", as
   await queueDelivery(adapter,"payout:optout:paid",{...notice,recipientId:2});
   await deliverNotificationBatch({email:async()=>{assert.fail("opted out email");},push:async()=>{}});
   row=(await db.query("SELECT * FROM notification_delivery_outbox WHERE recipient_id=2")).rows[0]; assert.equal(row.email_done,true); assert.ok(row.notification_id);
+});
+
+
+test("protected delivery mode rejects new external-link submissions", async () => {
+  const { agreementPublicId: publicId } = await createCustomRetainer(2, 1, plan());
+  await reviewProposal(publicId, 1, 1, "accept", "");
+  const w = await customWorkspace(publicId, 2);
+  const previous = process.env.RETAINER_PRIVATE_STORAGE_CONFIRMED;
+  try {
+    process.env.RETAINER_PRIVATE_STORAGE_CONFIRMED = "true";
+    await assert.rejects(() => submitCustomWork(publicId, 2, w.tasks[0].public_id,
+      undefined, "Review", "https://example.com/original.mp4"), /Upload a protected/);
+  } finally {
+    if (previous === undefined) delete process.env.RETAINER_PRIVATE_STORAGE_CONFIRMED;
+    else process.env.RETAINER_PRIVATE_STORAGE_CONFIRMED = previous;
+  }
 });

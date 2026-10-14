@@ -167,6 +167,7 @@ export type ActivityEntry = {
  * a real server-side projection gate, not the web CSS watermark.
  */
 export type Deliverable = {
+  previewUrl?: string;
   id: number;
   label: string;
   platform: string;

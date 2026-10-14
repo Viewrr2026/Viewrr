@@ -43,24 +43,8 @@ const IS_STAGING = APP_ENV === "staging";
 /** The live Viewrr API origin. Declared once so no environment restates it. */
 const PRODUCTION_API_BASE_URL = "https://www.viewrr.co.uk";
 
-/**
- * CLOSED ALPHA — the `staging` environment points at the PRODUCTION API.
- *
- * There is no hosted staging API for mobile to talk to yet, so a preview build
- * resolving `https://staging.viewrr.co.uk` reached nothing and every screen
- * opened straight into the offline state. For the closed alpha it therefore
- * uses the live API, which is the only backend that actually exists.
- *
- * What this does NOT change: the preview build stays internal distribution,
- * keeps its own `uk.co.viewrr.app.staging` bundle identifier, its own
- * `viewrr-staging` scheme and its own "Viewrr Staging" name. It is a separate
- * app on the device, reading real production data.
- *
- * Because that data is real, treat preview as production for anything
- * destructive. Revert this to a dedicated staging origin as soon as one is
- * hosted — the only edit needed is this one line.
- */
-const STAGING_API_BASE_URL = PRODUCTION_API_BASE_URL;
+/** Dedicated staging backend; production remains unchanged. */
+const STAGING_API_BASE_URL = "https://viewrr-staging.onrender.com";
 
 /** Absolute API base URL per environment. Never relative. */
 const API_BASE_URL: Record<AppEnv, string> = {
@@ -147,6 +131,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   plugins: [
     "expo-router",
+    ["expo-image-picker", { photosPermission: "Choose photos and videos to share on Viewrr.", cameraPermission: false, microphonePermission: false }],
     [
       "expo-font",
       {

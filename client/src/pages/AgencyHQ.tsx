@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -1388,15 +1389,18 @@ function AgencyProfileEditor({ agency, onSaved }: { agency: any; onSaved: () => 
           </div>
           <div>
             <label className="block text-xs font-medium mb-1.5 text-muted-foreground">Showreel URL <span className="text-muted-foreground/60">(YouTube or Vimeo)</span></label>
+<MediaUpload scope="portfolio" onUploaded={url=>setReelUrl(url)} />
             <Input value={reelUrl} onChange={(e) => setReelUrl(e.target.value)} placeholder="https://vimeo.com/123456789" className="h-9 text-sm" />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1.5 text-muted-foreground">Logo URL</label>
+<MediaUpload scope="profile" imagesOnly onUploaded={url=>setLogo(url)} />
               <Input value={logo} onChange={(e) => setLogo(e.target.value)} placeholder="https://…/logo.png" className="h-9 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1.5 text-muted-foreground">Banner URL</label>
+<MediaUpload scope="profile" imagesOnly onUploaded={url=>setBanner(url)} />
               <Input value={banner} onChange={(e) => setBanner(e.target.value)} placeholder="https://…/banner.jpg" className="h-9 text-sm" />
             </div>
           </div>
@@ -1450,6 +1454,7 @@ function AgencyProfileEditor({ agency, onSaved }: { agency: any; onSaved: () => 
           <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
             <div>
               <label className="block text-[11px] text-muted-foreground mb-1">URL</label>
+<MediaUpload scope="portfolio" onUploaded={(url,mime)=>{setNewFWUrl(url);setNewFWType(mime.startsWith("video/")?"video":"image");}} />
               <Input value={newFWUrl} onChange={(e) => setNewFWUrl(e.target.value)} placeholder="https://…" className="h-8 text-xs" />
             </div>
             <div>
@@ -1536,6 +1541,7 @@ function AgencyProfileEditor({ agency, onSaved }: { agency: any; onSaved: () => 
             </div>
             <div>
               <label className="block text-[11px] text-muted-foreground mb-1">Avatar URL <span className="text-muted-foreground/50">(optional)</span></label>
+              <MediaUpload scope="profile" imagesOnly onUploaded={(url) => setNewT((p) => ({ ...p, avatar: url }))} />
               <Input value={newT.avatar || ""} onChange={(e) => setNewT((p) => ({ ...p, avatar: e.target.value }))} placeholder="https://…/photo.jpg" className="h-8 text-xs" />
             </div>
           </div>

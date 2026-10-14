@@ -61,9 +61,9 @@ export async function createPresignedUploadUrl(opts: {
 
 // ── Presigned download URL (GET) ─────────────────────────────────────────────
 // FR-25: Short-lived signed download URL (15 min default).
-export async function createPresignedDownloadUrl(objectKey: string, expiresInSeconds = 900): Promise<string> {
+export async function createPresignedDownloadUrl(objectKey: string, expiresInSeconds = 900, filename?: string): Promise<string> {
   const s3 = getS3();
-  const cmd = new GetObjectCommand({ Bucket: STORAGE_BUCKET!, Key: objectKey });
+  const cmd = new GetObjectCommand({ Bucket: STORAGE_BUCKET!, Key: objectKey, ...(filename ? { ResponseContentDisposition: `attachment; filename="delivery"; filename*=UTF-8''${encodeURIComponent(filename).replace(/['()]/g, c => "%" + c.charCodeAt(0).toString(16))}` } : {}) });
   return getSignedUrl(s3, cmd, { expiresIn: expiresInSeconds });
 }
 

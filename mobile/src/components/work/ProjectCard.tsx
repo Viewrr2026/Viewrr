@@ -110,7 +110,7 @@ export function ProjectCard({ item, viewerId, onPress }: ProjectCardProps) {
       {retainer ? (
         <View style={[styles.retainer, { borderColor: colors.border }]}>
           <Text style={[styles.retainerCopy, { color: colors.mutedForeground }]}>
-            Retainer cycles, sign-off and billing are handled on the web for now.
+            Open this project to upload and view retainer deliveries. Billing and agreement changes remain on the web.
           </Text>
           <Pressable
             onPress={() => void Linking.openURL(WEB_WORK_URL)}

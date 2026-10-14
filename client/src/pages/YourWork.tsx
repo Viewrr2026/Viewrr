@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import ProjectEstimate from "@/components/ProjectEstimate";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -1266,6 +1267,7 @@ interface SendWorkLink {
 
 function detectPlatformName(url: string): { logo: string; name: string; canEmbed: boolean; embedUrl: string } {
   try {
+    if (url.startsWith("/api/media/")) return {name:"Viewrr upload",logo:"📁",canEmbed:true,embedUrl:url};
     const u = new URL(url);
     const host = u.hostname.replace("www.", "");
     if (host.includes("youtube.com") || host === "youtu.be") {
@@ -1354,7 +1356,7 @@ function SendWorkModal({
     for (let i = 0; i < links.length; i++) {
       const { url, label } = links[i];
       if (!url.trim()) { newErrors[i] = "Please paste a link"; continue; }
-      try { new URL(url.trim()); } catch { newErrors[i] = "That doesn't look like a valid URL"; continue; }
+      try { new URL(url.trim(), window.location.origin); } catch { newErrors[i] = "That doesn't look like a valid URL"; continue; }
       if (label === "Other" && !customLabels[i]?.trim()) { newErrors[i] = "Please enter a label"; }
     }
 
@@ -1368,7 +1370,7 @@ function SendWorkModal({
         const { url, label } = links[idx];
         const info = detectPlatformName(url.trim());
         const finalLabel = label === "Other" ? (customLabels[idx]?.trim() || "Final files") : label;
-        await fetch(`/api/projects/${projectId}/deliverables`, {
+        const response = await fetch(`/api/projects/${projectId}/deliverables`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1379,6 +1381,7 @@ function SendWorkModal({
             createdBy: currentUserId,
           }),
         });
+        if (!response.ok) throw new Error((await response.json()).error || "Could not share delivery");
       }
 
       // 2. Advance to Final Delivery (stage 5) + set awaiting_payment
@@ -1407,7 +1410,7 @@ function SendWorkModal({
         <div className="flex items-center justify-between px-6 py-5 border-b border-border">
           <div>
             <h3 className="font-bold text-base">Send work to client</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">Paste links to your deliverables — {clientName} will see them with a Viewrr watermark until payment is confirmed.</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Upload your deliverables for {clientName} to review watermarked previews, or share external links.</p>
           </div>
           <button
             onClick={onClose}
@@ -1424,7 +1427,7 @@ function SendWorkModal({
           {links.map((link, i) => {
             const hasUrl = link.url.trim().length > 0;
             let platformInfo: ReturnType<typeof detectPlatformName> | null = null;
-            try { new URL(link.url.trim()); platformInfo = detectPlatformName(link.url.trim()); } catch {}
+            try { new URL(link.url.trim(), window.location.origin); platformInfo = detectPlatformName(link.url.trim()); } catch {}
 
             return (
               <div key={i} className="bg-secondary/30 rounded-2xl p-4 space-y-3 border border-border">
@@ -1437,6 +1440,7 @@ function SendWorkModal({
                   )}
                 </div>
 
+                <MediaUpload scope="delivery" projectId={projectId} onUploaded={url=>updateUrl(i,url)} />
                 {/* URL input */}
                 <input
                   type="url"
@@ -1543,7 +1547,26 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
   const planningStatus = (pw.project as any).planningStatus ?? "legacy";
   const isPlanning = ["planning_required", "plan_draft", "awaiting_client", "client_changes"].includes(planningStatus);
   // PRD-014: Don't show artificial progress % before a plan exists
-  const pct = isPlanning ? 0 : Math.round(((pw.project.currentStage + 1) / 6) * 100);
+  const hasPlan = planningStatus === "confirmed";
+  const { data: planStages, isError: stagesError } = useQuery<Array<{ id: number; title: string; status: string }>>({
+    queryKey: [`/api/projects/${pw.project.id}/stages`],
+    enabled: hasPlan && pw.project.isRetainer !== 1,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  });
+  const done = (status: string) => status === "completed" || status === "approved";
+  const completedCount = (planStages ?? []).filter(stage => done(stage.status)).length;
+  const currentPlanStage = planStages?.find(stage => ["in_progress", "awaiting_client", "changes_requested"].includes(stage.status))
+    ?? planStages?.find(stage => !done(stage.status));
+  const pct = isPlanning ? 0 : hasPlan ? (planStages?.length ? Math.round(completedCount / planStages.length * 100) : 0)
+    : Math.round(((pw.project.currentStage + 1) / STAGES.length) * 100);
+  const cardStages = hasPlan ? (planStages ?? []).map(stage => ({
+    label: stage.title, status: done(stage.status) ? "done" : stage.id === currentPlanStage?.id ? "active" : "pending",
+  })) : STAGES.map((stage, i) => ({ label: stage.label, status: stageStatus(pw.project.currentStage, i) }));
+  const progressLabel = hasPlan
+    ? !planStages ? (stagesError ? "Progress unavailable" : "Loading progress…")
+      : !planStages.length ? "No stages available" : currentPlanStage?.title ?? "All stages complete"
+    : STAGES[pw.project.currentStage]?.label;
   const isCompleted = pw.project.status === "completed";
   const visKey = `project_visibility_${pw.project.id}`;
   const [isPublic, setIsPublic] = useState(() => safeGet(visKey) !== "private");
@@ -1820,9 +1843,9 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
             <div className="mb-2">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs text-muted-foreground">
-                  {STAGES[pw.project.currentStage]?.label}
+                  {progressLabel}
                 </span>
-                <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>{pct}%</span>
+                <span className="text-xs font-semibold" style={{ color: "#FF5A1F" }}>{hasPlan && !planStages ? "—" : `${pct}%`}</span>
               </div>
               <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                 <div
@@ -1838,8 +1861,8 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
 
           {/* Stage pills */}
           <div className="flex gap-1 mt-3 flex-wrap">
-            {STAGES.map((s, i) => {
-              const status = stageStatus(pw.project.currentStage, i);
+            {cardStages.map((s, i) => {
+              const status = s.status;
               return (
                 <span
                   key={i}

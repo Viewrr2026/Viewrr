@@ -22,6 +22,18 @@ function getDb() {
   return neon(process.env.DATABASE_URL!);
 }
 
+async function validateWorkMedia(url: string, taskId: number, userId: number) {
+  const match = url.match(/^\/api\/media\/(\d+)\/([a-f0-9-]{36})\/original\.(jpg|mp4)$/);
+  if (match) {
+    const db = getDb();
+    const rows = await db`SELECT id FROM upload_objects WHERE id=${Number(match[1])} AND object_key=${`media/${match[2]}`} AND owner_user_id=${userId} AND resource_id=${taskId} AND resource_type='media_cycle' AND status='ready'`;
+    if (!rows.length) throw new Error("Upload does not belong to this work item");
+    return;
+  }
+  const parsed = new URL(url);
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Unsupported protocol");
+}
+
 function makePublicId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -1299,17 +1311,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
         }
 
         try {
-          const parsedUrl =
-            new URL(deliverableUrl);
-
-          if (
-            parsedUrl.protocol !== "http:" &&
-            parsedUrl.protocol !== "https:"
-          ) {
-            throw new Error(
-              "Unsupported protocol",
-            );
-          }
+          await validateWorkMedia(deliverableUrl, task.id, req.auth!.userId);
         } catch {
           return res.status(400).json({
             error:
@@ -1500,17 +1502,7 @@ export function registerRetainerBuilderRoutes(app: Express): void {
 
         if (deliverableUrl) {
           try {
-            const parsedUrl =
-              new URL(deliverableUrl);
-
-            if (
-              parsedUrl.protocol !== "http:" &&
-              parsedUrl.protocol !== "https:"
-            ) {
-              throw new Error(
-                "Unsupported protocol",
-              );
-            }
+            await validateWorkMedia(deliverableUrl, task.id, req.auth!.userId);
           } catch {
             return res.status(400).json({
               error:
