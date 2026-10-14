@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { X } from "lucide-react-native";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -171,6 +172,7 @@ export function Composer({
               <Text style={[styles.label, { color: colors.mutedForeground }]}>
                 LINK (OPTIONAL)
               </Text>
+              <MediaUpload scope="feed" onUploaded={url=>setLink(url)} />
               <TextInput
                 value={link}
                 onChangeText={setLink}

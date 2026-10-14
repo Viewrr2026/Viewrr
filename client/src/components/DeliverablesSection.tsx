@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -33,6 +34,7 @@ interface PlatformInfo {
 
 function detectPlatform(url: string): PlatformInfo {
   try {
+    if (url.startsWith("/api/media/")) return {name:"Viewrr upload",color:"#FF5A1F",embedUrl:url,logo:"📁"};
     const u = new URL(url);
     const host = u.hostname.replace("www.", "");
 
@@ -83,6 +85,7 @@ interface Deliverable {
   label: string;
   platform: string;
   locked?: boolean;
+  previewUrl?: string;
   url?: string;
   embedUrl?: string;
   lockReason?: "awaiting_payment";
@@ -245,7 +248,9 @@ function EmbedModal({
 
       {/* Embed + watermark */}
       <div className="flex-1 relative">
-        {!isLocked && deliverable.embedUrl ? (
+        {deliverable.previewUrl ? (
+          <div className="h-full flex items-center justify-center">{deliverable.previewUrl.endsWith('.mp4') ? <video src={deliverable.previewUrl} controls playsInline className="max-h-full max-w-full" /> : <img src={deliverable.previewUrl} alt="Watermarked delivery preview" className="max-h-full max-w-full object-contain" />}</div>
+        ) : !isLocked && deliverable.embedUrl ? (
           <iframe
             src={deliverable.embedUrl}
             className="absolute inset-0 w-full h-full"
@@ -926,7 +931,7 @@ export default function DeliverablesSection({
   function handleAdd() {
     setUrlError("");
     if (!urlInput.trim()) { setUrlError("Please paste a link"); return; }
-    try { new URL(urlInput.trim()); } catch { setUrlError("That doesn't look like a valid URL"); return; }
+    try { new URL(urlInput.trim(), window.location.origin); } catch { setUrlError("That doesn't look like a valid URL"); return; }
     if (labelInput === "Other" && !customLabel.trim()) { setUrlError("Please enter a label"); return; }
     addMutation.mutate();
   }
@@ -1045,14 +1050,15 @@ export default function DeliverablesSection({
         {/* ── Add form (freelancer only) ─────────────────────────────────────── */}
         {isFreelancer && showAdd && (
           <div className="bg-secondary/40 rounded-xl p-4 space-y-3 border border-border">
-            <p className="text-xs font-semibold text-foreground">Share a link to your work</p>
+            <p className="text-xs font-semibold text-foreground">Upload or share your work</p>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Paste a link from YouTube, Vimeo, Google Drive, Dropbox, Figma or Frame.io — the client will see it with a watermark until payment is confirmed.
+              Upload an image or video for a protected preview, or share an external link. External services control access to linked files.
             </p>
+            <MediaUpload scope="delivery" projectId={projectId} onUploaded={url=>{setUrlInput(url);setUrlError("");}} />
             <Input value={urlInput} onChange={e => { setUrlInput(e.target.value); setUrlError(""); }} placeholder="https://vimeo.com/… or drive.google.com/…" className="text-sm h-9" />
             {urlInput.trim() && (() => {
               try {
-                new URL(urlInput.trim());
+                new URL(urlInput.trim(), window.location.origin);
                 const info = detectPlatform(urlInput.trim());
                 return (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -1092,7 +1098,7 @@ export default function DeliverablesSection({
             </p>
             <p className="text-xs text-muted-foreground leading-relaxed">
               {isFreelancer
-                ? "Share a link to your work above — the client will see it with a watermark until payment is confirmed."
+                ? "Upload work above for a watermarked preview, or share an external link."
                 : `${"Stage"} ${"One"} hasn't started yet. Once your freelancer uploads work, it will appear here.`}
             </p>
           </div>

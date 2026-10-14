@@ -16,6 +16,7 @@ interface VideoEmbedProps {
 export default function VideoEmbed({ url, className = "", showBadge = true }: VideoEmbedProps) {
   const parsed = parseVideoUrl(url);
 
+  if (parsed?.provider === "upload") return <div className={className}>{url.endsWith('.jpg') ? <img src={url} alt="Uploaded portfolio work" className="w-full max-h-96 object-contain rounded-xl" /> : <video src={url} controls playsInline preload="metadata" className="w-full max-h-96 rounded-xl" />}</div>;
   if (!parsed) {
     return (
       <div className={`flex flex-col items-center justify-center bg-muted rounded-xl aspect-video gap-2 text-muted-foreground text-sm ${className}`}>

@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import ProjectEstimate from "@/components/ProjectEstimate";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -1266,6 +1267,7 @@ interface SendWorkLink {
 
 function detectPlatformName(url: string): { logo: string; name: string; canEmbed: boolean; embedUrl: string } {
   try {
+    if (url.startsWith("/api/media/")) return {name:"Viewrr upload",logo:"📁",canEmbed:true,embedUrl:url};
     const u = new URL(url);
     const host = u.hostname.replace("www.", "");
     if (host.includes("youtube.com") || host === "youtu.be") {
@@ -1354,7 +1356,7 @@ function SendWorkModal({
     for (let i = 0; i < links.length; i++) {
       const { url, label } = links[i];
       if (!url.trim()) { newErrors[i] = "Please paste a link"; continue; }
-      try { new URL(url.trim()); } catch { newErrors[i] = "That doesn't look like a valid URL"; continue; }
+      try { new URL(url.trim(), window.location.origin); } catch { newErrors[i] = "That doesn't look like a valid URL"; continue; }
       if (label === "Other" && !customLabels[i]?.trim()) { newErrors[i] = "Please enter a label"; }
     }
 
@@ -1368,7 +1370,7 @@ function SendWorkModal({
         const { url, label } = links[idx];
         const info = detectPlatformName(url.trim());
         const finalLabel = label === "Other" ? (customLabels[idx]?.trim() || "Final files") : label;
-        await fetch(`/api/projects/${projectId}/deliverables`, {
+        const response = await fetch(`/api/projects/${projectId}/deliverables`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1379,6 +1381,7 @@ function SendWorkModal({
             createdBy: currentUserId,
           }),
         });
+        if (!response.ok) throw new Error((await response.json()).error || "Could not share delivery");
       }
 
       // 2. Advance to Final Delivery (stage 5) + set awaiting_payment
@@ -1407,7 +1410,7 @@ function SendWorkModal({
         <div className="flex items-center justify-between px-6 py-5 border-b border-border">
           <div>
             <h3 className="font-bold text-base">Send work to client</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">Paste links to your deliverables — {clientName} will see them with a Viewrr watermark until payment is confirmed.</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Upload your deliverables for {clientName} to review watermarked previews, or share external links.</p>
           </div>
           <button
             onClick={onClose}
@@ -1424,7 +1427,7 @@ function SendWorkModal({
           {links.map((link, i) => {
             const hasUrl = link.url.trim().length > 0;
             let platformInfo: ReturnType<typeof detectPlatformName> | null = null;
-            try { new URL(link.url.trim()); platformInfo = detectPlatformName(link.url.trim()); } catch {}
+            try { new URL(link.url.trim(), window.location.origin); platformInfo = detectPlatformName(link.url.trim()); } catch {}
 
             return (
               <div key={i} className="bg-secondary/30 rounded-2xl p-4 space-y-3 border border-border">
@@ -1437,6 +1440,7 @@ function SendWorkModal({
                   )}
                 </div>
 
+                <MediaUpload scope="delivery" projectId={projectId} onUploaded={url=>updateUrl(i,url)} />
                 {/* URL input */}
                 <input
                   type="url"

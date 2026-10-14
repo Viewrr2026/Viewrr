@@ -1,22 +1,13 @@
+import { request } from "@/api/client";
+import { Alert } from "react-native";
 import { ExternalLink, Lock } from "lucide-react-native";
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { Deliverable } from "@/api/work";
 import { radii, spacing, typography, useTheme } from "@/theme";
 
-/**
- * One deliverable — locked or open (Decision 10).
- *
- * The gate is real and server-side: when `locked` is true the response does not
- * contain `url` or `embedUrl` at all. So a locked row has nothing to open, and
- * this component does not pretend otherwise. It does not blur, overlay or
- * watermark an asset it can see — the web CSS watermark was never protection
- * and is not reimplemented here — and there is no code path that tries to
- * reconstruct a withheld URL.
- *
- * What a locked row does instead is explain itself: what is locked, why, and
- * who unlocks it. Payment is completed on the web via Stripe; mobile never
- * mutates payment state.
+/** Originals remain payment-gated. Uploaded work can expose a separately
+ * watermarked preview; native clients resolve its short-lived URL with bearer auth.
  */
 
 type DeliverableRowProps = {
@@ -28,8 +19,8 @@ type DeliverableRowProps = {
 export function DeliverableRow({ deliverable, lockCopy }: DeliverableRowProps) {
   const { colors } = useTheme();
 
-  const target = deliverable.url ?? deliverable.embedUrl ?? null;
-  const openable = !deliverable.locked && target !== null;
+  const target = deliverable.locked ? deliverable.previewUrl ?? null : deliverable.url ?? deliverable.embedUrl ?? null;
+  const openable = target !== null;
 
   const body = (
     <>
@@ -80,7 +71,7 @@ export function DeliverableRow({ deliverable, lockCopy }: DeliverableRowProps) {
 
   return (
     <Pressable
-      onPress={() => void Linking.openURL(target)}
+      onPress={async () => {try {const url=target.startsWith("/api/media/") ? (await request<{url:string}>(target,{query:{resolve:1}})).url : target;await Linking.openURL(url);}catch {Alert.alert("Unable to open file", "Please refresh and try again.");}}}
       accessibilityRole="link"
       accessibilityLabel={`Open ${deliverable.label}`}
       style={({ pressed }) => [

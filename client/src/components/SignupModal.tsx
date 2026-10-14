@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useRef, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -1022,6 +1023,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
                         )}
                       </div>
 
+                      <MediaUpload onUploaded={url=>setPortfolioItem(index,"url",url)} />
                       {valid && item.url.trim() && (
                         <VideoEmbed url={item.url.trim()} className="rounded-lg" />
                       )}

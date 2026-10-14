@@ -1,3 +1,4 @@
+import { registerMediaRoutes } from "./media-routes";
 import { runStripeEventJob } from "./stripe-event-job";
 import { invitationEstimate } from "../shared/project-estimate";
 import { createCompatibleConnectAccount } from "./connect-account-create";
@@ -478,6 +479,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.use(requireBrowserOrigin);
   app.use(guardCustomRetainerLegacy);
   registerCustomRetainerRoutes(app);
+  registerMediaRoutes(app);
   registerProjectEstimateRoutes(app);
   // ─── Version / health ─────────────────────────────────────────────────────
   // ─── P0-07: Rate limiting ──────────────────────────────────────────────────
@@ -1376,7 +1378,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // Look up upload_objects record, verify ownership
       const sql = neon(process.env.DATABASE_URL!);
       const rows = await sql`
-        SELECT id, owner_user_id, status
+        SELECT id, owner_user_id, status, resource_type
         FROM upload_objects
         WHERE object_key = ${objectKey}
         LIMIT 1
@@ -1384,6 +1386,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       if (!rows.length) return res.status(404).json({ error: "Upload record not found" });
       const record = rows[0];
+      if (String(record.resource_type).startsWith("media_")) {
+        return res.status(409).json({ error: "This upload must finish media processing." });
+      }
       if (record.owner_user_id !== userId) {
         return res.status(403).json({ error: "Forbidden" });
       }
@@ -3781,6 +3786,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         createdAt: d.createdAt,
         // OMITTED, not blanked, when locked. Nothing client-side can
         // reconstruct them.
+        ...(d.platform === "Viewrr upload" ? { previewUrl: d.url.replace("/original.", "/preview.") } : {}),
         ...(locked
           ? { lockReason: "awaiting_payment" as const }
           : { url: d.url, embedUrl: d.embedUrl }),
@@ -3801,7 +3807,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (sendProjectAccessError(res, e)) return;
       return res.status(500).json({ error: "Failed to add deliverable" });
     }
-    const { url, label, platform, embedUrl } = req.body;
+    let { url, label, platform, embedUrl } = req.body;
+    if (typeof url === "string" && url.startsWith("/api/media/")) {
+      const match = url.match(/^\/api\/media\/(\d+)\/([a-f0-9-]+)\/original\.(jpg|mp4)$/);
+      if (!match) return res.status(400).json({error:"Invalid uploaded file."});
+      const sql = neon(process.env.DATABASE_URL!);
+      const rows = await sql`SELECT id FROM upload_objects WHERE id=${Number(match[1])} AND object_key=${`media/${match[2]}`} AND owner_user_id=${req.auth!.userId} AND resource_id=${Number(req.params.id)} AND resource_type='media_delivery' AND status='ready'`;
+      if (!rows.length) return res.status(403).json({error:"Choose a ready file uploaded for this project."});
+      platform="Viewrr upload"; embedUrl=url;
+    } else if (platform === "Viewrr upload") return res.status(400).json({error:"Invalid uploaded file."});
     if (!url || !label || !platform || !embedUrl) {
       return res.status(400).json({ error: "Missing fields" });
     }

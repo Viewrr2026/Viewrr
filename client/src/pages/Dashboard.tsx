@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { displayRole } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -388,7 +389,7 @@ function PortfolioEditor({ profileId, currentItems, currentReelUrl }: {
         <span className="text-xs text-muted-foreground">{items.filter(i => i.url.trim()).length} video{items.filter(i => i.url.trim()).length !== 1 ? "s" : ""}</span>
       </div>
       <p className="text-sm text-muted-foreground mb-5">
-        Add as many Vimeo or YouTube links as you like — they display on your public profile, hosted by Vimeo/YouTube, no upload needed.
+        Upload images or videos, or add Vimeo and YouTube links to your public portfolio.
       </p>
 
       <div className="space-y-4">
@@ -432,12 +433,13 @@ function PortfolioEditor({ profileId, currentItems, currentReelUrl }: {
                     valid ? "text-green-600 dark:text-green-400" : "text-destructive"
                   }`}>
                     {valid
-                      ? (parsed?.provider === "vimeo" ? "Vimeo ✓" : "YouTube ✓")
+                      ? (parsed?.provider === "upload" ? "Uploaded ✓" : parsed?.provider === "vimeo" ? "Vimeo ✓" : "YouTube ✓")
                       : "Invalid"}
                   </span>
                 )}
               </div>
 
+              <MediaUpload onUploaded={url=>setItem(index,"url",url)} />
               {/* Inline preview */}
               {valid && item.url.trim() && (
                 <VideoEmbed url={item.url.trim()} className="rounded-lg" />

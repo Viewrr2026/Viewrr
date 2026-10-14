@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { api } from "@/api/client";
 import { Button } from "@/components/Button";
 import { useLocalSearchParams } from "expo-router";
@@ -171,16 +172,18 @@ function DeliveryComposer({ projectId, onSaved }: { projectId: number; onSaved: 
   async function save() {
     if (busy) return;
     try {
-      const parsed = new URL(url.trim());
+      const uploaded = url.startsWith("/api/media/");
+      const parsed = new URL(url.trim(), "https://www.viewrr.co.uk");
       if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('Use a public HTTPS delivery link.');
       setBusy(true); setFeedback('');
-      await api.post(`/api/projects/${projectId}/deliverables`, { label: label.trim(), url: parsed.href, embedUrl: parsed.href, platform: 'link' });
+      await api.post(`/api/projects/${projectId}/deliverables`, { label: label.trim(), url: uploaded ? url : parsed.href, embedUrl: uploaded ? url : parsed.href, platform: uploaded ? 'Viewrr upload' : 'link' });
       setLabel(''); setUrl(''); Alert.alert('Delivery shared', 'You can now submit the stage for client review.'); onSaved();
     } catch (e) { setFeedback(e instanceof Error ? e.message : 'Could not share delivery. Try again.'); }
     finally { setBusy(false); }
   }
   const input = { color: colors.foreground, borderColor: colors.border, borderWidth: 1, borderRadius: 10, padding: 12 };
   return <Card><CardLabel>Share work</CardLabel>
+    <MediaUpload scope="delivery" projectId={projectId} onUploaded={url=>setUrl(url)} />
     <TextInput accessibilityLabel="Delivery name" placeholder="Delivery name" placeholderTextColor={colors.mutedForeground} value={label} onChangeText={setLabel} maxLength={200} style={input} />
     <TextInput accessibilityLabel="Delivery link" placeholder="https://" placeholderTextColor={colors.mutedForeground} value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={input} />
     <Text style={{ color: colors.mutedForeground }}>Share a hosted link with the right permissions. Viewrr cannot watermark or revoke access to an external link.</Text>

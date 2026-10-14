@@ -1,3 +1,4 @@
+import { uploadPublicImage } from "@/lib/uploadMedia";
 /**
  * ImageUpload — drag-and-drop / camera roll image picker with in-browser compression.
  * Outputs a base64 data URL (JPEG) capped at the given maxSizeKB.
@@ -102,7 +103,8 @@ export default function ImageUpload({
     setLoading(true);
     try {
       const { dataUrl, sizeKB } = await compressImage(file, maxWidthPx, maxSizeKB);
-      onChange(dataUrl);
+      const blob = await (await fetch(dataUrl)).blob();
+      onChange(await uploadPublicImage(new File([blob], "profile.jpg", {type:"image/jpeg"})));
       setInfo(`Compressed to ${sizeKB}KB`);
     } catch {
       setError("Could not process this image. Please try another.");

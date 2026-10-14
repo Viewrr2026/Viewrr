@@ -1,3 +1,4 @@
+import { startMediaWorker } from "./media-routes";
 import { startNotificationDeliveryWorker } from "./notification-delivery";
 import { recoverRecentProjectPayments } from "./payment-service";
 import express, { type Request, Response, NextFunction } from "express";
@@ -176,6 +177,7 @@ app.use((req, res, next) => {
     () => {
       log(`serving on port ${port}`);
       startNotificationDeliveryWorker();
+      startMediaWorker();
       void recoverRecentProjectPayments().catch(error => console.error("[payment-recovery]", error.message));
     },
   );

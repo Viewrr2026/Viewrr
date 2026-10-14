@@ -45,7 +45,7 @@ export function PostMediaView({
   }
 
   const { video } = media;
-  const label = video.provider === "vimeo" ? "Watch on Vimeo" : "Watch on YouTube";
+  const label = video.provider === "upload" ? "Watch video" : video.provider === "vimeo" ? "Watch on Vimeo" : "Watch on YouTube";
 
   return (
     <Pressable
@@ -54,7 +54,7 @@ export function PostMediaView({
       accessibilityLabel={label}
       style={({ pressed }) => [styles.videoWrap, pressed && styles.pressed]}
     >
-      {failed ? (
+      {failed || !video.thumbnailUrl ? (
         <View style={[styles.frame, styles.fallback, { backgroundColor: colors.muted }]} />
       ) : (
         <Image

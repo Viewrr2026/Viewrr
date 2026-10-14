@@ -1,3 +1,4 @@
+import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useMemo, useCallback } from "react";
 import { displayRole } from "@/lib/utils";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -499,6 +500,7 @@ function MediaInput({ onMedia }: { onMedia: (url: string, type: "image" | "video
 
   return (
     <div className="space-y-3">
+      <MediaUpload scope="feed" onUploaded={(url,mime)=>onMedia(url,mime.startsWith("video/")?"video":"image")} />
       {/* Tab switcher */}
       <div className="flex rounded-xl border border-border overflow-hidden">
         <button
