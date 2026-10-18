@@ -10,11 +10,11 @@
  */
 
 export const fontAssets = {
-  "Satoshi-400": require("../../assets/fonts/Satoshi-400.ttf"),
-  "Satoshi-500": require("../../assets/fonts/Satoshi-500.ttf"),
-  "Satoshi-700": require("../../assets/fonts/Satoshi-700.ttf"),
-  "Satoshi-900": require("../../assets/fonts/Satoshi-900.ttf"),
-  "ClashDisplay-500": require("../../assets/fonts/ClashDisplay-500.ttf"),
-  "ClashDisplay-600": require("../../assets/fonts/ClashDisplay-600.ttf"),
-  "ClashDisplay-700": require("../../assets/fonts/ClashDisplay-700.ttf"),
+  "Satoshi-400": require("../../assets/fonts/Satoshi-Regular.ttf"),
+  "Satoshi-500": require("../../assets/fonts/Satoshi-Medium.ttf"),
+  "Satoshi-700": require("../../assets/fonts/Satoshi-Bold.ttf"),
+  "Satoshi-900": require("../../assets/fonts/Satoshi-Black.ttf"),
+  "ClashDisplay-500": require("../../assets/fonts/ClashDisplay-Medium.ttf"),
+  "ClashDisplay-600": require("../../assets/fonts/ClashDisplay-Semibold.ttf"),
+  "ClashDisplay-700": require("../../assets/fonts/ClashDisplay-Bold.ttf"),
 } as const;

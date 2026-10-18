@@ -138,13 +138,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         // Satoshi + Clash Display — the same Fontshare families the website
         // loads in client/index.html.
         fonts: [
-          "./assets/fonts/Satoshi-400.ttf",
-          "./assets/fonts/Satoshi-500.ttf",
-          "./assets/fonts/Satoshi-700.ttf",
-          "./assets/fonts/Satoshi-900.ttf",
-          "./assets/fonts/ClashDisplay-500.ttf",
-          "./assets/fonts/ClashDisplay-600.ttf",
-          "./assets/fonts/ClashDisplay-700.ttf",
+          "./assets/fonts/Satoshi-Regular.ttf",
+          "./assets/fonts/Satoshi-Medium.ttf",
+          "./assets/fonts/Satoshi-Bold.ttf",
+          "./assets/fonts/Satoshi-Black.ttf",
+          "./assets/fonts/ClashDisplay-Medium.ttf",
+          "./assets/fonts/ClashDisplay-Semibold.ttf",
+          "./assets/fonts/ClashDisplay-Bold.ttf",
         ],
       },
     ],

@@ -1,3 +1,4 @@
+import { runDeletionCleanup, DELETE_AUTHORED_REVIEWS } from "./deletion-state";
 // server/services/privacy-service.ts
 // PRD-021 WS-B: Data export and account deletion/anonymisation
 
@@ -285,13 +286,13 @@ export const RETENTION_SCHEDULE: RetentionEntry[] = [
     detail: "Content replaced with [message deleted]. The row is kept so the other party's thread is not corrupted." },
   { category: "Direct messages you received",
     action: "retained", periodDays: 2190,
-    detail: "Belongs to the other party as well; kept as their record. Your identity in it is already anonymised." },
+    detail: "Belongs to the other party as well; kept as their record. Your account identifier is removed from display, but text written by other people may still identify you." },
   { category: "Briefs, interests, project titles and stage history",
     action: "anonymised", periodDays: 0,
     detail: "Your display name is replaced everywhere it was denormalised. The work record itself is kept for the counterparty." },
   { category: "Reviews you wrote",
-    action: "anonymised", periodDays: 0,
-    detail: "Reviewer name/avatar anonymised. The rating and comment stay, because deleting them would silently rewrite another user's public rating." },
+    action: "deleted", periodDays: 0,
+    detail: "Authored reviews are deleted and affected profile ratings are recalculated." },
   { category: "Invoices and invoice templates",
     action: "retained", periodDays: 2190,
     detail: "UK statutory retention: HMRC requires business records for ~6 years. Client name/email on invoices are anonymised; the financial figures, invoice numbers and dates are NOT erasable." },
@@ -303,7 +304,7 @@ export const RETENTION_SCHEDULE: RetentionEntry[] = [
     detail: "Billing record. Retained; an active subscription is cancelled first." },
   { category: "Retainer agreements and cycles",
     action: "retained", periodDays: 2190,
-    detail: "Contractual records between two parties. Retained; your identifiers within them are anonymised." },
+    detail: "Contractual records between two parties. Account display identifiers are removed; contract content can still identify the parties and requires retention review." },
   { category: "Terms and policy acceptances",
     action: "retained", periodDays: 2190,
     detail: "Legal evidence of consent — this is the record that proves what you agreed to. Retained; IP address and user agent are deleted immediately." },
@@ -315,7 +316,7 @@ export const RETENTION_SCHEDULE: RetentionEntry[] = [
     detail: "Append-only. Records that an action was taken, by whom and when. Never rewritten." },
   { category: "Uploaded file metadata",
     action: "deleted", periodDays: 0,
-    detail: "Object records marked deleted and original filenames cleared. Object bytes are purged by the storage lifecycle rule within 30 days." },
+    detail: "Filenames are cleared and access revoked. Personal profile, portfolio, feed and message uploads enter a retryable storage purge queue. Shared project and retainer delivery files require a documented retention review; they are not covered by an automatic bucket lifecycle rule." },
   { category: "Notification history and preferences",
     action: "deleted", periodDays: 0,
     detail: "Your notification rows and both preference records deleted; your name is scrubbed from other users' notification rows." },
@@ -611,13 +612,9 @@ export async function getDeletionStatus(userId: number): Promise<DeletionStatus>
 
 /** Does this relation exist? Used for tables that may predate/postdate a migration. */
 async function tableExists(name: string): Promise<boolean> {
-  try {
-    const sql = neon(process.env.DATABASE_URL!);
-    const rows = await sql`SELECT to_regclass(${`public.${name}`}) AS reg`;
-    return Boolean(rows[0]?.reg);
-  } catch {
-    return false;
-  }
+  const sql = neon(process.env.DATABASE_URL!);
+  const rows = await sql`SELECT to_regclass(${`public.${name}`}) AS reg`;
+  return Boolean(rows[0]?.reg);
 }
 
 export type AnonymisationReport = {
@@ -656,13 +653,16 @@ export async function anonymiseUserAccount(userId: number): Promise<Anonymisatio
   const now = new Date().toISOString();
   const report: AnonymisationReport = { userId, completedSteps: [], skippedSteps: [], failedSteps: [] };
 
-  // Capture the real email BEFORE step 1 overwrites it — needed to invalidate
-  // outstanding verification codes, which are keyed by a hash of the address.
-  let originalEmail = "";
-  try {
-    const rows = await sql`SELECT email FROM users WHERE id = ${userId} LIMIT 1`;
-    originalEmail = String(rows[0]?.email ?? "");
-  } catch { /* non-fatal: only used to invalidate verification codes */ }
+  // Invalidate email-bound codes BEFORE erasing the only copy of the address.
+  // A database failure here must stop the run so the next attempt can recover.
+  const identity = await sql`SELECT email FROM users WHERE id = ${userId} LIMIT 1`;
+  if (!identity.length) throw new Error("User not found");
+  if (await tableExists("verification_codes")) {
+    const { createHash } = await import("node:crypto");
+    const destinationHash = createHash("sha256").update(String(identity[0].email).toLowerCase().trim()).digest("hex");
+    await sql`UPDATE verification_codes SET invalidated_at = ${now}
+      WHERE destination_hash = ${destinationHash} AND used_at IS NULL AND invalidated_at IS NULL`;
+  }
 
   // 0. Revoke all active sessions FIRST — single bulk UPDATE, no N+1.
   //    Deliberately before anything else: the account must stop being usable
@@ -827,10 +827,9 @@ export async function anonymiseUserAccount(userId: number): Promise<Anonymisatio
 
     // ── Reviews ─────────────────────────────────────────────────────────────
     { name: "reviews", run: async () => {
-      // MISSED BEFORE — reviews.client_name is a plaintext reviewer name.
-      // Rating and comment are retained deliberately: deleting them would
-      // silently rewrite the reviewed freelancer's public rating.
-      await sql`UPDATE reviews SET client_name = ${anonName}, client_avatar = NULL WHERE client_id = ${userId}`;
+      // Reviews are user-generated content, not financial records. Recompute
+      // affected profile scores in the same statement, excluding removed rows.
+      await sql.query(DELETE_AUTHORED_REVIEWS, [userId]);
     }},
 
     // ── Agencies ────────────────────────────────────────────────────────────
@@ -877,12 +876,15 @@ export async function anonymiseUserAccount(userId: number): Promise<Anonymisatio
 
     // ── Uploads ─────────────────────────────────────────────────────────────
     { name: "upload_objects", run: async () => {
-      // MISSED BEFORE — original_filename is user-supplied and frequently
-      // contains a real name ("Jane-Smith-CV.pdf").
-      await sql`
-        UPDATE upload_objects SET status = 'deleted', original_filename = NULL
-        WHERE owner_user_id = ${userId}
-      `;
+      // Only personal uploads enter automated physical erasure. Shared delivery
+      // evidence needs an explicit retention decision; never sweep old tombstones.
+      await sql`UPDATE upload_objects SET original_filename = NULL,
+        status = CASE
+          WHEN status IN ('delete_pending','delete_processing','purged') THEN status
+          WHEN resource_type IN ('media_feed','media_profile','media_portfolio','profile','portfolio','message') THEN 'delete_pending'
+          ELSE 'deleted' END,
+        confirmed_at = CASE WHEN status IN ('delete_pending','delete_processing','purged') THEN confirmed_at ELSE ${now} END
+        WHERE owner_user_id = ${userId}`;
     }},
 
     // ── Raw-SQL-only tables, invisible to Drizzle ───────────────────────────
@@ -890,19 +892,6 @@ export async function anonymiseUserAccount(userId: number): Promise<Anonymisatio
       // MISSED BEFORE. Live tokens for a deleted account are an account-takeover
       // vector: the address is no longer controlled by the person.
       await sql`DELETE FROM password_reset_tokens WHERE user_id = ${userId}`;
-    }},
-    { name: "verification_codes", optional: "verification_codes", run: async () => {
-      // Destination is stored only as a SHA-256 hash, so there is no plaintext
-      // to scrub — but live codes must not survive the account. The hash is
-      // computed in Node (matching verification-service) rather than in SQL so
-      // this does not depend on the pgcrypto extension being installed.
-      const { createHash } = await import("node:crypto");
-      const destinationHash = createHash("sha256").update(originalEmail.toLowerCase().trim()).digest("hex");
-      await sql`
-        UPDATE verification_codes SET invalidated_at = ${now}
-        WHERE destination_hash = ${destinationHash}
-          AND used_at IS NULL AND invalidated_at IS NULL
-      `;
     }},
     { name: "terms_acceptances", optional: "terms_acceptances", run: async () => {
       // MISSED BEFORE. The acceptance itself is legal evidence and is RETAINED;
@@ -951,46 +940,14 @@ export async function anonymiseUserAccount(userId: number): Promise<Anonymisatio
     { name: "data_export_requests", run: async () => {
       await sql`DELETE FROM data_export_requests WHERE user_id = ${userId}`;
     }},
-    { name: "account_deletion_requests", run: async () => {
-      await sql`
-        UPDATE account_deletion_requests
-        SET status = 'anonymised', anonymised_at = ${now}
-        WHERE user_id = ${userId} AND status IN ('pending', 'processing')
-      `;
-      // `state` only exists after migration 0006 — separate statement so a
-      // pre-migration database still closes the request out above.
-      try {
-        await sql`
-          UPDATE account_deletion_requests
-          SET state = 'anonymised'
-          WHERE user_id = ${userId} AND state IN ('pending', 'scheduled', 'processing')
-        `;
-      } catch { /* pre-0006 database */ }
-    }},
   ];
 
-  for (const step of steps) {
-    if (step.optional && !(await tableExists(step.optional))) {
-      report.skippedSteps.push({ step: step.name, why: `relation ${step.optional} does not exist` });
-      continue;
-    }
-    try {
-      await step.run();
-      report.completedSteps.push(step.name);
-    } catch (e: any) {
-      report.failedSteps.push({ step: step.name, error: e?.message ?? String(e) });
-      console.error(`[privacy] anonymise step FAILED for user ${userId}: ${step.name}:`, e?.message);
-    }
-  }
-
-  if (report.failedSteps.length > 0) {
-    const err: any = new Error(
-      `Anonymisation incomplete: ${report.failedSteps.length} step(s) failed (${report.failedSteps.map((f) => f.step).join(", ")}). The account identity has been anonymised; re-run deletion to finish. Every step is idempotent.`,
-    );
-    err.report = report;
-    err.partial = true;
-    throw err;
-  }
+  await runDeletionCleanup(steps, report, tableExists, async () => {
+    await sql`UPDATE account_deletion_requests
+      SET status='anonymised', state='anonymised', anonymised_at=${now}
+      WHERE user_id=${userId} AND state IN ('pending','scheduled','processing')`;
+    report.completedSteps.push("account_deletion_requests");
+  });
 
   return report;
 }

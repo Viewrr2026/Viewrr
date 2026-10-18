@@ -148,16 +148,14 @@ export async function isBlockedEitherWay(a: number, b: number): Promise<boolean>
 
 /**
  * Non-throwing variant for fire-and-forget paths (notify()).
- * On error it returns `false` (do not suppress) — suppressing every
- * notification because the DB hiccuped would be worse than a leaked one, and
- * the row itself is still written by the caller.
+ * On error it returns `true` so a failed lookup cannot bypass a block.
  */
 export async function isBlockedEitherWaySafe(a: number, b: number): Promise<boolean> {
   try {
     return await isBlockedEitherWay(a, b);
   } catch (e: any) {
-    console.warn("[trust] block check failed, allowing through:", e?.message);
-    return false;
+    console.warn("[trust] block check failed; interaction suppressed:", e?.message);
+    return true;
   }
 }
 

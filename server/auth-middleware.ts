@@ -206,6 +206,12 @@ export async function requireAuth(
     return;
   }
 
+  if (resolved.accountStatus !== "active") {
+    clearSessionCookie(res);
+    res.status(401).json({ error: "This account is no longer active." });
+    return;
+  }
+
   req.auth = resolved.auth;
   next();
 }
@@ -223,17 +229,19 @@ export async function requireAuth(
  */
 export async function optionalAuth(
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
     const resolved = await resolveAuth(req);
-    if (resolved.kind === "authenticated" && resolved.accountStatus !== "suspended") {
+    if (resolved.kind === "authenticated" && resolved.accountStatus === "active") {
       req.auth = resolved.auth;
     }
   } catch (e: any) {
-    // Never let an auth lookup failure break a public read path.
+    // Do not silently discard the viewer's block rules during a DB outage.
     console.warn("[auth] optionalAuth resolution failed:", e?.message ?? "unknown error");
+    res.status(503).json({ error: "Unable to check your session. Please retry." });
+    return;
   }
   next();
 }

@@ -1,3 +1,6 @@
+import { recordConfirmedDeletion } from "./services/deletion-state";
+import { retainerPool as deletionDb } from "./retainer-v1-db";
+import { filterBlockedAuthors, requireOwnUserParam } from "./privacy-guards";
 import { verifySignupEmail } from "./signup-verification";
 import { registerMediaRoutes } from "./media-routes";
 import { runStripeEventJob } from "./stripe-event-job";
@@ -234,33 +237,7 @@ async function sendVerificationEmail(rawEmail: string): Promise<{ ok: boolean; d
   }
 }
 
-// ─── PRD 1 (contract §F): per-viewer block filtering ─────────────────────────
-// Removes rows authored by anyone the viewer has blocked, and anyone who has
-// blocked the viewer (symmetric invisibility, Decision 2).
-//
-// Applied in the route layer, never inside a cached/shared query result, so the
-// anonymous feed cache can stay shared. Fails OPEN on error: showing content is
-// a smaller failure than an empty feed.
-async function filterBlockedAuthors<T>(
-  viewerUserId: number,
-  rows: T[],
-  getAuthorId: (row: T) => number | null | undefined,
-): Promise<T[]> {
-  if (!rows?.length) return rows;
-  try {
-    const blocked = await getBlockedUserIds(viewerUserId);
-    if (!blocked.length) return rows;
-    const blockedSet = new Set(blocked);
-    return rows.filter((row) => {
-      const authorId = getAuthorId(row);
-      return !(typeof authorId === "number" && blockedSet.has(authorId));
-    });
-  } catch (e: any) {
-    console.warn("[blocks] filterBlockedAuthors failed, returning unfiltered:", e?.message);
-    return rows;
-  }
-}
-
+// Block filtering is shared by public discovery and private collections.
 // ─── PRD 1 wave 4: has the 0006 targeting column landed yet? ─────────────────
 // `notifications.target_type` / `target_id` are created by migration 0006,
 // which has NOT been applied to production. This branch may therefore boot
@@ -351,9 +328,8 @@ async function notify(
       }
     }
   } catch (blockErr: any) {
-    // Fail OPEN: a trust-service outage must not silently stop all platform
-    // notifications. Logged so it is visible rather than invisible.
-    console.warn("[notify] block check failed, delivering anyway:", blockErr?.message);
+    console.warn("[notify] block check failed; notification suppressed:", blockErr?.message);
+    return;
   }
 
   // 1. Resolve structured targeting (Decision 14 — ADDITIVE).
@@ -1408,6 +1384,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.json({ ok: true, objectId: record.id, alreadyConfirmed: true });
       }
 
+      if (record.status !== "pending") return res.status(409).json({ error: "This upload is no longer available." });
+
       // FR-24: Verify object actually exists in R2
       const existence = await verifyObjectExists(objectKey);
       if (!existence.exists) {
@@ -1415,13 +1393,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
 
       const now = new Date().toISOString();
-      await sql`
+      const confirmed = await sql`
         UPDATE upload_objects
         SET status = 'ready',
             confirmed_at = ${now},
             size_bytes = ${existence.size ?? null}
-        WHERE id = ${record.id}
+        WHERE id = ${record.id} AND status = 'pending'
+          AND EXISTS (SELECT 1 FROM users WHERE id = ${userId} AND account_status = 'active')
+        RETURNING id
       `;
+      if (!confirmed.length) return res.status(409).json({ error: "This upload is no longer available." });
 
       return res.json({ ok: true, objectId: record.id });
     } catch (e: any) {
@@ -1505,14 +1486,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
     // ─── Profiles ──────────────────────────────────────────────────────────────
-  app.get("/api/profiles", async (req, res) => {
+  app.get("/api/profiles", optionalAuth, async (req, res) => {
+    res.set("Cache-Control", "private, no-store");
     const { specialism, availability, search, surface } = req.query as Record<string, string>;
-    const profiles = await storage.getProfiles({
+    let profiles = await storage.getProfiles({
       specialism,
       availability,
       search,
       boostPro: surface !== "ios",
     });
+    if (req.auth) profiles = await filterBlockedAuthors(req.auth.userId, profiles, p => p.profile.userId);
     // PRD-018 E5: override stale projectCount with DB-authoritative completed-project count
     const userIds = profiles.map((p: any) => p.profile.userId as number);
     const countMap = await storage.getCompletedProjectCountsBulk(userIds);
@@ -1524,8 +1507,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     })));
   });
 
-  app.get("/api/profiles/featured", async (req, res) => {
-    const profiles = await storage.getFeaturedProfiles();
+  app.get("/api/profiles/featured", optionalAuth, async (req, res) => {
+    res.set("Cache-Control", "private, no-store");
+    let profiles = await storage.getFeaturedProfiles();
+    if (req.auth) profiles = await filterBlockedAuthors(req.auth.userId, profiles, p => p.profile.userId);
     // PRD-018 E5: override stale projectCount with DB-authoritative count
     const userIds = profiles.map((p: any) => p.profile.userId as number);
     const countMap = await storage.getCompletedProjectCountsBulk(userIds);
@@ -1541,10 +1526,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Profile Views ───────────────────────────────────────────────────────
   // Called by ProfilePage on load — records one view per viewer per 24h
   // PRD-018 E3: rate limited to prevent view inflation; unauthenticated (public profiles)
-  app.post("/api/profile-views/:id", profileViewLimiter, async (req, res) => {
+  app.post("/api/profile-views/:id", optionalAuth, profileViewLimiter, async (req, res) => {
     try {
       const rawId = Number(req.params.id);
-      const viewerId: number | null = req.body.viewerId ?? null;
+      const viewerId: number | null = req.auth?.userId ?? null;
       const viewerIp: string = (req.headers["x-forwarded-for"] as string || req.socket.remoteAddress || "unknown").split(",")[0].trim();
 
       // Resolve to a user ID — the URL may carry either a profile ID or a user ID.
@@ -1565,6 +1550,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         }
         profileOwnerId = userRow.id;
       }
+
+      if (viewerId && await isBlockedEitherWay(viewerId, profileOwnerId)) return res.json({ ok: true, notFound: true });
 
       // Don't count someone viewing their own profile
       if (viewerId && viewerId === profileOwnerId) return res.json({ ok: true, self: true });
@@ -1606,7 +1593,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Total view count for a freelancer's dashboard
-  app.get("/api/profile-views/:userId/count", async (req, res) => {
+  app.get("/api/profile-views/:userId/count", requireAuth, requireOwnUserParam("userId"), async (req, res) => {
     try {
       const count = await storage.getProfileViewCount(Number(req.params.userId));
       res.json({ count });
@@ -1616,7 +1603,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // 30-day history (for the sparkline chart)
-  app.get("/api/profile-views/:userId/history", async (req, res) => {
+  app.get("/api/profile-views/:userId/history", requireAuth, requireOwnUserParam("userId"), async (req, res) => {
     try {
       const days = Math.min(Number(req.query.days) || 30, 90);
       const history = await storage.getProfileViewHistory(Number(req.params.userId), days);
@@ -1627,7 +1614,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // Quick lookup: get or create a profile by user ID (used by ReviewModal)
-  app.get("/api/profile-by-user/:userId", async (req, res) => {
+  app.get("/api/profile-by-user/:userId", optionalAuth, async (req, res) => {
+    res.set("Cache-Control", "private, no-store");
     try {
       const userId = Number(req.params.userId);
       const user = await storage.getUser(userId);
@@ -1635,6 +1623,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(404).json({ error: "Profile not found" });
       }
 
+      if (req.auth && await isBlockedEitherWay(req.auth.userId, userId)) return res.status(404).json({ error: "Profile not found" });
       const profile = await storage.getOrCreateProfileForUser(userId);
       // PRD-018 E1: strip internal accreditation fields
       res.json(profile ? safePublicProfile(profile) : profile);
@@ -1643,7 +1632,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.get("/api/profiles/:id", async (req, res) => {
+  app.get("/api/profiles/:id", optionalAuth, async (req, res) => {
+    res.set("Cache-Control", "private, no-store");
     const idNum = Number(req.params.id);
     // 1. Try by profile ID first
     let pw = await storage.getProfile(idNum);
@@ -1656,6 +1646,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     if (pw && (pw.user.accountStatus !== "active" || pw.user.isAdmin || pw.user.role !== "freelancer")) {
       return res.status(404).json({ error: "Profile not found" });
     }
+
+    if (req.auth && await isBlockedEitherWay(req.auth.userId, pw?.user.id ?? idNum)) return res.status(404).json({ error: "Profile not found" });
 
     // 3. If still nothing — check if it's a valid public user
     // (e.g. an active client with no profile row).
@@ -1691,7 +1683,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         reviews: [],
       });
     }
-    const reviews = await storage.getReviewsByProfile(pw.profile.id);
+    let reviews = await storage.getReviewsByProfile(pw.profile.id);
+    if (req.auth) reviews = await filterBlockedAuthors(req.auth.userId, reviews, review => review.clientId);
     // PRD-018 E5 (projectCount): override stale profiles.project_count with a DB-authoritative
     // count of projects WHERE freelancer_id = profile.userId AND status = 'completed'.
     // This column was always 0 (never incremented by routes). Now it reflects real completions.
@@ -2135,8 +2128,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   // ─── Saved ────────────────────────────────────────────────────────────────
-  app.get("/api/saved/:clientId", async (req, res) => {
-    res.json(await storage.getSaved(Number(req.params.clientId)));
+  app.get("/api/saved/:clientId", requireAuth, requireOwnUserParam("clientId"), async (req, res) => {
+    const saved = await filterBlockedAuthors(req.auth!.userId, await storage.getSaved(req.auth!.userId), p => p.profile.userId);
+    res.json(saved.filter(p => p.user.accountStatus === "active" && !p.user.isAdmin && p.user.role === "freelancer").map(p => ({ profile: safePublicProfile(p.profile), user: safePublicUser(p.user) })));
   });
 
   // PRD-018 A4: requireAuth + derive clientId from session
@@ -2153,11 +2147,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(404).json({ error: "Profile not found" });
     }
 
+    if (await isBlockedEitherWay(clientId, target.user.id)) return res.status(404).json({ error: "Profile not found" });
     const saved = await storage.toggleSaved(clientId, profileIdNum);
     res.json({ saved });
   });
 
-  app.get("/api/saved/:clientId/:profileId", async (req, res) => {
+  app.get("/api/saved/:clientId/:profileId", requireAuth, requireOwnUserParam("clientId"), async (req, res) => {
     const saved = await storage.isSaved(Number(req.params.clientId), Number(req.params.profileId));
     res.json({ saved });
   });
@@ -2197,7 +2192,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     });
 
     // If no exact matches, return all sorted by rating
-    const results = profiles.length > 0 ? profiles : await storage.getProfiles({});
+    const results = await filterBlockedAuthors(req.auth!.userId, profiles.length > 0 ? profiles : await storage.getProfiles({}), p => p.profile.userId);
+    res.set("Cache-Control", "private, no-store");
 
     const summary = detectedSpecialism
       ? `Found ${results.length} ${detectedSpecialism.toLowerCase()}${results.length !== 1 ? "s" : ""} matching your brief.`
@@ -2207,15 +2203,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       summary,
       detectedSpecialism,
       budget,
-      results: results.slice(0, 6),
+      results: results.slice(0, 6).map(p => ({ profile: safePublicProfile(p.profile), user: safePublicUser(p.user) })),
     });
   });
 
   // ─── Users ────────────────────────────────────────────────────────────────
   // Search users for recipient picker — filtered to server-side connections
-  app.get("/api/users/search", async (req, res) => {
+  app.get("/api/users/search", requireAuth, async (req, res) => {
     const q = String(req.query.q || "").trim();
-    const excludeId = Number(req.query.excludeId) || 0;
+    const excludeId = req.auth!.userId;
+    res.set("Cache-Control", "private, no-store");
     if (q.length < 2) return res.json([]);
     // Always use server-side connection list (DB-backed, accurate)
     let allowedIds: number[] | undefined;
@@ -2223,7 +2220,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       allowedIds = await storage.getConnectionUserIds(excludeId);
       // If no connections, return empty (only search your connections)
     }
-    const results = await storage.searchUsers(q, excludeId, allowedIds);
+    const results = await filterBlockedAuthors(excludeId, await storage.searchUsers(q, excludeId, allowedIds), user => user.id);
     res.json(results);
   });
 
@@ -7187,7 +7184,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const sqlClient = neon(process.env.DATABASE_URL!);
 
     const rows = await sqlClient`
-      SELECT id, user_id, state, status, scheduled_for
+      SELECT id, user_id, state, status, scheduled_for,
+        (SELECT account_status FROM users WHERE id = user_id) AS account_status
       FROM account_deletion_requests
       WHERE id = ${requestId} AND user_id = ${userId}
       LIMIT 1
@@ -7202,7 +7200,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     // anonymisation service is idempotent, so allow that SAME durable job to
     // retry and finish the remaining cleanup.
     const recoveringPartial =
-      currentState === "anonymised" && attemptCount > 1;
+      rows[0].account_status === "anonymised" || (currentState === "anonymised" && attemptCount > 1);
 
     if (
       currentState !== "scheduled" &&
@@ -7211,6 +7209,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     ) {
       return;
     }
+
+    if (currentState === "anonymised" && attemptCount <= 1) return;
 
     // scheduled -> processing is an atomic claim. A request already in
     // processing is treated as recovery from an interrupted worker run.
@@ -7498,20 +7498,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // completes automatically once the blockers clear. Status is 202
       // (Accepted, not yet acted on), never 409.
       const assessment = await checkDeletionBlockers(userId);
-      const sql = neon(process.env.DATABASE_URL!);
+      const requestId = await recordConfirmedDeletion(deletionDb(), userId, assessment);
+      // The hourly scanner is the durable fallback even if enqueueing fails.
+      // Delay the backup job to avoid racing the immediate cleanup below.
+      try {
+        await enqueueJob("process_account_deletion", { userId, requestId }, `account-deletion:${requestId}:confirmed`, 15 * 60_000);
+      } catch {
+        console.error("[confirm-deletion] Queue unavailable; confirmed request remains recoverable by scanner", requestId);
+      }
       if (assessment.state === "scheduled") {
-        try {
-          await sql`
-            UPDATE account_deletion_requests
-            SET state = 'scheduled',
-                status = 'scheduled',
-                scheduled_for = ${assessment.scheduledFor},
-                deferred_reason = ${assessment.blockers.map((b) => b.code).join(",")}
-            WHERE user_id = ${userId} AND COALESCE(state, status) IN ('pending', 'scheduled', 'processing')
-          `;
-        } catch (updErr: any) {
-          console.warn("[confirm-deletion] Could not record deferral (pre-0006?):", updErr?.message);
-        }
         return res.status(202).json({
           ok: true,
           state: "scheduled",
@@ -7523,18 +7518,6 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         });
       }
 
-      // Mark in-progress, then anonymise.
-      await sql`
-        UPDATE account_deletion_requests
-        SET status = 'processing'
-        WHERE user_id = ${userId} AND status IN ('pending', 'scheduled')
-      `;
-
-      // NOTE: this is the call that has been FAILING IN PRODUCTION. It wrote
-      // NULL to users.password_algo, which is text NOT NULL, so every
-      // confirm-deletion threw a not-null violation and no account could be
-      // deleted. privacy-service now writes a sentinel instead. The function is
-      // idempotent, so a retry after a partial failure is safe.
       const report = await anonymiseUserAccount(userId);
       if (report.skippedSteps.length) {
         console.warn(`[confirm-deletion] user ${userId}: skipped steps`, report.skippedSteps);
@@ -7545,7 +7528,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.json({
         ok: true,
         state: "anonymised",
-        message: "Your account has been anonymised. Financial and legal records we are required to keep (invoices, payments, terms acceptances) are retained for up to 6 years and no longer identify you. We are sorry to see you go.",
+        message: "Your account identity and personal content have been removed. Personal uploaded files are queued for storage erasure. Financial, contractual and safety records subject to retention review may still identify you; see the retention schedule.",
       });
     } catch (e: any) {
       // A partial anonymisation must be loud, not silent — the user believes
@@ -7553,12 +7536,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (e?.partial) {
         console.error(`[confirm-deletion] PARTIAL anonymisation for user ${req.auth!.userId}:`, e.report?.failedSteps);
         return res.status(500).json({
-          error: "Your account was partly anonymised but some records could not be updated. Our team has been alerted and will complete it. Please contact support if you do not hear back.",
+          error: "Your deletion is confirmed, but some cleanup is still pending. The saved request will retry automatically. Contact support@viewrr.co.uk if you need an update.",
           code: "PARTIAL_ANONYMISATION",
         });
       }
       console.error("[confirm-deletion] Failed:", e?.message);
-      res.status(500).json({ error: "Deletion failed. Nothing has been changed. Please try again or contact support." });
+      res.status(500).json({ error: "We could not complete deletion. A confirmed request remains saved for retry; if confirmation was not saved, please try again. Contact support@viewrr.co.uk for help." });
     }
   });
 
