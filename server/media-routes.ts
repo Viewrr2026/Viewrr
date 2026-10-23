@@ -1,3 +1,4 @@
+import { finishMediaWrite, purgeNextPersonalUpload } from "./media-erasure";
 import type { Express } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
@@ -11,7 +12,7 @@ import { requireAuth } from './auth-middleware';
 import { retainerPool } from './retainer-v1-db';
 import { assertProjectParty } from './project-access';
 import { hasVerifiedProjectPayment } from './project-payment-verification';
-import { STORAGE_CONFIGURED, putPrivateObject, readPrivateObject, createPresignedDownloadUrl } from './object-storage';
+import { STORAGE_CONFIGURED, putPrivateObject, readPrivateObject, createPresignedDownloadUrl, deleteObject } from './object-storage';
 import { renderRetainerPreview } from './retainer-v1-media';
 import { PUBLIC_MEDIA_SCOPES, MEDIA_MIMES, canReadMedia, mediaPath } from './media-policy';
 const upload = multer({ dest: tmpdir(), limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 0 }, fileFilter: (_req, file, cb) => cb(null, MEDIA_MIMES.has(file.mimetype)) });
@@ -45,9 +46,12 @@ export function registerMediaRoutes(app: Express) {
           if (scope === 'profile' && (!file.mimetype.startsWith('image/') || file.size > 5 * 1024 * 1024)) fail(400, 'Choose a profile image under 5 MB.');
           if (!['delivery','cycle'].includes(scope) && file.size > 50 * 1024 * 1024) fail(400, 'Public media must be under 50 MB.');
           const key = `media/${randomUUID()}`;
+          // Persist the key before writing bytes, so an interrupted upload is recoverable.
+          const row = (await db().query(`INSERT INTO upload_objects (owner_user_id,object_key,resource_type,resource_id,mime_type,original_filename,size_bytes,status,upload_intent_expires_at,created_at) SELECT $1,$2,$3,$4,$5,$6,$7,'media_uploading',$8,$8 FROM users WHERE id=$1 AND account_status='active' RETURNING *`, [req.auth!.userId,key,`media_${scope}`,['delivery','cycle'].includes(scope) ? resourceId : null,file.mimetype,file.originalname.replace(/[\x00-\x1f]/g,'').slice(0,180),file.size,new Date().toISOString()])).rows[0];
+          if (!row) fail(403, 'This account is no longer active.');
           await putPrivateObject(key, createReadStream(file.path), file.mimetype, file.size);
-          const row = (await db().query(`INSERT INTO upload_objects (owner_user_id,object_key,resource_type,resource_id,mime_type,original_filename,size_bytes,status,upload_intent_expires_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'media_queued',$8,$8) RETURNING *`, [req.auth!.userId,key,`media_${scope}`,['delivery','cycle'].includes(scope) ? resourceId : null,file.mimetype,file.originalname.replace(/[\x00-\x1f]/g,'').slice(0,180),file.size,new Date().toISOString()])).rows[0];
-          res.status(202).json({id:row.id,status:row.status});
+          if (!(await finishMediaWrite(db(), row.id, 'media_uploading', 'media_queued'))) fail(409, 'This upload is no longer available.');
+          res.status(202).json({id:row.id,status:'media_queued'});
         } catch(e) { error(res,e); } finally { await rm(file.path,{force:true}); }
       });
     } catch(e) { error(res,e); }
@@ -68,7 +72,7 @@ export function registerMediaRoutes(app: Express) {
   });
   app.get('/api/media/:id/:token/:variant', async (req,res,next) => {
     try {
-      const row=(await db().query("SELECT * FROM upload_objects WHERE id=$1 AND status='ready' AND resource_type LIKE 'media_%'",[req.params.id])).rows[0];
+      const row=(await db().query("SELECT * FROM upload_objects WHERE id=$1 AND status='ready' AND resource_type LIKE 'media_%' AND (resource_type NOT IN ('media_feed','media_profile','media_portfolio') OR EXISTS (SELECT 1 FROM users WHERE users.id=owner_user_id AND account_status='active'))",[req.params.id])).rows[0];
       if (!row || row.object_key !== `media/${req.params.token}`) fail(404,'Media not found.');
       const preview=String(req.params.variant).startsWith('preview.'), scope=row.resource_type.slice(6);
       const serve = async () => {
@@ -105,9 +109,9 @@ export async function processNextMedia() {
     await pipeline(await readPrivateObject(row.object_key),createWriteStream(input));
     await renderRetainerPreview(input,output,row.mime_type);
     await putPrivateObject(`${row.object_key}.preview`,createReadStream(output),row.mime_type.startsWith('video/') ? 'video/mp4' : 'image/jpeg',(await stat(output)).size);
-    await db().query("UPDATE upload_objects SET status='ready' WHERE id=$1",[row.id]);
+    await finishMediaWrite(db(),row.id,'media_processing','ready');
   } catch(e) {
-    await db().query("UPDATE upload_objects SET status='media_failed' WHERE id=$1",[row.id]);
+    await finishMediaWrite(db(),row.id,'media_processing','media_failed');
     console.error('[media] Preview failed for upload',row.id);
   } finally { await rm(folder,{recursive:true,force:true}); }
 }
@@ -115,6 +119,6 @@ let started=false;
 export function startMediaWorker() {
   if (started || !STORAGE_CONFIGURED) return;
   started=true; let busy=false;
-  const tick=async()=>{if(busy)return;busy=true;try{await processNextMedia();}catch{console.error('[media] Queue unavailable');}finally{busy=false;}};
+  const tick=async()=>{if(busy)return;busy=true;try{await purgeNextPersonalUpload(db(),deleteObject);}catch{console.error('[media] Personal upload erasure will retry');}try{await processNextMedia();}catch{console.error('[media] Queue unavailable');}finally{busy=false;}};
   void tick();setInterval(()=>void tick(),5000).unref();
 }

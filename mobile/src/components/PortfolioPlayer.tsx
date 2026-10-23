@@ -30,7 +30,7 @@ export function PortfolioPlayer({ url, title, onClose }: { url: string; title: s
   const video = parseVideoUrl(url);
   const vimeoHash = (() => { try { const u = new URL(url); return u.searchParams.get('h') ?? u.pathname.match(/\/\d+\/([a-zA-Z0-9]+)/)?.[1]; } catch { return null; } })();
   const source = video?.provider === 'youtube' ? `https://www.youtube-nocookie.com/embed/${video.id}?playsinline=1&fs=0&rel=0`
-    : video?.provider === 'vimeo' ? `https://player.vimeo.com/video/${video.id}?playsinline=1&fullscreen=0${vimeoHash ? `&h=${encodeURIComponent(vimeoHash)}` : ''}` : url.startsWith('/api/media/') ? `${API_BASE_URL}${url}` : url;
+    : video?.provider === 'vimeo' ? `https://player.vimeo.com/video/${video.id}?playsinline=1&fullscreen=0&dnt=1${vimeoHash ? `&h=${encodeURIComponent(vimeoHash)}` : ''}` : url.startsWith('/api/media/') ? `${API_BASE_URL}${url}` : url;
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
       <SafeAreaProvider>

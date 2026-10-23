@@ -7,7 +7,7 @@ export default function Privacy() {
         <div className="mb-10">
           <Link href="/" className="text-primary text-sm font-medium hover:underline">← Back to Viewrr</Link>
           <h1 className="text-4xl font-bold mt-6 mb-2">Privacy Policy</h1>
-          <p className="text-muted-foreground text-sm">Last updated: September 2026</p>
+          <p className="text-muted-foreground text-sm">Last updated: 18 October 2026</p>
         </div>
 
         <div className="prose prose-neutral dark:prose-invert max-w-none space-y-8 text-foreground">
@@ -23,11 +23,16 @@ export default function Privacy() {
             <ul className="list-disc pl-6 mt-2 space-y-1 text-muted-foreground">
               <li><strong className="text-foreground">Account information</strong> — name, email address, password (stored as a one-way hash)</li>
               <li><strong className="text-foreground">Profile information</strong> — bio, location, skills, portfolio, profile photo</li>
-              <li><strong className="text-foreground">Payment information</strong> — processed securely via Stripe; we do not store card details</li>
-              <li><strong className="text-foreground">Activity records</strong> — project progress, approvals, posts, reactions, reports and web profile views</li>
+              <li><strong className="text-foreground">Payment and work records</strong> — invoices, agreed fees, payment status and earnings; payment card entry is handled by Stripe outside the native app</li>
+              <li><strong className="text-foreground">Activity records</strong> — project progress, approvals, posts, reactions, saved profiles, connections, reports and profile views</li>
               <li><strong className="text-foreground">Communications</strong> — messages sent between users on the platform</li>
               <li><strong className="text-foreground">Device &amp; technical data</strong> — IP address, request timings and errors; for mobile notifications, an installation identifier, push token, platform and app version</li>
             </ul>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-semibold mb-3">Mobile permissions and your choices</h2>
+            <p className="text-muted-foreground leading-relaxed">You choose the photos, videos or files to upload using your device picker. The app does not request access to your address book, GPS, camera or microphone. Profile location is information you type yourself. Push notifications are optional and can be disabled in device settings; notification text may appear on your lock screen. You can export your data or request account deletion from Profile → Privacy in the app.</p>
           </section>
 
           <section>
@@ -67,12 +72,12 @@ export default function Privacy() {
 
           <section>
             <h2 className="text-xl font-semibold mb-3">6. Data Sharing</h2>
-            <p className="text-muted-foreground leading-relaxed">We do not sell your personal data. We may share data with trusted third-party service providers who help us operate the platform, including Stripe for payments, Render and Neon for hosting and database services, Resend for transactional emails, and Expo with Apple or Google for mobile push delivery. Push messages can include notification text and routing identifiers. Enabled private file storage supports uploaded media and delivery previews. External links you open are governed by the external provider’s privacy policy. All third parties are required to handle your data securely and in accordance with UK GDPR.</p>
+            <p className="text-muted-foreground leading-relaxed">We do not sell your personal data. We may share data with trusted third-party service providers who help us operate the platform, including Stripe for payments, Render and Neon for hosting and database services, Resend for transactional emails, and Expo with Apple or Google for mobile push delivery. Push messages can include notification text and routing identifiers. Cloudflare R2 stores uploaded media, work deliveries and previews in private storage. Profile and feed media you publish can be viewed publicly through Viewrr; project deliveries require the appropriate project access. Private bucket settings do not make published profile media private. External links you open are governed by the external provider’s privacy policy. Video players you choose to open can contact YouTube, Vimeo or the chosen media host, which receive network and playback information under their own policies. We do not pass your Viewrr sign-in token to these hosts.</p>
           </section>
 
           <section>
             <h2 className="text-xl font-semibold mb-3">7. Data Retention</h2>
-            <p className="text-muted-foreground leading-relaxed">We retain your personal data for as long as your account is active or as needed to provide services. Account deletion removes or anonymises personal data while preserving records required for financial, legal and safety purposes. Your deletion screen explains outstanding obligations and the retention schedule. Contact us for details about retained records and backups.</p>
+            <p className="text-muted-foreground leading-relaxed">We retain your personal data for as long as your account is active or as needed to provide services. Account deletion removes or anonymises personal data while preserving records required for financial, legal and safety purposes. Your deletion screen explains outstanding obligations and the retention schedule. Personal uploads are queued for physical erasure after account deletion, with retries if storage is unavailable. Shared contractual deliveries and financial or safety evidence require a retention review. Removing your account name does not necessarily make these records anonymous. Contact us for details about retained records and backups.</p>
           </section>
 
           <section>

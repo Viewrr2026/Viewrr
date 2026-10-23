@@ -394,7 +394,7 @@ function ErrorLine({ message }: { message: string }) {
   );
 }
 
-/** Turns { action, periodDays } into a sentence, without inventing a period. */
+/** Policy periods are review periods, not evidence of automatic expiry. */
 function plainAction(entry: RetentionEntry): string {
   const action = entry.action.toLowerCase();
   const days = entry.periodDays;
@@ -404,12 +404,12 @@ function plainAction(entry: RetentionEntry): string {
   }
   if (action === "anonymised" || action === "anonymized") {
     return days > 0
-      ? `Anonymised within ${days} days — kept without anything that identifies you.`
-      : "Anonymised — kept without anything that identifies you.";
+      ? `Account details removed within ${days} days. Retained records are explained below.`
+      : "Account details removed. Retained records are explained below.";
   }
   if (action === "retained") {
     return days > 0
-      ? `Retained for ${days} days under Viewrr's retention policy, then removed.`
+      ? `Retention review period: ${days} days. See the details below.`
       : "Retained under Viewrr's retention policy.";
   }
   return days > 0 ? `${entry.action} — ${days} days.` : entry.action;

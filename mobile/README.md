@@ -149,19 +149,15 @@ same default as the web `ThemeProvider`.
 Icons come from `lucide-react-native` — the native build of the `lucide-react`
 set the website already uses, so shapes match exactly.
 
-### Font licence — ACTION REQUIRED BEFORE PUBLIC STORE SUBMISSION
+### Font provenance and app embedding
 
-`assets/fonts/` bundles the Satoshi and Clash Display weights the website loads
-from Fontshare. Both are published by Indian Type Foundry under the **ITF Free
-Font Licence**; the files are bundled rather than fetched at runtime so the app
-has no webfont CDN dependency.
+`npm ci` obtains the official Satoshi and Clash Display TTFs directly from
+Fontshare. `scripts/prepare-fonts.mjs` checks pinned SHA-256 digests and keeps
+font bytes unchanged. `npm run fonts:check` verifies the local files before a
+release. macOS/Linux builds require `unzip` and network access on the first
+install; an upstream font change fails closed until reviewed.
 
-Status: **approved for development and Alpha 0.1 only.**
-
-> **Commercial embedding/licensing for these two families must be re-confirmed
-> with Fontshare / Indian Type Foundry before any public App Store or Google
-> Play submission.** The current ITF Free Font Licence reading has not been
-> legally verified for distributed binaries. If the terms do not cover store
-> distribution, swap the files and the keys in `src/theme/fonts.ts` for licensed
-> alternatives — no other file in the codebase references the font assets, and
-> `src/theme/tokens.ts` reads family names from that one map.
+The ITF Free Font License v2.0 (17 August 2026), supplied in both official
+archives, permits commercial app embedding. Raw files are ignored by Git;
+Fontshare restricts raw redistribution and modification. See the [official licence](https://www.fontshare.com/licenses/itf-ffl). These asset changes
+require a new native build and must not be sent to build 5 as an OTA update.

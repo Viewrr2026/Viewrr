@@ -2,7 +2,7 @@
   "name": "viewrr-mobile",
   "main": "expo-router/entry",
   "version": "0.1.0",
-  "description": "Viewrr mobile app (React Native + Expo). Isolated package — not part of the root web/server build.",
+  "description": "Viewrr mobile app (React Native + Expo). Isolated package \u2014 not part of the root web/server build.",
   "dependencies": {
     "expo": "~57.0.30",
     "expo-constants": "~57.0.22",
@@ -48,11 +48,13 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "release:config": "node scripts/check-release.mjs",
-    "release:preflight": "npm run release:config && npm run test:dependencies && npm run typecheck && expo install --check",
+    "release:preflight": "npm run fonts:check && npm run release:config && npm run test:dependencies && npm run typecheck && expo install --check",
     "doctor": "npx expo-doctor",
     "lint": "expo lint",
-    "postinstall": "node scripts/patch-query-string.cjs",
-    "test:dependencies": "node --test scripts/dependency-security.test.cjs"
+    "postinstall": "node scripts/patch-query-string.cjs && node scripts/prepare-fonts.mjs",
+    "test:dependencies": "node --test scripts/dependency-security.test.cjs",
+    "fonts:prepare": "node scripts/prepare-fonts.mjs",
+    "fonts:check": "node scripts/prepare-fonts.mjs --check"
   },
   "private": true,
   "overrides": {

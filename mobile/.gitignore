@@ -44,3 +44,8 @@ GoogleService-Info.plist
 
 # macOS
 .DS_Store
+
+# Official fonts are fetched and checksum-verified from Fontshare at install.
+assets/fonts/*.ttf
+assets/fonts/*.tmp
+assets/fonts/FFL-*.txt
