@@ -33,12 +33,11 @@ import type { ProjectWithDetails } from "../../../server/storage";
 
 // ── ReviewModal ─────────────────────────────────────────────────────────────
 function ReviewModal({
-  open, onClose, pw, currentUser, role,
+  open, onClose, pw, role,
 }: {
   open: boolean;
   onClose: (submitted?: boolean) => void;
   pw: ProjectWithDetails;
-  currentUser: { id: number; name: string; avatar?: string | null };
   role: "client" | "freelancer";
 }) {
   const [rating, setRating] = useState(0);
@@ -49,7 +48,6 @@ function ReviewModal({
 
   // Who is being reviewed?
   const reviewee = role === "client" ? pw.freelancer : pw.client;
-  const revieweeProfile = role === "client" ? (pw as any).freelancerProfile : null;
 
   const handleSubmit = async () => {
     if (rating === 0) return setError("Please select a star rating.");
@@ -57,18 +55,8 @@ function ReviewModal({
     setSubmitting(true);
     setError("");
     try {
-      // Reviews go on the REVIEWEE's profile.
-      // reviewee is already set correctly: client reviews freelancer, freelancer reviews client.
-      // /api/profile-by-user will auto-create a stub profile if none exists (e.g. for clients).
-      const revieweeId = reviewee.id;
-      const profileRes = await apiRequest("GET", `/api/profile-by-user/${revieweeId}`);
-      const profile = await profileRes.json();
-      if (!profile?.id) throw new Error("Could not find profile for this user");
+      // The server verifies the completed project and derives both review parties.
       await apiRequest("POST", "/api/reviews", {
-        profileId: profile.id,
-        clientId: currentUser.id,
-        clientName: currentUser.name,
-        clientAvatar: currentUser.avatar || null,
         rating,
         comment: comment.trim(),
         projectType: pw.project.briefCategory || null,
@@ -3312,7 +3300,6 @@ export default function YourWork() {
             }
           }}
           pw={reviewTarget}
-          currentUser={{ id: user.id, name: user.name, avatar: user.avatar }}
           role={user.id === reviewTarget.client.id ? "client" : "freelancer"}
         />
       )}

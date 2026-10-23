@@ -34,6 +34,8 @@ export type RetentionEntry = {
   /** "deleted" | "anonymised" | "retained" in practice; free text on the wire. */
   action: string;
   periodDays: number;
+  /** Server-authored explanation of what is removed or retained. */
+  detail: string;
 };
 
 export type DeletionState = "none" | "pending" | "scheduled" | "blocked";
@@ -95,6 +97,7 @@ function normaliseRetention(value: unknown): RetentionEntry[] {
         category,
         action,
         periodDays: typeof row?.periodDays === "number" ? row.periodDays : 0,
+        detail: asString(row?.detail)?.trim() ?? "",
       },
     ];
   });

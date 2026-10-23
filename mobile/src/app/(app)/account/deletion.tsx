@@ -380,6 +380,9 @@ function RetentionRow({ entry }: { entry: RetentionEntry }) {
         <Text style={[styles.rowBody, { color: colors.mutedForeground }]}>
           {plainAction(entry)}
         </Text>
+        {entry.detail ? (
+          <Text style={[styles.rowBody, { color: colors.mutedForeground }]}>{entry.detail}</Text>
+        ) : null}
       </View>
     </View>
   );
@@ -404,12 +407,12 @@ function plainAction(entry: RetentionEntry): string {
   }
   if (action === "anonymised" || action === "anonymized") {
     return days > 0
-      ? `Account details removed within ${days} days. Retained records are explained below.`
-      : "Account details removed. Retained records are explained below.";
+      ? `Account details removed within ${days} days.`
+      : "Account details removed.";
   }
   if (action === "retained") {
     return days > 0
-      ? `Retention review period: ${days} days. See the details below.`
+      ? `Retention review period: ${days} days.`
       : "Retained under Viewrr's retention policy.";
   }
   return days > 0 ? `${entry.action} — ${days} days.` : entry.action;
