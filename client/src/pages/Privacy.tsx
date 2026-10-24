@@ -7,7 +7,7 @@ export default function Privacy() {
         <div className="mb-10">
           <Link href="/" className="text-primary text-sm font-medium hover:underline">← Back to Viewrr</Link>
           <h1 className="text-4xl font-bold mt-6 mb-2">Privacy Policy</h1>
-          <p className="text-muted-foreground text-sm">Last updated: 18 October 2026</p>
+          <p className="text-muted-foreground text-sm">Last updated: 23 October 2026</p>
         </div>
 
         <div className="prose prose-neutral dark:prose-invert max-w-none space-y-8 text-foreground">
@@ -72,7 +72,7 @@ export default function Privacy() {
 
           <section>
             <h2 className="text-xl font-semibold mb-3">6. Data Sharing</h2>
-            <p className="text-muted-foreground leading-relaxed">We do not sell your personal data. We may share data with trusted third-party service providers who help us operate the platform, including Stripe for payments, Render and Neon for hosting and database services, Resend for transactional emails, and Expo with Apple or Google for mobile push delivery. Push messages can include notification text and routing identifiers. Cloudflare R2 stores uploaded media, work deliveries and previews in private storage. Profile and feed media you publish can be viewed publicly through Viewrr; project deliveries require the appropriate project access. Private bucket settings do not make published profile media private. External links you open are governed by the external provider’s privacy policy. Video players you choose to open can contact YouTube, Vimeo or the chosen media host, which receive network and playback information under their own policies. We do not pass your Viewrr sign-in token to these hosts.</p>
+            <p className="text-muted-foreground leading-relaxed">We do not sell your personal data. We may share data with trusted third-party service providers who help us operate the platform, including Stripe for payments, Render and Neon for hosting and database services, Resend for transactional emails, and Expo with Apple or Google for mobile push delivery. Push messages can include notification text and routing identifiers. Cloudflare R2 stores uploaded media, work deliveries and previews in private storage. Profile and feed media you publish can be viewed publicly through Viewrr; project deliveries require the appropriate project access. Private bucket settings do not make published profile media private. External links you open are governed by the external provider’s privacy policy. Video thumbnail previews can load from YouTube’s image service and Vumbnail (vumbnail.com, a third-party service for Vimeo thumbnails) as you browse, before you choose to play a video. These requests share your IP address and technical request information with the thumbnail provider. Video players you choose to open can contact YouTube, Vimeo or the chosen media host, which receive network and playback information under their own policies. We do not pass your Viewrr sign-in token to these hosts.</p>
           </section>
 
           <section>
