@@ -14,6 +14,7 @@ import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
 import { eq, and, sql as drizzleSql, count } from "drizzle-orm";
 import * as schema from "../shared/schema";
+import { mayGrantProEntitlement } from "./services/pro-deletion";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 export const STANDARD_FEE_BPS = 1100; // 11%
@@ -231,6 +232,12 @@ export async function createProCheckout(
 ): Promise<{ checkoutUrl: string; sessionId: string }> {
   const stripe = getStripe();
   const db = getDb();
+  const confirmedDeletion = await getDb().select({ id: schema.accountDeletionRequests.id })
+    .from(schema.accountDeletionRequests).where(and(eq(schema.accountDeletionRequests.userId, userId),
+      drizzleSql`${schema.accountDeletionRequests.state} IN ('scheduled','processing','anonymised')`));
+  if (confirmedDeletion.length) {
+    throw Object.assign(new Error("A confirmed account deletion is in progress. Pro renewal cannot be started."), { status: 409 });
+  }
 
   if (!PRO_STRIPE_PRICE_ID) {
     throw new Error("PRO_STRIPE_PRICE_ID is not configured on the server.");
@@ -313,6 +320,7 @@ export async function activateProFromWebhook(
   periodStart: number,
   periodEnd: number,
   viewrrUserId?: number,
+  cancelAtPeriodEnd = false,
 ): Promise<void> {
   const db = getDb();
   const sqlClient = neon(process.env.DATABASE_URL!);
@@ -331,6 +339,7 @@ export async function activateProFromWebhook(
     console.error("[pro-webhook] Cannot resolve userId for customer", stripeCustomerId);
     return;
   }
+  if (!(await mayGrantProEntitlement(userId))) return;
 
   const subs = await db
     .select()
@@ -343,10 +352,10 @@ export async function activateProFromWebhook(
     .set({
       stripeSubscriptionId,
       stripeCustomerId,
-      status: "active",
+      status: cancelAtPeriodEnd ? "cancellation_scheduled" : "active",
       currentPeriodStart: new Date(periodStart * 1000).toISOString(),
       currentPeriodEnd: new Date(periodEnd * 1000).toISOString(),
-      cancelAtPeriodEnd: 0,
+      cancelAtPeriodEnd: cancelAtPeriodEnd ? 1 : 0,
       updatedAt: now,
     })
     .where(eq(schema.proSubscriptions.userId, userId));
@@ -394,10 +403,12 @@ export async function renewProFromWebhook(
   const sub = subs[0];
   if (!sub) return;
 
+  if (!(await mayGrantProEntitlement(sub.userId))) return;
+
   await db
     .update(schema.proSubscriptions)
     .set({
-      status: "active",
+      status: sub.cancelAtPeriodEnd ? "cancellation_scheduled" : "active",
       currentPeriodStart: new Date(periodStart * 1000).toISOString(),
       currentPeriodEnd: new Date(periodEnd * 1000).toISOString(),
       updatedAt: now,

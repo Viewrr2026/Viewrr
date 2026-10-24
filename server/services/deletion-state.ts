@@ -12,15 +12,21 @@ export const DELETE_AUTHORED_REVIEWS = `WITH removed AS (
 /** Call only after password verification. Persist before revoking access. */
 export async function recordConfirmedDeletion(db: RetainerDb, userId: number, assessment: {
   state: string; scheduledFor: string | null; blockers: { code: string }[];
-}): Promise<number> {
-  const state = assessment.state === 'scheduled' ? 'scheduled' : 'processing';
+}, proTiming: 'immediate' | 'pro_period_end' | null = null): Promise<number> {
+  const state = proTiming ? 'processing' : assessment.state === 'scheduled' ? 'scheduled' : 'processing';
   const now = new Date().toISOString();
   const result = await db.query(`
+    WITH eligible AS (
+      SELECT id FROM users WHERE id=$1 AND account_status='active'
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_requests WHERE user_id=$1 AND state='blocked')
+    ), superseded AS (
+      UPDATE account_deletion_requests SET state='cancelled',status='cancelled'
+      WHERE user_id IN (SELECT id FROM eligible) AND state IN ('pending','scheduled','processing')
+    )
     INSERT INTO account_deletion_requests
-      (user_id,status,state,requested_at,scheduled_for,deferred_reason)
-    SELECT id,$2,$2,$3,$4,$5 FROM users WHERE id=$1 AND account_status='active'
-      AND NOT EXISTS (SELECT 1 FROM account_deletion_requests WHERE user_id=$1 AND state='blocked')
-    RETURNING id`, [userId,state,now,assessment.scheduledFor ?? now,assessment.blockers.map(b => b.code).join(',') || null]);
+      (user_id,status,state,requested_at,scheduled_for,deferred_reason,pro_deletion_timing)
+    SELECT id,$2,$2,$3,$4,$5,$6 FROM eligible
+    RETURNING id`, [userId,state,now,(proTiming ? now : assessment.scheduledFor ?? now),assessment.blockers.map(b => b.code).join(',') || null,proTiming]);
   if (!result.rows.length) throw Object.assign(new Error('Account deletion cannot be confirmed in its current state.'), { status: 409 });
   return Number(result.rows[0].id);
 }

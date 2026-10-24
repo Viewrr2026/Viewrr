@@ -1,5 +1,5 @@
+import { withAccountDeletionLock, parseProDeletionTiming, processConfirmedDeletion, getProDeletionOptions, applyProDeletionDate } from "./services/pro-deletion";
 import { recordConfirmedDeletion } from "./services/deletion-state";
-import { retainerPool as deletionDb } from "./retainer-v1-db";
 import { filterBlockedAuthors, requireOwnUserParam } from "./privacy-guards";
 import { verifySignupEmail } from "./signup-verification";
 import { registerMediaRoutes } from "./media-routes";
@@ -2603,6 +2603,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       res.json({ checkoutUrl, sessionId });
     } catch (e: any) {
       console.error("[pro/checkout]", e.message);
+      if (e?.status === 409) return res.status(409).json({ error: e.message });
       res.status(500).json({ error: "Unable to start checkout. Please try again." });
     }
   });
@@ -7176,119 +7177,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   registerJobHandler("process_account_deletion", async (payload, attemptCount) => {
     const userId = Number(payload.userId);
     const requestId = Number(payload.requestId);
-
     if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(requestId) || requestId <= 0) {
       throw new Error("Invalid account deletion job payload");
     }
-
-    const sqlClient = neon(process.env.DATABASE_URL!);
-
-    const rows = await sqlClient`
-      SELECT id, user_id, state, status, scheduled_for,
-        (SELECT account_status FROM users WHERE id = user_id) AS account_status
-      FROM account_deletion_requests
-      WHERE id = ${requestId} AND user_id = ${userId}
-      LIMIT 1
-    `;
-
-    if (!rows.length) return;
-
-    const currentState = String(rows[0].state ?? rows[0].status ?? "");
-
-    // A retry after partial anonymisation may find that the request itself was
-    // already marked anonymised before another cleanup step failed. The
-    // anonymisation service is idempotent, so allow that SAME durable job to
-    // retry and finish the remaining cleanup.
-    const recoveringPartial =
-      rows[0].account_status === "anonymised" || (currentState === "anonymised" && attemptCount > 1);
-
-    if (
-      currentState !== "scheduled" &&
-      currentState !== "processing" &&
-      !recoveringPartial
-    ) {
-      return;
-    }
-
-    if (currentState === "anonymised" && attemptCount <= 1) return;
-
-    // scheduled -> processing is an atomic claim. A request already in
-    // processing is treated as recovery from an interrupted worker run.
-    if (currentState === "scheduled") {
-      const claimed = await sqlClient`
-        UPDATE account_deletion_requests
-        SET state = 'processing', status = 'processing'
-        WHERE id = ${requestId}
-          AND user_id = ${userId}
-          AND state = 'scheduled'
-        RETURNING id
-      `;
-
-      if (!claimed.length) return;
-    }
-
-    try {
-      if (!recoveringPartial) {
-        // Re-check obligations AFTER claiming and immediately before the
-        // irreversible anonymisation step.
-        const assessment = await checkDeletionBlockers(userId);
-
-        if (assessment.state === "scheduled") {
-          await sqlClient`
-            UPDATE account_deletion_requests
-            SET state = 'scheduled', status = 'scheduled'
-            WHERE id = ${requestId} AND user_id = ${userId}
-          `;
-
-          const scheduledAt = rows[0].scheduled_for
-            ? new Date(rows[0].scheduled_for).getTime()
-            : null;
-
-          if (
-            scheduledAt !== null &&
-            Number.isFinite(scheduledAt) &&
-            scheduledAt <= Date.now()
-          ) {
-            console.warn(
-              `[account-deletion] Request ${requestId} for user ${userId} is past scheduled_for but blockers remain; founder review required`,
-            );
-          }
-
-          return;
-        }
-      }
-
-      const report = await anonymiseUserAccount(userId);
-
-      if (report.skippedSteps.length) {
-        console.warn(
-          `[account-deletion] user ${userId}: skipped anonymisation steps`,
-          report.skippedSteps,
-        );
-      }
-
-      console.log(
-        `[account-deletion] Completed scheduled deletion request ${requestId} for user ${userId}`,
-      );
-    } catch (e: any) {
-      // Put the request back into a recoverable state. The anonymisation
-      // routine is intentionally idempotent, so both queue retry/backoff and
-      // a later hourly scan can safely finish a partial run.
-      try {
-        await sqlClient`
-          UPDATE account_deletion_requests
-          SET state = 'scheduled', status = 'scheduled'
-          WHERE id = ${requestId} AND user_id = ${userId}
-        `;
-      } catch (resetErr: any) {
-        console.error(
-          `[account-deletion] Could not restore request ${requestId} to scheduled after failure:`,
-          resetErr?.message,
-        );
-      }
-
-      throw e;
-    }
+    await withAccountDeletionLock(userId, db => processConfirmedDeletion(db, userId, requestId, {
+      assess: checkDeletionBlockers, anonymise: anonymiseUserAccount, retryCompleted: attemptCount > 1,
+    }));
   });
 
   const scanScheduledAccountDeletions = async () => {
@@ -7401,75 +7295,33 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // POST /api/me/request-deletion
-  //
-  // DECISION 6 — this no longer returns 409. The old behaviour refused the
-  // request outright and indefinitely whenever any blocker existed, with no
-  // path to erasure: an active project or an unpaid invoice meant "no, forever".
-  // That is not a lawful answer to an erasure request. Now:
-  //   • no blockers   -> request recorded as 'pending', user may confirm now
-  //   • blockers      -> request recorded as 'scheduled' with a real date, and
-  //                      the blockers are returned so the user can clear them
-  //                      sooner. Never a refusal.
-  //
-  // The copy is also fixed. It previously said "within 30 days" here while
-  // confirm-deletion below anonymises instantly — two contradictory promises
-  // about the same operation.
+  // Record an unconfirmed request only. Password confirmation persists the
+  // chosen Pro timing before billing changes or account cleanup can run.
   app.post("/api/me/request-deletion", requireAuth, async (req: any, res: any) => {
     try {
       const userId = req.auth!.userId;
-      const assessment = await checkDeletionBlockers(userId);
+      const timing = parseProDeletionTiming(req.body?.proDeletionTiming);
+      const pro = await getProDeletionOptions(userId);
+      const assessment = applyProDeletionDate(
+        await checkDeletionBlockers(userId, { skipPro: timing !== null }),
+        timing === "pro_period_end" ? pro?.periodEnd ?? null : null,
+      );
       const sql = neon(process.env.DATABASE_URL!);
-      const now = new Date().toISOString();
-
-      // Requesting deletion and CONFIRMING deletion are deliberately separate.
-      // A row remains pending until password re-authentication succeeds.
-      const state = "pending";
-      const scheduledFor = assessment.scheduledFor;
-      const deferredReason = assessment.blockers.length
-        ? assessment.blockers.map((b) => b.code).join(",")
-        : null;
-
-      // `state`, `scheduled_for` and `deferred_reason` arrive with migration
-      // 0006. Fall back to the pre-migration column set so this endpoint keeps
-      // working if the migration has not been applied yet.
-      try {
-        await sql`
-          INSERT INTO account_deletion_requests
-            (user_id, status, requested_at, state, scheduled_for, deferred_reason)
-          VALUES
-            (${userId}, ${state}, ${now}, ${state}, NULL, ${deferredReason})
-        `;
-      } catch (insertErr: any) {
-        console.warn("[request-deletion] Falling back to pre-0006 columns:", insertErr?.message);
-        await sql`
-          INSERT INTO account_deletion_requests (user_id, status, requested_at, blocker_reason)
-          VALUES (${userId}, ${state}, ${now}, ${deferredReason})
-        `;
-      }
-
-      if (assessment.state === "scheduled") {
-        return res.json({
-          ok: true,
-          state: "pending",
-          scheduledFor,
-          blockers: assessment.blockers.map((b) => ({
-            code: b.code, label: b.label, detail: b.detail, clearsAutomatically: b.clearsAutomatically,
-          })),
-          message: `Your deletion request is recorded but is not confirmed yet. Enter your password to confirm it. Because ${assessment.blockers.length} outstanding item${assessment.blockers.length === 1 ? "" : "s"} currently remains, confirmed deletion will be scheduled for ${new Date(scheduledFor!).toLocaleDateString("en-GB")} unless those obligations clear sooner.`,
-        });
-      }
-
+      // Pending requests do not cancel billing or permit background deletion.
+      await sql`INSERT INTO account_deletion_requests
+        (user_id,status,requested_at,state,pro_deletion_timing)
+        VALUES (${userId},'pending',${new Date().toISOString()},'pending',${timing})`;
       return res.json({
-        ok: true,
-        state: "pending",
-        scheduledFor: null,
-        blockers: [],
-        message: "Your deletion request is recorded. Nothing is blocking it — confirm with your password and your account is anonymised straight away. Some financial and legal records are kept for up to 6 years; see the retention schedule for exactly what and why.",
+        ok: true, state: "pending", scheduledFor: assessment.scheduledFor, blockers: assessment.blockers,
+        message: timing === "pro_period_end"
+          ? "Enter your password to stop Pro renewal and schedule deletion at the end of your paid Pro period. The expiry date is verified with Stripe when you confirm."
+          : timing === "immediate"
+            ? "Enter your password to end Pro immediately and delete your account. Unused Pro access ends; this does not automatically refund unused time. Any other outstanding obligations shown still apply."
+            : "Your request is recorded. Enter your password to confirm deletion. Any outstanding obligations and the disclosed retention policy still apply.",
       });
     } catch (e: any) {
       console.error("[request-deletion] Failed:", e?.message);
-      res.status(500).json({ error: "Could not record your deletion request. Please try again." });
+      res.status(e?.status === 400 ? 400 : 500).json({ error: e?.status === 400 ? e.message : "Could not record your deletion request. Please try again." });
     }
   });
 
@@ -7493,43 +7345,24 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { valid } = await verifyPassword(password, user.passwordHash);
       if (!valid) return res.status(403).json({ error: "Incorrect password" });
 
-      // Final blocker check. Decision 6: still NOT a refusal — immediate
-      // erasure is deferred, and the request is recorded as scheduled so it
-      // completes automatically once the blockers clear. Status is 202
-      // (Accepted, not yet acted on), never 409.
-      const assessment = await checkDeletionBlockers(userId);
-      const requestId = await recordConfirmedDeletion(deletionDb(), userId, assessment);
-      // The hourly scanner is the durable fallback even if enqueueing fails.
-      // Delay the backup job to avoid racing the immediate cleanup below.
-      try {
-        await enqueueJob("process_account_deletion", { userId, requestId }, `account-deletion:${requestId}:confirmed`, 15 * 60_000);
-      } catch {
-        console.error("[confirm-deletion] Queue unavailable; confirmed request remains recoverable by scanner", requestId);
-      }
-      if (assessment.state === "scheduled") {
-        return res.status(202).json({
-          ok: true,
-          state: "scheduled",
-          scheduledFor: assessment.scheduledFor,
-          blockers: assessment.blockers.map((b) => ({
-            code: b.code, label: b.label, detail: b.detail, clearsAutomatically: b.clearsAutomatically,
-          })),
-          message: "We have accepted your deletion. It cannot complete right now because of the outstanding items below, so it is scheduled — you do not need to ask again.",
+      const timing = parseProDeletionTiming(req.body?.proDeletionTiming);
+      const result = await withAccountDeletionLock(userId, async db => {
+        const assessment = await checkDeletionBlockers(userId);
+        // Persist intent BEFORE any Stripe mutation or loss of account access.
+        const requestId = await recordConfirmedDeletion(db, userId, assessment, timing);
+        try {
+          await enqueueJob("process_account_deletion", { userId, requestId }, `account-deletion:${requestId}:confirmed`, 15 * 60_000);
+        } catch {
+          console.error("[confirm-deletion] Queue unavailable; scanner will recover", requestId);
+        }
+        return processConfirmedDeletion(db, userId, requestId, {
+          assess: checkDeletionBlockers, anonymise: anonymiseUserAccount,
         });
-      }
-
-      const report = await anonymiseUserAccount(userId);
-      if (report.skippedSteps.length) {
-        console.warn(`[confirm-deletion] user ${userId}: skipped steps`, report.skippedSteps);
-      }
-
-      // Clear session cookie
-      clearSessionCookie(res);
-      res.json({
-        ok: true,
-        state: "anonymised",
-        message: "Your account identity and personal content have been removed. Personal uploaded files are queued for storage erasure. Financial, contractual and safety records subject to retention review may still identify you; see the retention schedule.",
       });
+      if (result.state === "ignored") return res.status(409).json({ error: result.message });
+      if (result.state === "anonymised") clearSessionCookie(res);
+      return res.status(result.state === "scheduled" ? 202 : 200).json({ ok: true, ...result });
+
     } catch (e: any) {
       // A partial anonymisation must be loud, not silent — the user believes
       // their data is gone. anonymiseUserAccount sets e.partial and e.report.
@@ -7540,6 +7373,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           code: "PARTIAL_ANONYMISATION",
         });
       }
+      if (e?.status === 400 || e?.status === 409) return res.status(e.status).json({ error: e.message });
       console.error("[confirm-deletion] Failed:", e?.message);
       res.status(500).json({ error: "We could not complete deletion. A confirmed request remains saved for retry; if confirmation was not saved, please try again. Contact support@viewrr.co.uk for help." });
     }
