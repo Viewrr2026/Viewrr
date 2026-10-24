@@ -39,7 +39,7 @@ test('confirmed deletion is durable before cleanup, works without a prior reques
   try {
     await db.exec(`CREATE TABLE users(id int primary key,account_status text);
       INSERT INTO users VALUES(1,'active'),(2,'anonymised'),(3,'active');
-      CREATE TABLE account_deletion_requests(id serial primary key,user_id int,status text,state text,requested_at text,scheduled_for timestamp,deferred_reason text);
+      CREATE TABLE account_deletion_requests(id serial primary key,user_id int,status text,state text,requested_at text,scheduled_for timestamp,deferred_reason text,pro_deletion_timing text);
       INSERT INTO account_deletion_requests(user_id,state,status) VALUES(3,'blocked','blocked');`);
     const id=await recordConfirmedDeletion(db,1,{state:'none',scheduledFor:null,blockers:[]});
     const row:any=(await db.query('SELECT * FROM account_deletion_requests WHERE id=$1',[id])).rows[0];

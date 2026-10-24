@@ -984,6 +984,8 @@ export const accountDeletionRequests = pgTable("account_deletion_requests", {
   // obligation blocks immediate erasure, the request is SCHEDULED instead.
   scheduledFor: timestamp("scheduled_for"),
   deferredReason: text("deferred_reason"),
+  proDeletionTiming: text("pro_deletion_timing"), // immediate | pro_period_end; null for older clients
+  proDeleteAfter: timestamp("pro_delete_after", { withTimezone: true }),
   // 'pending' | 'scheduled' | 'processing' | 'anonymised' | 'cancelled'
   state: text("state").notNull().default("pending"),
 });

@@ -39,6 +39,7 @@ export type RetentionEntry = {
 };
 
 export type DeletionState = "none" | "pending" | "scheduled" | "blocked";
+export type ProDeletionTiming = "immediate" | "pro_period_end";
 
 /** GET /api/me/deletion-status — never 409s, never refuses. */
 export type DeletionStatus = {
@@ -47,6 +48,9 @@ export type DeletionStatus = {
   scheduledFor: string | null;
   blockers: DeletionBlocker[];
   retention: RetentionEntry[];
+  pro: { periodEnd: string | null; canScheduleEnd: boolean } | null;
+  proDeletionTiming: ProDeletionTiming | null;
+  proDeleteAfter: string | null;
 };
 
 /** POST /api/me/request-deletion */
@@ -111,11 +115,17 @@ export async function fetchDeletionStatus(signal?: AbortSignal): Promise<Deletio
     scheduledFor: asString(row.scheduledFor),
     blockers: normaliseBlockers(row.blockers),
     retention: normaliseRetention(row.retention),
+    pro: row.pro && typeof row.pro === "object" ? {
+      periodEnd: asString((row.pro as Record<string, unknown>).periodEnd),
+      canScheduleEnd: (row.pro as Record<string, unknown>).canScheduleEnd === true,
+    } : null,
+    proDeletionTiming: row.proDeletionTiming === "immediate" || row.proDeletionTiming === "pro_period_end" ? row.proDeletionTiming : null,
+    proDeleteAfter: asString(row.proDeleteAfter),
   };
 }
 
-export async function requestDeletion(): Promise<DeletionRequestResult> {
-  const raw = await api.post<unknown>("/api/me/request-deletion");
+export async function requestDeletion(proDeletionTiming?: ProDeletionTiming | null): Promise<DeletionRequestResult> {
+  const raw = await api.post<unknown>("/api/me/request-deletion", { proDeletionTiming });
   const row = (raw ?? {}) as Record<string, unknown>;
   return {
     requestId: typeof row.requestId === "number" ? row.requestId : null,
@@ -137,8 +147,8 @@ export type DeletionConfirmResult = {
   blockers: DeletionBlocker[];
 };
 
-export async function confirmDeletion(password: string): Promise<DeletionConfirmResult> {
-  const raw = await api.post<unknown>("/api/me/confirm-deletion", { password });
+export async function confirmDeletion(password: string, proDeletionTiming?: ProDeletionTiming | null): Promise<DeletionConfirmResult> {
+  const raw = await api.post<unknown>("/api/me/confirm-deletion", { password, proDeletionTiming });
   const row = (raw ?? {}) as Record<string, unknown>;
   return {
     ok: row.ok === true,

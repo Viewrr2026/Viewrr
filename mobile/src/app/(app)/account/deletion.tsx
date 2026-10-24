@@ -1,7 +1,7 @@
 import { useRouter } from "expo-router";
 import { AlertTriangle, CalendarClock, Clock, ShieldCheck, Trash2 } from "lucide-react-native";
 import { useCallback, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import {
   confirmDeletion,
@@ -10,6 +10,7 @@ import {
   type DeletionBlocker,
   type DeletionStatus,
   type RetentionEntry,
+  type ProDeletionTiming,
 } from "@/api/account";
 import { ApiError } from "@/api/errors";
 import { ActionSheet } from "@/components/ActionSheet";
@@ -33,9 +34,8 @@ import { radii, spacing, typography, useTheme } from "@/theme";
  *   1. GET  /api/me/deletion-status   — what state the account is in, which
  *      legal/financial obligations currently defer erasure, and the published
  *      retention schedule.
- *   2. POST /api/me/request-deletion  — records the request. Where an
- *      obligation exists this returns a SCHEDULED date rather than a refusal;
- *      deletion is never indefinitely denied.
+ *   2. POST /api/me/request-deletion — records an unconfirmed request and
+ *      previews any deferral. Billing and account access are unchanged.
  *   3. POST /api/me/confirm-deletion  — password re-authentication, then
  *      erasure/anonymisation. On success the session is signed out, because the
  *      account behind it no longer exists.
@@ -61,9 +61,12 @@ export default function AccountDeletion() {
   const [scheduledFor, setScheduledFor] = useState<string | null>(null);
   const [requestNotice, setRequestNotice] = useState<string | null>(null);
   const [confirmedScheduled, setConfirmedScheduled] = useState(false);
+  const [proTiming, setProTiming] = useState<ProDeletionTiming | null>(null);
 
   const load = useCallback((signal: AbortSignal) => fetchDeletionStatus(signal), []);
   const { resource, reload, refreshing, refresh } = useAsyncResource<DeletionStatus>(load);
+  const loadedStatus = resource.phase === "ready" ? resource.data : null;
+  const selectedTiming = proTiming ?? loadedStatus?.proDeletionTiming ?? null;
 
   const describe = (cause: unknown): string =>
     cause instanceof ApiError
@@ -75,7 +78,7 @@ export default function AccountDeletion() {
     setActionError(null);
     setConfirmedScheduled(false);
     try {
-      const result = await requestDeletion();
+      const result = await requestDeletion(selectedTiming);
       setScheduledFor(result.scheduledFor);
       setRequestNotice(result.message);
       setStep("confirm");
@@ -84,13 +87,13 @@ export default function AccountDeletion() {
     } finally {
       setRequesting(false);
     }
-  }, []);
+  }, [selectedTiming]);
 
   const onConfirm = useCallback(async () => {
     setConfirming(true);
     setActionError(null);
     try {
-      const result = await confirmDeletion(password);
+      const result = await confirmDeletion(password, selectedTiming);
       setPassword("");
       setSheetOpen(false);
 
@@ -121,7 +124,7 @@ export default function AccountDeletion() {
     } finally {
       setConfirming(false);
     }
-  }, [password, signOut]);
+  }, [password, selectedTiming, signOut]);
 
   return (
     <Screen
@@ -135,7 +138,11 @@ export default function AccountDeletion() {
 
       <DataState resource={resource} onRetry={reload} skeleton="list">
         {(status) => {
-          const deferred = status.blockers.length > 0;
+          const blockers = selectedTiming ? status.blockers.filter(b => b.code !== "active_pro_subscription") : status.blockers;
+          const waitingForPro = selectedTiming === "pro_period_end";
+          const deferred = blockers.length > 0 || waitingForPro;
+          const alreadyScheduled = status.state === "scheduled" || confirmedScheduled;
+          const switchingToImmediate = alreadyScheduled && proTiming === "immediate" && status.proDeletionTiming !== "immediate";
           const scheduleDate = scheduledFor ?? status.scheduledFor;
 
           return (
@@ -151,6 +158,16 @@ export default function AccountDeletion() {
                   Your profile, posts, messages and saved work are removed or anonymised as set out below.
                 </CardBody>
               </Card>
+
+              {(status.pro || status.proDeletionTiming === "pro_period_end") && step === "review" ? (
+                <DeletionTimingChoices
+                  selected={selectedTiming}
+                  onSelect={(value) => { setProTiming(value); setActionError(null); }}
+                  periodEnd={status.proDeleteAfter ?? status.pro?.periodEnd ?? null}
+                  canScheduleEnd={status.pro?.canScheduleEnd === true || status.proDeletionTiming === "pro_period_end"}
+                  disabled={requesting || status.state === "blocked"}
+                />
+              ) : null}
 
               {status.state === "pending" && step === "review" ? (
                 <Card>
@@ -175,13 +192,15 @@ export default function AccountDeletion() {
                     {confirmedScheduled && requestNotice
                       ? requestNotice
                       : status.scheduledFor
-                        ? `Your deletion is confirmed and scheduled for ${formatDate(status.scheduledFor)}. It will run sooner if the outstanding obligations clear first.`
+                        ? status.proDeletionTiming === "pro_period_end" && status.proDeleteAfter
+                          ? `Your deletion is confirmed. Your account stays available until ${formatDate(status.proDeleteAfter)}, then deletion runs once any other obligations clear. You can choose immediate deletion below.`
+                          : `Your deletion is confirmed and scheduled for ${formatDate(status.scheduledFor)}. Billing cancellation or other outstanding obligations may still be processing.`
                         : "Your deletion is confirmed and scheduled. It will complete automatically once the outstanding obligations clear."}
                   </CardBody>
                 </Card>
               ) : null}
 
-              {deferred ? (
+              {blockers.length > 0 ? (
                 <Card>
                   <View style={styles.headRow}>
                     <Clock size={18} color={colors.primary} strokeWidth={2.2} />
@@ -193,7 +212,7 @@ export default function AccountDeletion() {
                     are resolved. The request itself is not refused because of these obligations.
                   </CardBody>
                   <View style={styles.rows}>
-                    {status.blockers.map((blocker) => (
+                    {blockers.map((blocker) => (
                       <BlockerRow key={blocker.code} blocker={blocker} />
                     ))}
                   </View>
@@ -241,10 +260,12 @@ export default function AccountDeletion() {
               {step === "review" ? (
                 <View style={styles.actions}>
                   {actionError ? <ErrorLine message={actionError} /> : null}
-                  {status.state !== "scheduled" && !confirmedScheduled ? (
+                  {(!alreadyScheduled || switchingToImmediate) && status.state !== "blocked" ? (
                     <Button
                       label={
-                        status.state === "pending"
+                        switchingToImmediate
+                          ? "Change to immediate deletion"
+                          : status.state === "pending"
                           ? "Continue to confirmation"
                           : deferred
                             ? "Request deletion"
@@ -252,11 +273,8 @@ export default function AccountDeletion() {
                       }
                       variant="destructive"
                       loading={requesting}
-                      onPress={
-                        status.state === "pending"
-                          ? () => setStep("confirm")
-                          : () => void onRequest()
-                      }
+                      disabled={Boolean(status.pro) && !selectedTiming}
+                      onPress={() => void onRequest()}
                       accessibilityHint={
                         status.state === "pending"
                           ? "Continue to password confirmation."
@@ -265,10 +283,10 @@ export default function AccountDeletion() {
                     />
                   ) : null}
                   <Button
-                    label="Keep my account"
+                    label={alreadyScheduled ? "Back to account" : "Keep my account"}
                     variant="ghost"
                     onPress={() => router.back()}
-                    accessibilityHint="Leaves account deletion without submitting a request"
+                    accessibilityHint="Leaves this screen without changing any confirmed deletion request"
                   />
                 </View>
               ) : (
@@ -322,7 +340,11 @@ export default function AccountDeletion() {
                 visible={sheetOpen}
                 title={deferred ? "Confirm deletion request?" : "Delete this account permanently?"}
                 message={
-                  deferred
+                  waitingForPro
+                    ? `Stop Pro renewal and delete the account at the end of your paid Pro period${status.pro?.periodEnd ? ` on ${formatDate(status.pro.periodEnd)}` : ""}. Your account stays available until then. Other outstanding obligations may delay final cleanup.`
+                    : selectedTiming === "immediate"
+                      ? `End Pro now and ${blockers.length ? "confirm account deletion once the other outstanding obligations clear" : "delete your account now"}. Unused Pro access ends. This does not automatically refund unused time.`
+                      : deferred
                     ? scheduleDate
                       ? `Confirming makes this deletion request final. Because obligations remain, deletion is scheduled for ${formatDate(scheduleDate)} unless they clear sooner.`
                       : "Confirming makes this deletion request final. Because obligations remain, completion will be delayed and will run automatically once they clear."
@@ -348,6 +370,45 @@ export default function AccountDeletion() {
         }}
       </DataState>
     </Screen>
+  );
+}
+
+function DeletionTimingChoices({ selected, onSelect, periodEnd, canScheduleEnd, disabled }: {
+  selected: ProDeletionTiming | null;
+  onSelect: (value: ProDeletionTiming) => void;
+  periodEnd: string | null;
+  canScheduleEnd: boolean;
+  disabled: boolean;
+}) {
+  const { colors } = useTheme();
+  const choices: { value: ProDeletionTiming; title: string; detail: string; unavailable?: boolean }[] = [
+    { value: "immediate", title: "Immediate account deletion",
+      detail: "End Pro now and delete your account. Unused Pro access ends. This does not automatically refund unused time." },
+    { value: "pro_period_end", title: "At the end of Pro Viewrr", unavailable: !canScheduleEnd,
+      detail: canScheduleEnd && periodEnd
+        ? `Stop renewal now. Keep your account and Pro access until ${formatDate(periodEnd)}, then delete automatically.`
+        : "Your paid Pro expiry date is unavailable. Refresh to check it, or choose immediate deletion." },
+  ];
+  return (
+    <Card>
+      <CardLabel>When should your account be deleted?</CardLabel>
+      <CardBody>Choose one option, then confirm with your password. Other outstanding obligations shown below may still delay account deletion.</CardBody>
+      <View style={styles.rows} accessibilityRole="radiogroup">
+        {choices.map(choice => (
+          <Pressable key={choice.value} accessibilityRole="radio"
+            accessibilityLabel={choice.title}
+            accessibilityState={{ checked: selected === choice.value, disabled: disabled || Boolean(choice.unavailable) }}
+            disabled={disabled || Boolean(choice.unavailable)}
+            onPress={() => onSelect(choice.value)}
+            style={[styles.notice, { gap: spacing[2], opacity: choice.unavailable ? 0.5 : 1,
+              borderColor: selected === choice.value ? colors.primary : colors.border,
+              backgroundColor: selected === choice.value ? colors.secondary : colors.card }]}>
+            <Text style={[styles.rowTitle, { color: colors.foreground }]}>{selected === choice.value ? "✓ " : ""}{choice.title}</Text>
+            <Text style={[styles.rowBody, { color: colors.mutedForeground }]}>{choice.detail}</Text>
+          </Pressable>
+        ))}
+      </View>
+    </Card>
   );
 }
 

@@ -799,6 +799,7 @@ export async function processStripeEvent(
           sub.current_period_start,
           sub.current_period_end,
           viewrrUserId,
+          sub.cancel_at_period_end === true,
         );
       } else if (sub.status === "past_due" || sub.status === "unpaid") {
         await markProPaymentFailed(sub.id, event.id);
