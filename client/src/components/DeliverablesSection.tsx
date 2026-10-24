@@ -1,3 +1,4 @@
+import { InvoicePaymentForm } from "@/components/InvoicePaymentForm";
 import { createPortal } from "react-dom";
 import { MediaUpload } from "@/components/MediaUpload";
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -20,9 +21,6 @@ import { useToast } from "@/hooks/use-toast";
 import { loadStripe } from "@stripe/stripe-js";
 import {
   Elements,
-  PaymentElement,
-  useStripe,
-  useElements,
 } from "@stripe/react-stripe-js";
 
 // ── Platform detection ────────────────────────────────────────────────────────
@@ -461,112 +459,14 @@ function CardForm({
   onSuccess: () => void;
   onError: (msg: string) => void;
 }) {
-  const stripe    = useStripe();
-  const elements  = useElements();
-  const [paying, setPaying] = useState(false);
-  const [verificationPending, setVerificationPending] = useState(false);
-  const [ready,  setReady]  = useState(false);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!stripe || !elements) return;
-    setPaying(true);
-    try {
-      const { error, paymentIntent } = await stripe.confirmPayment({
-        elements,
-        confirmParams: {
-          return_url: window.location.href,
-          payment_method_data: {
-            billing_details: { email: clientEmail },
-          },
-        },
-        redirect: "if_required",
-      });
-      if (error) {
-        onError(error.message || "Payment failed");
-        setPaying(false);
-        return;
-      }
-      if (paymentIntent?.status === "succeeded") {
-        const confirmation = await apiRequest("POST", "/api/stripe/confirm-intent", {
-          paymentIntentId: paymentIntent.id, projectId,
-        });
-        const result = await confirmation.json();
-        if (!result.ok || result.status !== "succeeded") {
-          setVerificationPending(true);
-          onError("Payment is awaiting verification. Do not pay again. Close this window and reopen your invoice to check its status.");
-          return;
-        }
-        // Invalidate queries so UI refreshes when webhook updates project
-        queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
-        onSuccess();
-      } else {
-        setVerificationPending(true);
-        onError("Payment is awaiting verification. Do not pay again; reopen your invoice to check its status.");
-        setPaying(false);
-      }
-    } catch (e: any) {
-      setVerificationPending(true);
-      onError("We could not verify the payment yet. Do not pay again. Close this window and reopen your invoice to check its status.");
-    }
-  }
-
-  if (verificationPending) return (
-    <div className="space-y-4">
-      <p>We’re checking your payment. Please don’t pay again.</p>
-      <Button className="w-full" onClick={() => window.location.reload()}>Return to invoice and check status</Button>
-    </div>
-  );
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      {/* Summary pill */}
-      <div className="flex items-center justify-between px-4 py-3 rounded-2xl" style={{ background: "rgba(255,90,31,0.06)", border: "1px solid rgba(255,90,31,0.2)" }}>
-        <span className="text-xs text-muted-foreground font-medium">Total due</span>
-        <span className="text-lg font-bold" style={{ color: "#FF5A1F" }}>£{(amountPence / 100).toFixed(2)}</span>
-      </div>
-
-      {/* Stripe card element */}
-      <div
-        className="rounded-2xl overflow-hidden border border-border transition-all"
-        style={{ opacity: ready ? 1 : 0.4, transition: "opacity 0.3s" }}
-      >
-        <PaymentElement
-          onReady={() => setReady(true)}
-          options={{
-            layout: "tabs",
-            fields: { billingDetails: { name: "auto", email: "never" } },
-            terms: { card: "never" },
-            wallets: { applePay: "auto", googlePay: "auto" },
-          }}
-        />
-      </div>
-
-      {/* Security badge */}
-      <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
-        <ShieldCheck size={11} className="text-primary" />
-        Secured by Stripe · 256-bit encryption
-      </div>
-
-      <button
-        type="submit"
-        disabled={paying || !ready}
-        className="w-full flex items-center justify-center gap-2 py-3 rounded-full font-semibold text-white text-sm transition-all"
-        style={{
-          background: paying || !ready ? "rgba(255,90,31,0.4)" : "linear-gradient(135deg,#FF5A1F,#FF8C42)",
-          boxShadow: paying || !ready ? "none" : "0 4px 20px rgba(255,90,31,0.35)",
-          cursor: paying || !ready ? "not-allowed" : "pointer",
-          transform: paying ? "scale(0.98)" : "scale(1)",
-          transition: "all 0.2s cubic-bezier(0.16,1,0.3,1)",
-        }}
-        data-testid="btn-pay-now"
-      >
-        {paying
-          ? <><Loader2 size={15} className="animate-spin" /> Processing payment…</>
-          : <><CreditCard size={15} /> Pay £{(amountPence / 100).toFixed(2)} now</>}
-      </button>
-    </form>
-  );
+  return <InvoicePaymentForm amountPence={amountPence} email={clientEmail}
+    verify={async intentId => {
+      const response = await apiRequest("POST", "/api/stripe/confirm-intent", { paymentIntentId: intentId, projectId });
+      const result = await response.json();
+      return result.ok === true && result.status === "succeeded";
+    }}
+    onPaid={() => { queryClient.invalidateQueries({ queryKey: ["/api/projects"] }); onSuccess(); }}
+  />;
 }
 
 // ── Stripe Payment Dialog (full native experience) ─────────────────────────────
@@ -645,7 +545,8 @@ export function StripePaymentDialog({
       setPublishableKey(data.publishableKey);
       setPaymentIntentId(data.paymentIntentId);
       // Use server-derived amount (not client-entered)
-      const serverAmountPence = data.amountPence ?? Math.round(parseFloat(amountStr) * 100);
+      const serverAmountPence = data.amountPence;
+      if (!Number.isSafeInteger(serverAmountPence) || serverAmountPence <= 0) throw new Error("The invoice amount is unavailable. Reopen the invoice.");
       setPaidAmountPence(serverAmountPence);
       // Pre-load Stripe immediately
       stripePromiseRef.current = loadStripe(data.publishableKey);
@@ -721,8 +622,8 @@ export function StripePaymentDialog({
                 </svg>
               </button>
               <div className="flex-1 text-center">
-                <p className="text-sm font-semibold">Card details</p>
-                <p className="text-xs text-muted-foreground">£{parseFloat(amountStr).toFixed(2)} · {freelancerName}</p>
+                <p className="text-sm font-semibold">Payment method</p>
+                <p className="text-xs text-muted-foreground">£{(paidAmountPence / 100).toFixed(2)} · {freelancerName}</p>
               </div>
               {/* Spacer to balance back button — DialogContent X is top-right */}
               <div className="w-7" />

@@ -1,11 +1,9 @@
+import { InvoicePaymentForm } from "@/components/InvoicePaymentForm";
 import { retainerPlanChanges } from "@shared/retainer-plan-diff";
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Elements,
-  PaymentElement,
-  useElements,
-  useStripe,
 } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
 import { apiRequest } from "@/lib/queryClient";
@@ -726,50 +724,5 @@ export function CyclePayment({
   );
 }
 function CheckoutForm({ onConfirmed }: { onConfirmed: () => void }) {
-  const stripe = useStripe(),
-    elements = useElements(),
-    [busy, setBusy] = useState(false),
-    [message, setMessage] = useState("");
-  async function pay(e: React.FormEvent) {
-    e.preventDefault();
-    if (!stripe || !elements || busy) return;
-    setBusy(true);
-    try {
-      const { error } = await stripe.confirmPayment({
-        elements,
-        confirmParams: { return_url: window.location.href },
-        redirect: "if_required",
-      });
-      if (error) setMessage(error.message ?? "Payment could not be completed");
-      else {
-        setMessage(
-          "Payment submitted. The cycle completes after verified confirmation.",
-        );
-        onConfirmed();
-      }
-    } catch {
-      setMessage(
-        "Payment status is uncertain. Refresh the invoice before retrying.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={pay} className="space-y-4">
-      <PaymentElement />
-      <p className="text-xs text-muted-foreground">
-        The cycle completes after verified payment confirmation. Freelancer
-        bank arrival is tracked separately.
-      </p>
-      <button className={primaryClass} disabled={!stripe || !elements || busy}>
-        {busy ? "Processing…" : "Pay securely"}
-      </button>
-      {message && (
-        <p role="status" className="text-sm">
-          {message}
-        </p>
-      )}
-    </form>
-  );
+  return <InvoicePaymentForm onSubmitted={onConfirmed} />;
 }

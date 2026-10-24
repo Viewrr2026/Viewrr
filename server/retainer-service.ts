@@ -38,7 +38,7 @@ export interface RetainerPaymentResult {
 export async function createRetainerPayment(
   cyclePublicId: string,
   clientUserId: number
-): Promise<RetainerPaymentResult> {
+): Promise<RetainerPaymentResult | { status: "confirming" }> {
   const db = getDb();
 
   // 1. Load cycle + project
@@ -58,7 +58,10 @@ export async function createRetainerPayment(
   const model = await db`SELECT workflow_version FROM retainer_agreements WHERE id = ${cycle.retainer_agreement_id}`;
   if (model[0]?.workflow_version === 1) {
     const { createCustomCyclePayment } = await import("./retainer-v1-payments");
-    return { ...(await createCustomCyclePayment(cyclePublicId, clientUserId)), freelancerOnboarded: true } as RetainerPaymentResult;
+    const result = await createCustomCyclePayment(cyclePublicId, clientUserId);
+    if (result.status === "confirming") return { status: "confirming" };
+    if (!result.clientSecret) throw new Error("Checkout is unavailable");
+    return { ...result, clientSecret: result.clientSecret, freelancerOnboarded: true };
   }
 
   const stripe = getStripe();
@@ -69,7 +72,7 @@ export async function createRetainerPayment(
   }
 
   // 3. Verify cycle is payable
-  const payableStatuses = ["due", "scheduled", "active", "awaiting_payment"];
+  const payableStatuses = ["due", "scheduled", "active", "awaiting_payment", "payment_processing"];
   if (!payableStatuses.includes(cycle.status)) {
     if (cycle.status === "payment_processing" || cycle.payment_id) {
       throw Object.assign(new Error("Your payment is already being processed. You do not need to pay again."), { status: 409 });
@@ -104,7 +107,7 @@ export async function createRetainerPayment(
   const existingPayment = await db`
     SELECT * FROM payments
     WHERE retainer_cycle_id = ${cycle.id}
-      AND status NOT IN ('failed', 'cancelled')
+      AND status <> 'cancelled'
     LIMIT 1
   `;
   if (existingPayment.length > 0) {
@@ -113,7 +116,9 @@ export async function createRetainerPayment(
       // Retrieve existing intent to get fresh client_secret
       try {
         const intent = await stripe.paymentIntents.retrieve(ep.stripe_payment_intent_id);
-        if (intent.status !== "canceled" && intent.status !== "succeeded") {
+        if (["succeeded", "processing", "requires_capture"].includes(intent.status)) return { status: "confirming" };
+        if (intent.status === "canceled") throw new Error("This payment attempt was cancelled. Please contact support before retrying.");
+        if (["requires_payment_method", "requires_confirmation", "requires_action"].includes(intent.status)) {
           return {
             clientSecret: intent.client_secret!,
             paymentPublicId: ep.public_id,
@@ -123,9 +128,15 @@ export async function createRetainerPayment(
             publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "",
           };
         }
-      } catch {}
+      } catch {
+        throw Object.assign(new Error("Unable to check the existing payment. Please check its status before retrying."), { status: 503 });
+      }
+      throw Object.assign(new Error("Payment is awaiting confirmation."), { status: 409 });
     }
   }
+
+  if (existingPayment.length || cycle.status === "payment_processing")
+    throw Object.assign(new Error("Payment setup is still being checked. Please try again later."), { status: 409 });
 
   // 6. Load freelancer
   const freelancerRows = await db`SELECT * FROM users WHERE id = ${cycle.freelancer_id} LIMIT 1`;
@@ -153,7 +164,7 @@ export async function createRetainerPayment(
   const freelancerPence = amountPence - platformFeePence;
 
   // 9. Create internal payment record first
-  const paymentPublicId = makePublicId("rc_pay");
+  const proposedPublicId = makePublicId("rc_pay");
   const idempotencyKey = `retainer_payment:${cyclePublicId}:v1`;
 
   const paymentRows = await db`
@@ -162,15 +173,17 @@ export async function createRetainerPayment(
       payment_kind, currency, gross_pence, platform_fee_pence, freelancer_pence,
       status, transfer_strategy, idempotency_key
     ) VALUES (
-      ${paymentPublicId}, ${cycle.project_id}, ${cycle.id}, ${clientUserId}, ${cycle.freelancer_id},
+      ${proposedPublicId}, ${cycle.project_id}, ${cycle.id}, ${clientUserId}, ${cycle.freelancer_id},
       'retainer_cycle', 'gbp', ${amountPence}, ${platformFeePence}, ${freelancerPence},
       'pending', ${transferStrategy}, ${idempotencyKey}
     )
-    ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = NOW()::TEXT
+    ON CONFLICT (idempotency_key) DO UPDATE SET id = payments.id
     RETURNING *
   `;
   // Handle case where column updated_at doesn't exist yet — just get the row
   const paymentRow = paymentRows[0] ?? (await db`SELECT * FROM payments WHERE idempotency_key = ${idempotencyKey} LIMIT 1`)[0];
+
+  const paymentPublicId = paymentRow.public_id;
 
   // 10. Create Stripe PaymentIntent
   const intentParams: any = {

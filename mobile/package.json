@@ -1,9 +1,10 @@
 {
   "name": "viewrr-mobile",
   "main": "expo-router/entry",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Viewrr mobile app (React Native + Expo). Isolated package \u2014 not part of the root web/server build.",
   "dependencies": {
+    "@stripe/stripe-react-native": "0.64.0",
     "expo": "~57.0.30",
     "expo-constants": "~57.0.22",
     "expo-dev-client": "~57.0.20",

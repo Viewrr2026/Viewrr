@@ -16,6 +16,8 @@ export type AppEnv = "development" | "staging" | "production";
 type Extra = {
   appEnv?: AppEnv;
   apiBaseUrl?: string;
+  appleMerchantId?: string;
+  paymentUrlScheme?: string;
 };
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Extra;
@@ -66,3 +68,7 @@ export const LEGAL_URLS = {
   privacy: `${PUBLIC_SITE_URL}/#/privacy`,
   terms: `${PUBLIC_SITE_URL}/#/terms`,
 } as const;
+
+/** Public identifiers must match the native build's capability and URL scheme. */
+export const APPLE_MERCHANT_ID = extra.appleMerchantId ?? "merchant.uk.co.viewrr.app";
+export const PAYMENT_URL_SCHEME = extra.paymentUrlScheme ?? (isDevelopment ? "viewrr-dev" : isStaging ? "viewrr-staging" : "viewrr");

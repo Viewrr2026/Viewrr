@@ -1,3 +1,4 @@
+import { InvoicePaymentButton } from "@/components/work/InvoicePaymentButton";
 import { canUploadRetainer } from "@/components/work/retainerUploadPolicy";
 import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -45,6 +46,10 @@ export default function RetainerDeliveries() {
         const tasks=snapshot.data.tasks.filter((t:any)=>(t.retainer_cycle_id??t.retainerCycleId)===cycle.id);
         return <View key={cycle.id} style={{gap:12}}><Text style={{color:colors.foreground,fontSize:20,fontWeight:'700'}}>Cycle {cycle.cycle_number??cycle.cycleNumber}: {cycle.cycle_name??cycle.status}</Text>
           {tasks.map((task:any)=><WorkItem key={task.id} snapshot={snapshot} cycle={cycle} task={task} userId={user?.id} refresh={refresh} />)}
+          {user?.id === (snapshot.custom ? snapshot.data.clientId : snapshot.data.agreement.clientUserId) &&
+            (snapshot.custom ? !!cycle.accepted_at && !!cycle.invoice_id && !cycle.paid_at :
+              ["due", "scheduled", "active", "awaiting_payment", "payment_processing"].includes(cycle.status) && cycle.paymentStatus !== "paid") &&
+            <InvoicePaymentButton target={{ kind: "cycle", projectId: Number(projectId), cycleId: cycle.public_id ?? cycle.publicId }} onChanged={() => void refresh()} />}
           {!tasks.length&&<Text style={{color:colors.mutedForeground}}>No work items in this cycle.</Text>}
         </View>;
       })}

@@ -1,3 +1,5 @@
+import { readRetainerPaymentStatus } from "./retainer-payment-status";
+import { retainerPool as checkoutPool } from "./retainer-v1-db";
 import { recordConfirmedDeletion } from "./services/deletion-state";
 import { retainerPool as deletionDb } from "./retainer-v1-db";
 import { filterBlockedAuthors, requireOwnUserParam } from "./privacy-guards";
@@ -6347,19 +6349,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // GET /api/retainer-cycles/:cyclePublicId/payment — get current payment status
   app.get("/api/retainer-cycles/:cyclePublicId/payment", requireAuth, async (req, res) => {
     try {
-      const db = neon(process.env.DATABASE_URL!);
-      const { cyclePublicId } = req.params;
-      const cycles = await db`SELECT * FROM retainer_cycles WHERE public_id = ${cyclePublicId} LIMIT 1`;
-      if (!cycles.length) return res.status(404).json({ error: "Cycle not found" });
-      const cycle = cycles[0];
-      const member = await db`SELECT id FROM projects WHERE id=${cycle.project_id} AND (client_id=${req.auth!.userId} OR freelancer_id=${req.auth!.userId})`;
-      if (!member.length) return res.status(403).json({error:"You do not have access to this payment"});
-      if (!cycle.payment_id) return res.json({ status: "not_started" });
-      const payments = await db`SELECT * FROM payments WHERE id = ${cycle.payment_id} LIMIT 1`;
-      const payment = payments[0];
-      res.json(payment ? { status: payment.status, paymentPublicId: payment.public_id, amountPence: payment.gross_pence } : {status:"not_found"});
+      if (!stripe) return res.status(503).json({ error: "Payments are not configured" });
+      const result = await readRetainerPaymentStatus(checkoutPool(), id => stripe.paymentIntents.retrieve(id),
+        String(req.params.cyclePublicId), req.auth!.userId);
+      res.set("Cache-Control", "private, no-store");
+      res.json(result);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(e.status ?? 503).json({ error: "Unable to check this invoice's payment status. Please try again." });
     }
   });
 
