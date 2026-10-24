@@ -12,19 +12,20 @@ export function InvoicePaymentForm({ amountPence, email, verify, onSubmitted, on
   onPaid?: () => void;
 }) {
   const stripe = useStripe(), elements = useElements();
-  const submitting = useRef(false);
+  const submitting = useRef(false), verificationRequired = useRef(false);
   const [busy, setBusy] = useState(false), [pending, setPending] = useState(false);
   const [ready, setReady] = useState(false), [wallets, setWallets] = useState(false);
   const [message, setMessage] = useState("");
 
   function awaitingConfirmation() {
+    verificationRequired.current = true;
     setPending(true);
     setMessage("We're checking your payment. Please don't pay again. Reopen the invoice to check its status.");
     onSubmitted?.();
   }
 
   async function pay(walletEvent?: StripeExpressCheckoutElementConfirmEvent) {
-    if (!stripe || !elements || submitting.current || pending) {
+    if (!stripe || !elements || submitting.current || verificationRequired.current || pending) {
       walletEvent?.paymentFailed({ reason: "fail" });
       return;
     }
@@ -54,6 +55,7 @@ export function InvoicePaymentForm({ amountPence, email, verify, onSubmitted, on
         return;
       }
       if (paymentIntent?.status === "succeeded" && verify && await verify(paymentIntent.id)) {
+        verificationRequired.current = true;
         setPending(true);
         onPaid?.();
       } else awaitingConfirmation();

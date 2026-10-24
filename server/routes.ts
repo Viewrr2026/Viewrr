@@ -1,5 +1,3 @@
-import { readRetainerPaymentStatus } from "./retainer-payment-status";
-import { retainerPool as checkoutPool } from "./retainer-v1-db";
 import { recordConfirmedDeletion } from "./services/deletion-state";
 import { retainerPool as deletionDb } from "./retainer-v1-db";
 import { filterBlockedAuthors, requireOwnUserParam } from "./privacy-guards";
@@ -110,6 +108,8 @@ import path from "path";
 import fs from "fs";
 import os from "os";
 import Stripe from "stripe";
+import { readRetainerPaymentStatus } from "./retainer-payment-status";
+import { retainerPool as checkoutPool } from "./retainer-v1-db";
 import { verifyStripeWebhook } from "./stripe-webhook-verification";
 
 // ── Stripe setup ──────────────────────────────────────────────────

@@ -95,15 +95,6 @@ export async function createRetainerPayment(
   }
 
   // 5. Check for existing open payment (idempotency)
-  const existingRows = await db`
-    SELECT p.*, pm.stripe_payment_intent_id, pm.status AS pm_status
-    FROM retainer_cycles rc
-    JOIN payments pm ON pm.id = rc.payment_id
-    JOIN retainer_cycles p ON p.id = rc.id
-    WHERE rc.public_id = ${cyclePublicId} AND pm.status NOT IN ('failed','cancelled')
-    LIMIT 1
-  `;
-  // Simpler: check payments table directly
   const existingPayment = await db`
     SELECT * FROM payments
     WHERE retainer_cycle_id = ${cycle.id}
@@ -112,10 +103,14 @@ export async function createRetainerPayment(
   `;
   if (existingPayment.length > 0) {
     const ep = existingPayment[0];
+    if (ep.transfer_strategy !== "direct_transfer")
+      throw Object.assign(new Error("This invoice needs payout setup reviewed before payment."), { status: 422 });
     if (ep.stripe_payment_intent_id) {
       // Retrieve existing intent to get fresh client_secret
       try {
         const intent = await stripe.paymentIntents.retrieve(ep.stripe_payment_intent_id);
+        if (intent.amount !== ep.gross_pence || intent.currency !== "gbp" || ep.gross_pence !== amountPence)
+          throw new Error("The invoice amount needs review before payment.");
         if (["succeeded", "processing", "requires_capture"].includes(intent.status)) return { status: "confirming" };
         if (intent.status === "canceled") throw new Error("This payment attempt was cancelled. Please contact support before retrying.");
         if (["requires_payment_method", "requires_confirmation", "requires_action"].includes(intent.status)) {
@@ -146,18 +141,14 @@ export async function createRetainerPayment(
   const clientRows = await db`SELECT * FROM users WHERE id = ${clientUserId} LIMIT 1`;
   const client = clientRows[0];
 
-  // 7. Determine transfer strategy
-  let stripeAccountId: string | null = freelancer.stripe_account_id ?? null;
-  let transferStrategy: "direct_transfer" | "platform_held" = "platform_held";
-
-  if (stripeAccountId) {
-    try {
-      const acct = await stripe.accounts.retrieve(stripeAccountId);
-      if (acct.charges_enabled && acct.capabilities?.transfers === "active") {
-        transferStrategy = "direct_transfer";
-      }
-    } catch {}
-  }
+  // Destination charges require a ready freelancer account, as with other Viewrr invoices.
+  const stripeAccountId = freelancer.stripe_account_id;
+  if (!stripeAccountId)
+    throw Object.assign(new Error("The freelancer needs to finish payout setup before payment."), { status: 422 });
+  const account = await stripe.accounts.retrieve(stripeAccountId);
+  if (!account.charges_enabled || account.capabilities?.transfers !== "active")
+    throw Object.assign(new Error("The freelancer needs to finish payout setup before payment."), { status: 422 });
+  const transferStrategy = "direct_transfer";
 
   // 8. Calculate fees
   const platformFeePence = Math.round(amountPence * (VIEWRR_FEE_PERCENT / 100));
@@ -180,7 +171,7 @@ export async function createRetainerPayment(
     ON CONFLICT (idempotency_key) DO UPDATE SET id = payments.id
     RETURNING *
   `;
-  // Handle case where column updated_at doesn't exist yet — just get the row
+  // Reuse the canonical record if simultaneous requests selected the same invoice.
   const paymentRow = paymentRows[0] ?? (await db`SELECT * FROM payments WHERE idempotency_key = ${idempotencyKey} LIMIT 1`)[0];
 
   const paymentPublicId = paymentRow.public_id;

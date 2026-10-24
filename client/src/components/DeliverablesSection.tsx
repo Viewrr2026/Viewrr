@@ -441,23 +441,12 @@ function PaymentSuccessScreen({
   );
 }
 
-// ── Inner card form (must be inside <Elements>) ────────────────────────────────
-function CardForm({
-  amountPence,
-  projectId,
-  clientUserId,
-  clientEmail,
-  paymentIntentId,
-  onSuccess,
-  onError,
-}: {
+// ── Invoice checkout (must be inside <Elements>) ────────────────────────────────
+function InvoiceForm({ amountPence, projectId, clientEmail, onSuccess }: {
   amountPence: number;
   projectId: number;
-  clientUserId: number | undefined;
   clientEmail: string;
-  paymentIntentId: string;
   onSuccess: () => void;
-  onError: (msg: string) => void;
 }) {
   return <InvoicePaymentForm amountPence={amountPence} email={clientEmail}
     verify={async intentId => {
@@ -494,14 +483,9 @@ export function StripePaymentDialog({
 
   type Step = "amount" | "card" | "success";
   const [step, setStep]         = useState<Step>("amount");
-  // Pre-fill with agreed amount if available
-  const [amountStr, setAmountStr] = useState(
-    agreedAmountPence ? (agreedAmountPence / 100).toFixed(2) : ""
-  );
   const [error, setError]         = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [publishableKey, setPublishableKey] = useState("");
-  const [paymentIntentId, setPaymentIntentId] = useState("");
   const [paidAmountPence, setPaidAmountPence] = useState(0);
   const [loadingIntent, setLoadingIntent] = useState(false);
   const stripePromiseRef = useRef<ReturnType<typeof loadStripe> | null>(null);
@@ -511,9 +495,8 @@ export function StripePaymentDialog({
     if (!open) {
       setTimeout(() => {
         setStep("amount");
-        setAmountStr(agreedAmountPence ? (agreedAmountPence / 100).toFixed(2) : "");
         setError("");
-        setClientSecret(""); setPublishableKey(""); setPaymentIntentId("");
+        setClientSecret(""); setPublishableKey("");
       }, 300);
     }
   }, [open, agreedAmountPence]);
@@ -543,7 +526,6 @@ export function StripePaymentDialog({
       const data = await res.json();
       setClientSecret(data.clientSecret);
       setPublishableKey(data.publishableKey);
-      setPaymentIntentId(data.paymentIntentId);
       // Use server-derived amount (not client-entered)
       const serverAmountPence = data.amountPence;
       if (!Number.isSafeInteger(serverAmountPence) || serverAmountPence <= 0) throw new Error("The invoice amount is unavailable. Reopen the invoice.");
@@ -665,14 +647,11 @@ export function StripePaymentDialog({
                   },
                 }}
               >
-                <CardForm
+                <InvoiceForm
                   amountPence={paidAmountPence}
                   projectId={projectId}
-                  clientUserId={clientUserId}
                   clientEmail={clientEmail}
-                  paymentIntentId={paymentIntentId}
                   onSuccess={() => setStep("success")}
-                  onError={msg => setError(msg)}
                 />
               </Elements>
               {error && (
