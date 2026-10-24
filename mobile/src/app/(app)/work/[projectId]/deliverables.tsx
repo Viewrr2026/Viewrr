@@ -1,10 +1,10 @@
+import { InvoicePaymentButton } from "@/components/work/InvoicePaymentButton";
 import { MediaUpload } from "@/components/MediaUpload";
 import { api } from "@/api/client";
 import { Button } from "@/components/Button";
 import { useLocalSearchParams } from "expo-router";
-import { ExternalLink } from "lucide-react-native";
 import { useCallback, useState } from "react";
-import { Alert, Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { loadProjectDetail, type ProjectDetailSnapshot } from "@/api/work";
 import { AppHeader } from "@/components/AppHeader";
@@ -15,7 +15,6 @@ import { ErrorState } from "@/components/ErrorState";
 import { Screen } from "@/components/Screen";
 import { DeliverableRow } from "@/components/work/DeliverableRow";
 import { partyFor } from "@/components/work/gating";
-import { webProjectUrl } from "@/components/work/webLinks";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { useSession } from "@/session/SessionProvider";
 import { spacing, typography, useTheme } from "@/theme";
@@ -33,7 +32,7 @@ import { spacing, typography, useTheme } from "@/theme";
  * asset the client already downloaded protects nothing; withholding the URL
  * does. Mobile relies on the server-side gate alone.
  *
- * Unlocking happens by paying on the website. Mobile never mutates payment.
+ * Apple Pay and cards use Stripe; only server-verified payment unlocks originals.
  */
 
 export default function ProjectDeliverables() {
@@ -91,7 +90,7 @@ export default function ProjectDeliverables() {
 
           const lockCopy =
             party === "client"
-              ? "Locked until the project is paid. Payment is completed on the Viewrr website."
+              ? "Locked until Viewrr verifies payment for this project."
               : "Locked for your client until the project is paid.";
 
           return (
@@ -109,18 +108,8 @@ export default function ProjectDeliverables() {
                       ? "Locked files stay hidden until payment clears. Once it does, they unlock here automatically."
                       : "Locked files stay hidden from your client until the project is paid."}
                   </Text>
-                  {party === "client" ? (
-                    <Pressable
-                      onPress={() => void Linking.openURL(webProjectUrl(project.id))}
-                      accessibilityRole="link"
-                      accessibilityLabel="Pay for this project on the web"
-                      style={({ pressed }) => [styles.webLink, pressed && styles.pressed]}
-                    >
-                      <ExternalLink size={14} color={colors.primary} strokeWidth={2.2} />
-                      <Text style={[styles.webLinkLabel, { color: colors.primary }]}>
-                        Pay on the web
-                      </Text>
-                    </Pressable>
+                  {party === "client" && !project.isRetainer ? (
+                    <InvoicePaymentButton target={{ kind: "project", projectId: project.id }} onChanged={reload} />
                   ) : null}
                 </Card>
               ) : null}

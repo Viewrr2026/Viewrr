@@ -23,7 +23,7 @@ export default function Privacy() {
             <ul className="list-disc pl-6 mt-2 space-y-1 text-muted-foreground">
               <li><strong className="text-foreground">Account information</strong> — name, email address, password (stored as a one-way hash)</li>
               <li><strong className="text-foreground">Profile information</strong> — bio, location, skills, portfolio, profile photo</li>
-              <li><strong className="text-foreground">Payment and work records</strong> — invoices, agreed fees, payment status and earnings; payment card entry is handled by Stripe outside the native app</li>
+              <li><strong className="text-foreground">Payment and work records</strong> — invoices, agreed fees, payment status and earnings; payment card entry is handled by Stripe on the website and in the mobile app. Apple Pay uses payment credentials from your Apple Wallet. Viewrr does not receive or store your full card number</li>
               <li><strong className="text-foreground">Activity records</strong> — project progress, approvals, posts, reactions, saved profiles, connections, reports and profile views</li>
               <li><strong className="text-foreground">Communications</strong> — messages sent between users on the platform</li>
               <li><strong className="text-foreground">Device &amp; technical data</strong> — IP address, request timings and errors; for mobile notifications, an installation identifier, push token, platform and app version</li>

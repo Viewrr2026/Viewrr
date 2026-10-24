@@ -1,3 +1,4 @@
+import { InvoicePaymentButton } from "@/components/work/InvoicePaymentButton";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Activity, ExternalLink, ListChecks, Package } from "lucide-react-native";
 import { useCallback } from "react";
@@ -19,7 +20,7 @@ import {
   partyFor,
 } from "@/components/work/gating";
 import { ProgressBar } from "@/components/work/ProgressBar";
-import { webProjectUrl, WEB_WORK_URL } from "@/components/work/webLinks";
+import { WEB_WORK_URL } from "@/components/work/webLinks";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { formatPence } from "@/lib/format";
 import { relativeTime } from "@/lib/time";
@@ -32,12 +33,8 @@ import { spacing, typography, useTheme } from "@/theme";
  * Four things, in the order they matter: what the project is, who is on it,
  * what stage it is at, and what the money is doing.
  *
- * ── Payment is READ-ONLY here, on purpose ────────────────────────────────
- * `POST /api/projects/:id/confirm-payment` and `PATCH /api/invoices/:id/paid`
- * are not called anywhere in mobile and are not even declared in `api/work.ts`.
- * A tap that flips a project to "paid" without money moving is a way to lose
- * someone's fee. Real payment goes through the web Stripe path, so this screen
- * reports payment state and links out to it.
+ * Payment uses the shared server-priced Stripe invoice. The server verifies
+ * payment before originals unlock.
  *
  * ── Legacy and retainer ──────────────────────────────────────────────────
  * A legacy project (Decision 11) shows its historical stage position and sends
@@ -241,7 +238,7 @@ export default function ProjectDetail() {
                 )}
               </Card>
 
-              {/* ── Payment (read-only) ──────────────────────────────── */}
+              {/* ── Payment ──────────────────────────────── */}
               <Card>
                 <CardLabel>Payment</CardLabel>
                 <View style={styles.paymentRow}>
@@ -254,23 +251,13 @@ export default function ProjectDetail() {
                   {amount === null
                     ? "No agreed amount is recorded on this project."
                     : paid
-                      ? "This project is marked paid."
+                      ? "Payment has been confirmed."
                       : party === "client"
-                        ? "Payment is taken securely on the Viewrr website. It can't be marked paid from the app."
-                        : "Your client pays through the Viewrr website. Payment state can't be changed from the app."}
+                        ? retainer ? "Open the retainer to view and pay cycle invoices." : "Pay securely with Apple Pay or a card."
+                        : "Your client can pay securely with Apple Pay or a card. Originals unlock after verified payment."}
                 </Text>
-                {!paid ? (
-                  <Pressable
-                    onPress={() => void Linking.openURL(webProjectUrl(project.id))}
-                    accessibilityRole="link"
-                    accessibilityLabel="Open this project on the web"
-                    style={({ pressed }) => [styles.webLink, pressed && styles.pressed]}
-                  >
-                    <ExternalLink size={14} color={colors.primary} strokeWidth={2.2} />
-                    <Text style={[styles.webLinkLabel, { color: colors.primary }]}>
-                      Open on the web
-                    </Text>
-                  </Pressable>
+                {!paid && !retainer && party === "client" ? (
+                  <InvoicePaymentButton target={{ kind: "project", projectId: project.id }} onChanged={reload} />
                 ) : null}
               </Card>
 

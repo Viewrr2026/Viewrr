@@ -1,3 +1,4 @@
+import { PaymentCallbacks } from "@/payments/PaymentCallbacks";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -43,6 +44,7 @@ function ThemedRoot() {
       <SafeAreaProvider>
         <AppErrorBoundary>
           <SessionProvider>
+            <PaymentCallbacks />
             <StatusBar style={scheme === "dark" ? "light" : "dark"} />
             <Stack
               screenOptions={{

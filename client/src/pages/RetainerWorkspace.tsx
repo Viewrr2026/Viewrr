@@ -1,3 +1,4 @@
+import { LegacyCyclePayment } from "@/components/retainer/LegacyCyclePayment";
 import { MediaUpload } from "@/components/MediaUpload";
 import { RetainerChangeRequest, RetainerChangeRequests } from "@/components/retainer/RetainerChangeRequest";
 import { CustomRetainerOverview, CustomRetainerHistory, CustomPaymentSuccess } from "@/components/retainer/CustomRetainerProgress";
@@ -289,10 +290,6 @@ export default function RetainerWorkspace() {
     },
   });
 
-  const payCycleMutation = useMutation({
-    mutationFn: async (cyclePublicId: string) => apiRequest("POST", `/api/retainer-cycles/${cyclePublicId}/payments`, { userId: user?.id }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] }),
-  });
 
   const pauseMutation = useMutation({
     mutationFn: async (payload: any) => apiRequest("POST", `/api/retainer/${publicId}/pause`, { userId: user?.id, ...payload }),
@@ -1126,15 +1123,8 @@ export default function RetainerWorkspace() {
                   <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(isCustom ? c.due_at : c.invoiceDate)}</td>
                   <td className="px-3 py-2.5">
                     {isCustom && c.invoice_id && customQuery.data && <CyclePayment publicId={publicId!} cycle={c} data={customQuery.data} userId={user!.id}/>}
-                    {!isCustom && ["pending", "unpaid", "overdue"].includes(c.paymentStatus) && (
-                      <button
-                        onClick={() => payCycleMutation.mutate(c.publicId)}
-                        disabled={payCycleMutation.isPending}
-                        className="px-3 py-1 rounded-full text-[10px] font-semibold text-white disabled:opacity-60"
-                        style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                      >
-                        Pay cycle
-                      </button>
+                    {!isCustom && isClient && ["due", "scheduled", "active", "awaiting_payment", "payment_processing"].includes(c.status) && c.paymentStatus !== "paid" && (
+                      <LegacyCyclePayment cycleId={c.publicId} onChanged={() => qc.invalidateQueries({ queryKey: ["retainer-workspace", publicId] })} />
                     )}
                   </td>
                 </tr>
