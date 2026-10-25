@@ -1,4 +1,5 @@
 import { InvoicePaymentForm } from "@/components/InvoicePaymentForm";
+import { uploadLargeMedia } from "@/lib/uploadLargeMedia";
 import { retainerPlanChanges } from "@shared/retainer-plan-diff";
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -326,6 +327,7 @@ function WorkItem({
     [note, setNote] = useState(""),
     [feedback, setFeedback] = useState(""),
     [mediaId, setMediaId] = useState(""),
+    [uploadProgress, setUploadProgress] = useState<number | null>(null),
     [submittedLocally, setSubmittedLocally] = useState(false),
     [expanded, setExpanded] = useState(false),
     [preview, setPreview] = useState<{ url: string; mime: string } | null>(
@@ -463,22 +465,19 @@ function WorkItem({
                   e.target.value = "";
                   if (!file) return;
                   void run(async () => {
-                    if (file.size > 200 * 1024 * 1024) throw new Error("Maximum file size is 200 MB");
-                    const form = new FormData(); form.append("file", file);
-                    const response = await fetch(`/api/custom-retainers/${publicId}/tasks/${task.public_id}/media`, {
-                      method: "POST", credentials: "include", body: form,
-                    });
-                    const result = await response.json();
-                    if (!response.ok) throw new Error(result.error || "Upload failed. Please retry.");
-                    setMediaId(result.id);
+                    try {
+                      const result = await uploadLargeMedia(file, 'custom', { retainerId: publicId, taskId: task.public_id }, setUploadProgress);
+                      setMediaId(String(result.id));
+                    } finally { setUploadProgress(null); }
                   });
                 }} />
             </label>
             <p className="text-xs text-muted-foreground">
-              JPEG, PNG, WebP, MP4, MOV or WebM, up to 200 MB and 30 minutes.
+              JPEG, PNG, WebP, MP4, MOV or WebM, up to 5 GB and 30 minutes.
               We create a watermarked preview for review. The clean original stays private until this cycle is paid.
             </p>
             {!data.protectedUploadsEnabled && <p role="status" className="text-amber-700 text-sm">Protected uploads are not available yet. Please contact Viewrr support.</p>}
+            {uploadProgress !== null && <p role="status" className="text-sm">Uploading… {uploadProgress}% — keep this page open.</p>}
             {uploads.map((m: any) => <div key={m.id} className="rounded-lg border p-3 space-y-2">
               <p className="text-sm break-all">{m.filename}</p>
               {m.status === "ready" ? <div className="flex flex-wrap gap-2">

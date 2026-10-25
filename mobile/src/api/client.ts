@@ -85,9 +85,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
 
-  if (signal) {
-    signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
-  }
+  const cancel = () => controller.abort(signal?.reason);
+  if (signal?.aborted) cancel();
+  signal?.addEventListener("abort", cancel, { once: true });
 
   let response: Response;
   try {
@@ -112,6 +112,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     );
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
   }
 
   if (!response.ok) {

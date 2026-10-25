@@ -2,7 +2,7 @@
 // PRD-020 WS-D: Durable object storage (Cloudflare R2 via S3 SDK)
 // Provider: Cloudflare R2 — S3-compatible, no egress fees
 
-import { S3Client, HeadObjectCommand, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, HeadObjectCommand, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, ListPartsCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import crypto from "crypto";
 
@@ -121,3 +121,35 @@ export async function readPrivateObject(objectKey: string): Promise<import('node
   if (!result.Body) throw new Error('Private file unavailable');
   return result.Body as import('node:stream').Readable;
 }
+
+// Authenticated API requests relay bounded parts. Clients never receive a
+// storage credential or URL capable of overwriting a completed original.
+export const multipartObjectStorage = {
+  async create(key: string, mime: string) {
+    const result = await getS3().send(new CreateMultipartUploadCommand({ Bucket: STORAGE_BUCKET!, Key: key, ContentType: mime }));
+    if (!result.UploadId) throw new Error('Storage did not create an upload');
+    return result.UploadId;
+  },
+  async part(key: string, uploadId: string, part: number, body: import('node:stream').Readable, size: number) {
+    await getS3().send(new UploadPartCommand({ Bucket: STORAGE_BUCKET!, Key: key, UploadId: uploadId, PartNumber: part, Body: body, ContentLength: size }));
+  },
+  async list(key: string, uploadId: string) {
+    const parts: Array<{ PartNumber: number; Size: number; ETag: string }> = [];
+    let marker: string | undefined;
+    do {
+      const result = await getS3().send(new ListPartsCommand({ Bucket: STORAGE_BUCKET!, Key: key, UploadId: uploadId, PartNumberMarker: marker }));
+      for (const p of result.Parts ?? []) parts.push({ PartNumber: p.PartNumber!, Size: p.Size!, ETag: p.ETag! });
+      marker = result.IsTruncated ? result.NextPartNumberMarker : undefined;
+    } while (marker);
+    return parts;
+  },
+  async complete(key: string, uploadId: string, parts: Array<{ PartNumber: number; ETag: string }>) {
+    await getS3().send(new CompleteMultipartUploadCommand({ Bucket: STORAGE_BUCKET!, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts.map(({ PartNumber, ETag }) => ({ PartNumber, ETag })) } }));
+  },
+  async abort(key: string, uploadId: string) {
+    try { await getS3().send(new AbortMultipartUploadCommand({ Bucket: STORAGE_BUCKET!, Key: key, UploadId: uploadId })); }
+    catch (e: any) { if (e.name !== 'NoSuchUpload' && e.$metadata?.httpStatusCode !== 404) throw e; }
+  },
+  head: verifyObjectExists,
+  remove: deleteObject,
+};

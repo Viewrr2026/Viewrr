@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, serial, boolean, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, bigint, jsonb, real, serial, boolean, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -928,7 +928,9 @@ export const uploadObjects = pgTable("upload_objects", {
   resourceType: text("resource_type").notNull(), // portfolio | profile | project | deliverable | message
   resourceId: integer("resource_id"),            // nullable — set after resource is created
   mimeType: text("mime_type").notNull(),
-  sizeBytes: integer("size_bytes"),
+  sizeBytes: bigint("size_bytes", { mode: "number" }),
+  multipartUploadId: text("multipart_upload_id"),
+  uploadContext: jsonb("upload_context"),
   originalFilename: text("original_filename"),    // stored as metadata only (never used as path)
   status: text("status").notNull().default("pending"), // pending | uploaded | ready | deleted
   uploadIntentExpiresAt: text("upload_intent_expires_at").notNull(), // when presigned PUT URL expires

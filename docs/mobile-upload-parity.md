@@ -2,7 +2,7 @@
 
 Implemented paths needing device testing: feed, portfolio photos/videos, showreel video, profile/banner and one-off deliveries. Photos and Files selectors use the same R2 backend, limits, processing and payment checks as web. Fixed uploaded photos being classified as feed videos, misleading photo play icons and outdated no-upload copy. Image-only posts are now supported.
 
-Photos selection converts unsupported images such as HEIC to JPEG. Supported JPEG/PNG/WebP and videos are not converted by this uploader. Limits: 5 MB profile, 50 MB public media, 200 MB deliveries. Files selection rejects unidentified MIME types.
+Photos selection converts unsupported images such as HEIC to JPEG. Supported JPEG/PNG/WebP and videos are not converted by this uploader. Limits: 5 MB profile; 5 GB public media and project/cycle/custom-retainer deliveries. Videos remain limited to 30 minutes and 40-megapixel frames. Files selection rejects unidentified MIME types. The app reads 8 MB at a time with FileHandle and uploads each chunk with retries and progress; keep Viewrr open while uploading. Deploy migration 0018 and the matching server before releasing the new mobile build.
 
 ## Remaining differences
 
