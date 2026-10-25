@@ -25,12 +25,15 @@ Official setup references: [Stripe web domains](https://docs.stripe.com/payments
 4. Build with `APP_ENV=production npx eas-cli@latest build --platform ios --profile production --auto-submit`. This uploads to App Store Connect/TestFlight; it does not itself request public App Store review. Use an App Store Connect version matching 0.1.1.
 5. Test on a physical iPhone with Apple Pay and in Safari on a registered HTTPS domain. Expo Go and a JavaScript export cannot test Apple Pay or Apple signing.
 
+The iOS build includes a camera purpose string for Stripe's optional Scan Card action. `release:config` checks the generated Info.plist after Expo plugins run, as well as the Apple Pay and production push entitlements. Changes to this purpose string require a new native build; resubmitting an older binary or publishing an OTA update cannot fix a missing Info.plist key.
+
 ## Payment acceptance checks
 
 Use a staging/test Stripe environment and test counterparties for functional testing. Do not mark invoices paid manually.
 
 - Pay a one-off invoice and an accepted retainer cycle with Apple Pay. Confirm the charged amount, the agreed platform fee and the freelancer destination, then verify originals unlock only after the server confirms payment.
 - Repeat with card fallback, including a card requiring bank authentication. Return from authentication, leave/reopen the screen, and restart the app while confirmation is pending.
+- On iOS, choose Scan Card and confirm the camera prompt explains payment-card scanning. Deny camera access and confirm manual card entry remains available; also test allowing access. Opening checkout alone should not prompt for camera access.
 - Cancel the wallet before authorizing. Check that the invoice remains unpaid and the same payment can be resumed.
 - Test a decline and loss of network immediately after authorizing. The UI must show a retryable decline or pending verification as appropriate, without a second charge or premature file access.
 - Check a supported device with no configured Apple Pay card and a browser without wallet support: card checkout must remain usable.

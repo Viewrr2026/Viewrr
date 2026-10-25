@@ -79,6 +79,8 @@ const BUNDLE_ID: Record<AppEnv, string> = {
 const EXPO_OWNER = "viewrr-limited";
 const EXPO_SLUG = "viewrr-app";
 const EAS_PROJECT_ID = "1d650340-9486-46f3-894f-86b4f4d9eb5e";
+const CAMERA_USAGE_DESCRIPTION =
+  "Viewrr uses your camera to scan a payment card when you choose Scan Card at checkout.";
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
@@ -100,6 +102,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     bundleIdentifier: BUNDLE_ID[APP_ENV],
     supportsTablet: false,
     infoPlist: {
+      // Stripe PaymentSheet includes optional card scanning on iOS.
+      NSCameraUsageDescription: CAMERA_USAGE_DESCRIPTION,
       // App Store export-compliance declaration.
       //
       // Viewrr Mobile uses only encryption that Apple treats as exempt: HTTPS/TLS
@@ -117,6 +121,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: BUNDLE_ID[APP_ENV],
+    // Preserve the existing Android camera restriction; card scanning is iOS-only.
+    blockedPermissions: ["android.permission.CAMERA"],
     adaptiveIcon: {
       backgroundColor: "#FF5A1F",
       foregroundImage: "./assets/images/android-icon-foreground.png",
@@ -132,7 +138,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   plugins: [
     "expo-router",
     ["@stripe/stripe-react-native", { merchantIdentifier: "merchant.uk.co.viewrr.app", enableGooglePay: false }],
-    ["expo-image-picker", { photosPermission: "Choose photos and videos to share on Viewrr.", cameraPermission: false, microphonePermission: false }],
+    [
+      "expo-image-picker",
+      {
+        photosPermission: "Choose photos and videos to share on Viewrr.",
+        // false would remove the iOS purpose string above, including for Stripe.
+        cameraPermission: CAMERA_USAGE_DESCRIPTION,
+        microphonePermission: false,
+      },
+    ],
     [
       "expo-font",
       {
