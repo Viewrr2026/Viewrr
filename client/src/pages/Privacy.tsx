@@ -7,7 +7,7 @@ export default function Privacy() {
         <div className="mb-10">
           <Link href="/" className="text-primary text-sm font-medium hover:underline">← Back to Viewrr</Link>
           <h1 className="text-4xl font-bold mt-6 mb-2">Privacy Policy</h1>
-          <p className="text-muted-foreground text-sm">Last updated: 23 October 2026</p>
+          <p className="text-muted-foreground text-sm">Last updated: 25 October 2026</p>
         </div>
 
         <div className="prose prose-neutral dark:prose-invert max-w-none space-y-8 text-foreground">
@@ -32,7 +32,7 @@ export default function Privacy() {
 
           <section>
             <h2 className="text-xl font-semibold mb-3">Mobile permissions and your choices</h2>
-            <p className="text-muted-foreground leading-relaxed">You choose the photos, videos or files to upload using your device picker. The app does not request access to your address book, GPS, camera or microphone. Profile location is information you type yourself. Push notifications are optional and can be disabled in device settings; notification text may appear on your lock screen. You can export your data or request account deletion from Profile → Privacy in the app.</p>
+            <p className="text-muted-foreground leading-relaxed">You choose the photos, videos or files to upload using your device picker. During iOS checkout, Stripe can request camera access if you choose to scan a payment card. Scanning is optional; you can enter your card details manually instead. The app does not request access to your address book, GPS or microphone. Profile location is information you type yourself. Push notifications are optional and can be disabled in device settings; notification text may appear on your lock screen. You can export your data or request account deletion from Profile → Privacy in the app.</p>
           </section>
 
           <section>
