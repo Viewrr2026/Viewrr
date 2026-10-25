@@ -5,7 +5,7 @@
   "description": "Viewrr mobile app (React Native + Expo). Isolated package \u2014 not part of the root web/server build.",
   "dependencies": {
     "@stripe/stripe-react-native": "0.64.0",
-    "expo": "~57.0.30",
+    "expo": "~57.0.31",
     "expo-constants": "~57.0.22",
     "expo-dev-client": "~57.0.20",
     "expo-device": "~57.0.2",
@@ -16,8 +16,8 @@
     "expo-image-picker": "~57.0.20",
     "expo-linear-gradient": "~57.0.2",
     "expo-linking": "~57.0.13",
-    "expo-notifications": "~57.0.23",
-    "expo-router": "~57.0.28",
+    "expo-notifications": "~57.0.24",
+    "expo-router": "~57.0.29",
     "expo-secure-store": "~57.0.4",
     "expo-splash-screen": "~57.0.10",
     "expo-status-bar": "~57.0.1",
@@ -61,9 +61,6 @@
   "overrides": {
     "shell-quote": "1.11.0",
     "brace-expansion": "5.0.12",
-    "decode-uri-component": "0.5.0",
-    "xcode": {
-      "uuid": "11.1.1"
-    }
+    "decode-uri-component": "0.5.0"
   }
 }
