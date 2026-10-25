@@ -9,17 +9,49 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { randomUUID } from 'node:crypto';
 import { requireAuth } from './auth-middleware';
-import { retainerPool } from './retainer-v1-db';
+import { retainerPool, retainerTransaction } from './retainer-v1-db';
 import { assertProjectParty } from './project-access';
 import { hasVerifiedProjectPayment } from './project-payment-verification';
-import { STORAGE_CONFIGURED, putPrivateObject, readPrivateObject, createPresignedDownloadUrl, deleteObject } from './object-storage';
+import { STORAGE_CONFIGURED, putPrivateObject, readPrivateObject, createPresignedDownloadUrl, deleteObject, multipartObjectStorage } from './object-storage';
+import { createMultipartMediaService } from './media-multipart';
+import { authorizeMediaUpload, publishCustomUpload } from './media-upload-access';
+import { MEDIA_PART_BYTES, mediaUploadLimit, mediaUploadLimitLabel } from '../shared/media-upload';
 import { renderRetainerPreview } from './retainer-v1-media';
 import { PUBLIC_MEDIA_SCOPES, MEDIA_MIMES, canReadMedia, mediaPath } from './media-policy';
 const upload = multer({ dest: tmpdir(), limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 0 }, fileFilter: (_req, file, cb) => cb(null, MEDIA_MIMES.has(file.mimetype)) });
 const db = () => retainerPool();
+const multipart = createMultipartMediaService({ transaction: retainerTransaction, storage: multipartObjectStorage, authorize: authorizeMediaUpload, publishCustom: publishCustomUpload });
+const chunkUpload = multer({ dest: tmpdir(), limits: { fileSize: MEDIA_PART_BYTES, files: 1, fields: 0 } });
 const fail = (status: number, message: string): never => { throw Object.assign(new Error(message), { status }); };
 function error(res: any, e: any) { res.status(e.status || (e.code === 'LIMIT_FILE_SIZE' ? 413 : 500)).json({ error: e.status ? e.message : e.code === 'LIMIT_FILE_SIZE' ? 'Maximum upload size is 200 MB.' : 'Unable to process media. Please retry.' }); }
 export function registerMediaRoutes(app: Express) {
+  app.post('/api/media/uploads/:scope', requireAuth, rateLimit({ windowMs: 60_000, limit: 10, keyGenerator: req => String(req.auth!.userId) }), async (req, res) => {
+    try {
+      if (!STORAGE_CONFIGURED) fail(503, 'File storage is not configured.');
+      res.status(201).json(await multipart.start(req.auth!.userId, String(req.params.scope), req.body));
+    } catch (e) { error(res, e); }
+  });
+  app.put('/api/media/uploads/:id/parts/:part', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id), part = Number(req.params.part);
+      if (!Number.isSafeInteger(id) || !Number.isSafeInteger(part) || id < 1 || part < 1) fail(400, 'Invalid upload chunk.');
+      if (!(await db().query("SELECT id FROM upload_objects WHERE id=$1 AND owner_user_id=$2 AND multipart_upload_id IS NOT NULL AND status='media_uploading' AND upload_intent_expires_at::timestamptz > NOW()", [id, req.auth!.userId])).rows.length) fail(404, 'Upload not found or expired.');
+      await new Promise<void>((resolve, reject) => chunkUpload.single('file')(req, res, e => e ? reject(e) : resolve()));
+      if (!req.file) fail(400, 'Choose an upload chunk.');
+      res.json(await multipart.part(req.auth!.userId, id, part, req.file!));
+    } catch (e: any) {
+      if (e.code === 'LIMIT_FILE_SIZE') res.status(413).json({ error: 'Upload chunk exceeds 8 MB.' });
+      else error(res, e);
+    } finally { if (req.file) await rm(req.file.path, { force: true }); }
+  });
+  app.post('/api/media/uploads/:id/complete', requireAuth, async (req, res) => {
+    try { res.status(202).json(await multipart.complete(req.auth!.userId, Number(req.params.id))); }
+    catch (e) { error(res, e); }
+  });
+  app.delete('/api/media/uploads/:id', requireAuth, async (req, res) => {
+    try { await multipart.abort(req.auth!.userId, Number(req.params.id)); res.sendStatus(204); }
+    catch (e) { error(res, e); }
+  });
   app.post('/api/media/upload/:scope', requireAuth, rateLimit({windowMs: 60_000, limit: 10}), async (req, res) => {
     try {
       if (!STORAGE_CONFIGURED) fail(503, 'File storage is not configured.');
@@ -44,7 +76,7 @@ export function registerMediaRoutes(app: Express) {
         if (!file) return res.status(400).json({error:'Choose a JPEG, PNG, WebP, MP4, MOV or WebM file.'});
         try {
           if (scope === 'profile' && (!file.mimetype.startsWith('image/') || file.size > 5 * 1024 * 1024)) fail(400, 'Choose a profile image under 5 MB.');
-          if (!['delivery','cycle'].includes(scope) && file.size > 50 * 1024 * 1024) fail(400, 'Public media must be under 50 MB.');
+          if (file.size > mediaUploadLimit(scope)) fail(400, `Maximum file size is ${mediaUploadLimitLabel(scope)}.`);
           const key = `media/${randomUUID()}`;
           // Persist the key before writing bytes, so an interrupted upload is recoverable.
           const row = (await db().query(`INSERT INTO upload_objects (owner_user_id,object_key,resource_type,resource_id,mime_type,original_filename,size_bytes,status,upload_intent_expires_at,created_at) SELECT $1,$2,$3,$4,$5,$6,$7,'media_uploading',$8,$8 FROM users WHERE id=$1 AND account_status='active' RETURNING *`, [req.auth!.userId,key,`media_${scope}`,['delivery','cycle'].includes(scope) ? resourceId : null,file.mimetype,file.originalname.replace(/[\x00-\x1f]/g,'').slice(0,180),file.size,new Date().toISOString()])).rows[0];
@@ -119,6 +151,6 @@ let started=false;
 export function startMediaWorker() {
   if (started || !STORAGE_CONFIGURED) return;
   started=true; let busy=false;
-  const tick=async()=>{if(busy)return;busy=true;try{await purgeNextPersonalUpload(db(),deleteObject);}catch{console.error('[media] Personal upload erasure will retry');}try{await processNextMedia();}catch{console.error('[media] Queue unavailable');}finally{busy=false;}};
+  const tick=async()=>{if(busy)return;busy=true;try{await multipart.cleanup();await purgeNextPersonalUpload(db(),deleteObject);}catch{console.error('[media] Upload cleanup will retry');}try{await processNextMedia();}catch{console.error('[media] Queue unavailable');}finally{busy=false;}};
   void tick();setInterval(()=>void tick(),5000).unref();
 }

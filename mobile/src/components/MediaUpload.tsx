@@ -6,13 +6,16 @@ import * as DocumentPicker from 'expo-document-picker';
 import { request } from '@/api/client';
 import { Button } from '@/components/Button';
 import { useTheme } from '@/theme';
+import { uploadLargeMedia, mediaUploadLimitLabel } from '@/lib/uploadLargeMedia';
+import { ApiError } from '@/api/errors';
 export function MediaUpload({scope='portfolio',projectId,retainerId,taskId,onBusyChange,onUploaded,imagesOnly=false,videosOnly=false}: {scope?:'portfolio'|'profile'|'feed'|'delivery'|'cycle'|'custom';projectId?:number;retainerId?:string;taskId?:string;onBusyChange?:(busy:boolean)=>void;imagesOnly?:boolean;videosOnly?:boolean;onUploaded:(url:string,mime:string)=>void}) {
   const {colors}=useTheme();const [busy,setBusy]=useState(false),[message,setMessage]=useState('');
   const [failed,setFailed]=useState<string|number|null>(null);
   const protectedWork=["delivery","cycle","custom"].includes(scope);
   useEffect(()=>{onBusyChange?.(busy);},[busy,onBusyChange]);
   const mounted=useRef(true);
-  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  const uploadController=useRef<AbortController|null>(null);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;uploadController.current?.abort();};},[]);
   async function wait(id:string|number) {
     for(let i=0;i<240;i++) {
       if(!mounted.current)return;
@@ -42,19 +45,19 @@ export function MediaUpload({scope='portfolio',projectId,retainerId,taskId,onBus
         if(result.canceled || !result.assets[0])return;
         file=result.assets[0];
       }
-      const max=protectedWork?200:scope==='profile'?5:50;
-      if(!file.mimeType)throw new Error('This file type could not be identified. Choose a JPEG, PNG, WebP, MP4, MOV or WebM.');
-      if(!file.size || file.size>max*1024*1024)throw new Error(`Choose a file under ${max} MB.`);
-      setMessage('Uploading…');const body=new FormData();body.append('file',{uri:file.uri,name:file.name,type:file.mimeType} as any);
-      const endpoint=scope==='custom'?`/api/custom-retainers/${retainerId}/tasks/${taskId}/media`:`/api/media/upload/${scope}`;
-      const uploaded=await request<{id:string|number}>(endpoint,{method:'POST',body,query:{projectId,retainerId,taskId},timeoutMs:180000});
+      uploadController.current=new AbortController();
+      setMessage('Uploading…');
+      const uploaded=await uploadLargeMedia(file,scope,{projectId,retainerId,taskId},percent=>{if(mounted.current)setMessage(`Uploading… ${percent}%. Keep Viewrr open.`);},uploadController.current.signal);
+      uploadController.current=null;
       await wait(uploaded.id);
-    }catch(e){setMessage(e instanceof Error?e.message:'Upload failed. Please retry.');}finally{setBusy(false);}
+    }catch(e){if(mounted.current)setMessage(e instanceof ApiError?(e.serverMessage??e.userMessage):e instanceof Error?e.message:'Upload failed. Please retry.');}finally{uploadController.current=null;if(mounted.current)setBusy(false);}
   }
   return <View style={{gap:8}}><Button label={busy?'Uploading / processing…':imagesOnly?'Choose photo':videosOnly?'Choose video':'Choose photo or video'} loading={busy} disabled={busy} onPress={()=>void pick("photos")} />
     <Button label="Choose from Files" disabled={busy} onPress={()=>void pick("files")} />
+    <Text style={{color:colors.mutedForeground}}>Up to {mediaUploadLimitLabel(scope)} per file.</Text>
     <Text style={{color:colors.mutedForeground}}>{protectedWork?'Watermarked preview for review; original released after verified payment.':'Public media for your profile or post.'}</Text>
     {!!message&&<Text accessibilityLiveRegion="polite" style={{color:colors.foreground}}>{message}</Text>}
+    {busy&&uploadController.current&&<Button label="Cancel upload" onPress={()=>uploadController.current?.abort()} />}
     {failed&&!busy&&<Button label="Retry processing" onPress={async()=>{setBusy(true);try{await request(scope==='custom'?`/api/custom-retainers/${retainerId}/media/${failed}/retry`:`/api/media/retry/${failed}`,{method:'POST',body:{}});await wait(failed);}catch(e){setMessage(String(e));}finally{setBusy(false);}}} />}
   </View>;
 }
