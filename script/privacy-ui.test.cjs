@@ -20,6 +20,7 @@ function loadSource(file, mocks = {}, extraExports = []) {
   const exports = {};
   vm.runInNewContext(outputText, {
     exports,
+    process: { env: { NODE_ENV: 'test', DATABASE_URL: 'postgresql://test.invalid/test' } },
     require: (id) => mocks[id] ?? ({
       'react/jsx-runtime': { jsx, jsxs: jsx },
       'react-native': { Text: 'Text', View: 'View', StyleSheet: { create: (styles) => styles } },
@@ -122,4 +123,130 @@ test('a server-rejected review stays open and shows the server error', async () 
   assert.equal(result.invalidations.length, 0);
   assert.equal(result.state[3], false);
   assert.equal(result.state[4], 'Reviews are only accepted on completed projects');
+});
+
+test('Pro timing choices show both outcomes, the expiry date and the refund explanation', () => {
+  const { DeletionTimingChoices } = loadSource('mobile/src/app/(app)/account/deletion.tsx', {}, ['DeletionTimingChoices']);
+  const selected=[];
+  const tree=DeletionTimingChoices({selected:null,onSelect:value=>selected.push(value),periodEnd:'2026-11-03T15:30:00Z',canScheduleEnd:true,disabled:false});
+  for(const label of ['Immediate account deletion','At the end of Pro Viewrr']) {
+    const radio=find(tree,node=>node.props?.accessibilityLabel===label);
+    assert.ok(radio); assert.equal(radio.props.accessibilityState.checked,false); radio.props.onPress();
+  }
+  assert.deepEqual(selected,['immediate','pro_period_end']);
+  assert.match(text(tree),/3 November 2026|November 3, 2026/);
+  assert.match(text(tree),/does not automatically refund unused time/);
+});
+
+test('an unavailable paid-through date does not invent an end-of-Pro date', () => {
+  const { DeletionTimingChoices } = loadSource('mobile/src/app/(app)/account/deletion.tsx', {}, ['DeletionTimingChoices']);
+  const tree=DeletionTimingChoices({selected:null,onSelect:()=>{},periodEnd:null,canScheduleEnd:false,disabled:false});
+  assert.equal(find(tree,node=>node.props?.accessibilityLabel==='At the end of Pro Viewrr').props.disabled,true);
+  assert.equal(find(tree,node=>node.props?.accessibilityLabel==='Immediate account deletion').props.disabled,false);
+  assert.match(text(tree),/expiry date is unavailable/);
+});
+
+for (const timing of ['immediate','pro_period_end']) {
+  test(`native ${timing} selection reaches password confirmation and the API; only completed deletion signs out`, async () => {
+    const requests=[],state=[]; let cursor=0, signedOut=0;
+    const account=loadSource('mobile/src/api/account.ts',{
+      '@/api/client':{api:{post:async(path,body)=>{
+        requests.push({path,body});
+        return path.endsWith('request-deletion')
+          ? {state:'pending',message:'Enter your password.'}
+          : {ok:true,state:timing==='immediate'?'anonymised':'scheduled',scheduledFor:'2026-11-03T15:30:00Z'};
+      }}},
+    });
+    const status={state:'none',blockers:[{code:'active_pro_subscription'}],retention:[],pro:{periodEnd:'2026-11-03T15:30:00Z',canScheduleEnd:true},proDeletionTiming:null};
+    const screen=loadSource('mobile/src/app/(app)/account/deletion.tsx',{
+      react:{useState:initial=>{const i=cursor++; if(!(i in state))state[i]=initial; return [state[i],value=>{state[i]=value;}];},useCallback:fn=>fn},
+      'expo-router':{useRouter:()=>({back(){}})},
+      '@/api/account':account,
+      '@/session/SessionProvider':{useSession:()=>({signOut:async()=>{signedOut++;}})},
+      '@/hooks/useAsyncResource':{useAsyncResource:()=>({resource:{phase:'ready',data:status}})},
+    });
+    const render=()=>{cursor=0; const outer=screen.default(); return find(outer,node=>node.type==='DataState').props.children(status);};
+    let tree=render();
+    assert.equal(find(tree,node=>node.type==='Button'&&node.props.variant==='destructive').props.disabled,true);
+    find(tree,node=>typeof node.type==='function'&&node.type.name==='DeletionTimingChoices').props.onSelect(timing);
+    tree=render(); find(tree,node=>node.type==='Button'&&node.props.variant==='destructive').props.onPress();
+    await new Promise(resolve=>setImmediate(resolve));
+    tree=render(); find(tree,node=>node.type==='TextField').props.onChangeText('test-password');
+    tree=render(); find(tree,node=>node.type==='Button'&&node.props.variant==='destructive').props.onPress();
+    tree=render(); find(tree,node=>node.type==='ActionSheet').props.actions[0].onPress();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(JSON.parse(JSON.stringify(requests)),[
+      {path:'/api/me/request-deletion',body:{proDeletionTiming:timing}},
+      {path:'/api/me/confirm-deletion',body:{password:'test-password',proDeletionTiming:timing}},
+    ]);
+    assert.equal(signedOut,timing==='immediate'?1:0);
+    assert.ok(!state.includes('test-password'),'password is cleared after confirmation');
+  });
+}
+
+test('account adapter keeps older responses compatible and preserves server timing on new responses', async () => {
+  let raw={state:'none'};
+  const account=loadSource('mobile/src/api/account.ts',{'@/api/client':{api:{get:async()=>raw}}});
+  let result=await account.fetchDeletionStatus();
+  assert.equal(result.pro,null); assert.equal(result.proDeletionTiming,null); assert.equal(result.proDeleteAfter,null);
+  raw={state:'scheduled',pro:{periodEnd:'2026-11-03T15:30:00Z',canScheduleEnd:true},proDeletionTiming:'pro_period_end',proDeleteAfter:'2026-11-03T15:30:00Z'};
+  result=await account.fetchDeletionStatus();
+  assert.equal(result.pro.canScheduleEnd,true); assert.equal(result.proDeleteAfter,raw.proDeleteAfter); assert.equal(result.proDeletionTiming,'pro_period_end');
+});
+
+function confirmationHandler(mocks) {
+  const source=readFileSync(resolve(root,'server/routes.ts'),'utf8');
+  const file=ts.createSourceFile('routes.ts',source,ts.ScriptTarget.Latest,true);
+  let registration;
+  const visit=node=>{
+    if(ts.isCallExpression(node)&&node.expression.getText(file)==='app.post'&&node.arguments[0]?.text==='/api/me/confirm-deletion') registration=node;
+    ts.forEachChild(node,visit);
+  };
+  visit(file);
+  assert.equal(registration.arguments[1].getText(file),'requireAuth');
+  const code=ts.transpileModule(`exports.handler=${registration.arguments[2].getText(file)};`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  const exports={}; vm.runInNewContext(code,{exports,console:{error(){},warn(){}},...mocks}); return exports.handler;
+}
+
+for(const password of [undefined,'wrong','correct']) {
+  test(`deletion endpoint authenticates ${password??'missing'} password before persisting intent or touching billing`,async()=>{
+    const events=[]; let status=200,body;
+    const handler=confirmationHandler({
+      storage:{getUser:async()=>({email:'test@example.invalid'}),getUserByEmail:async()=>({passwordHash:'hash'})},
+      verifyPassword:async value=>({valid:value==='correct'}),
+      parseProDeletionTiming:value=>value,
+      withAccountDeletionLock:async(user,run)=>{assert.equal(user,7); events.push('lock');return run({});},
+      checkDeletionBlockers:async()=>({}),
+      recordConfirmedDeletion:async(_db,user,_assessment,timing)=>{assert.equal(user,7);assert.equal(timing,'immediate');events.push('record');return 42;},
+      enqueueJob:async()=>events.push('queue'),
+      processConfirmedDeletion:async()=>{events.push('billing-and-cleanup');return {state:'anonymised'};},
+      anonymiseUserAccount:()=>{},clearSessionCookie:()=>events.push('sign-out'),
+    });
+    await handler({auth:{userId:7},body:{password,proDeletionTiming:'immediate'}},{status(value){status=value;return this;},json(value){body=value;return this;}});
+    assert.equal(status,password==='correct'?200:password===undefined?400:403);
+    assert.deepEqual(events,password==='correct'?['lock','record','queue','billing-and-cleanup','sign-out']:[]);
+    assert.ok(body);
+  });
+}
+
+test('deletion uses a transaction-scoped lock while consent writes commit independently', async () => {
+  const events=[],committed=[];
+  const service=loadSource('server/services/pro-deletion.ts',{
+    '@neondatabase/serverless':{neon:()=>({query:async(text,values)=>{events.push('write');committed.push({text,values});return [];}})},
+    '../retainer-v1-db':{retainerTransaction:async run=>{
+      events.push('begin');
+      try { const result=await run({query:async(text,values)=>{
+        assert.equal(text,'SELECT pg_advisory_xact_lock(17342, $1)'); assert.equal(values[0],7); events.push('lock');
+      }}); events.push('commit');return result;
+      } catch(error){events.push('rollback');throw error;}
+    }},
+  });
+  // The function needs a URL only to instantiate the mocked HTTP client.
+  // Supply process through the loader's runtime below, never a live database.
+  await assert.rejects(service.withAccountDeletionLock(7,async db=>{
+    await db.query('persist confirmed consent',[7]);
+    throw Error('simulated Stripe failure');
+  }),/simulated Stripe failure/);
+  assert.deepEqual(events,['begin','lock','write','rollback']);
+  assert.equal(committed.length,1);
 });

@@ -1,3 +1,4 @@
+import { getProDeletionOptions, type ProDeletionTiming } from "./pro-deletion";
 import { runDeletionCleanup, DELETE_AUTHORED_REVIEWS } from "./deletion-state";
 // server/services/privacy-service.ts
 // PRD-021 WS-B: Data export and account deletion/anonymisation
@@ -384,7 +385,7 @@ function isoInDays(days: number): string {
  * The old behaviour (HTTP 409 forever, with no path to deletion) was not a
  * lawful answer to an erasure request.
  */
-export async function checkDeletionBlockers(userId: number): Promise<DeletionAssessment> {
+export async function checkDeletionBlockers(userId: number, options: { skipPro?: boolean } = {}): Promise<DeletionAssessment> {
   const db = getDb();
   const sql = neon(process.env.DATABASE_URL!);
   const blockers: DeletionBlockerInfo[] = [];
@@ -474,9 +475,9 @@ export async function checkDeletionBlockers(userId: number): Promise<DeletionAss
 
   // 6. Live Pro subscription (recurring billing must be stopped first, or the
   //    user gets charged after they believe their account is gone).
-  const proSub = await sql`
+  const proSub = options.skipPro ? [] : await sql`
     SELECT status FROM pro_subscriptions
-    WHERE user_id = ${userId}
+    WHERE user_id = ${userId} AND membership_type = 'paid'
       AND status IN ('active', 'past_due', 'payment_failed', 'cancellation_scheduled')
     LIMIT 1
   `;
@@ -484,7 +485,7 @@ export async function checkDeletionBlockers(userId: number): Promise<DeletionAss
     blockers.push({
       code: "active_pro_subscription",
       label: "Pro Viewrr subscription still live",
-      detail: `Your subscription status is "${proSub[0].status}". Cancel it in Pro settings so Stripe stops billing you; deletion then proceeds at the end of the paid period.`,
+      detail: "Choose immediate deletion to end Pro now, or deletion at the end of your paid Pro period. Renewal is stopped after you confirm with your password.",
       clearsAutomatically: false,
       deferDays: 30,
     });
@@ -536,6 +537,9 @@ export type DeletionStatus = {
   scheduledFor?: string;
   blockers: { code: string; label: string; detail: string; clearsAutomatically: boolean }[];
   retention: { category: string; action: string; periodDays: number; detail: string }[];
+  pro: Awaited<ReturnType<typeof getProDeletionOptions>>;
+  proDeletionTiming: ProDeletionTiming | null;
+  proDeleteAfter: string | null;
 };
 
 /**
@@ -551,19 +555,24 @@ export async function getDeletionStatus(userId: number): Promise<DeletionStatus>
   let existingScheduledFor: string | null = null;
   let existingRequestState: string | null = null;
   let adminHold = false;
+  let proDeletionTiming: ProDeletionTiming | null = null;
+  let proDeleteAfter: string | null = null;
+  const pro = await getProDeletionOptions(userId);
   try {
     const rows = await sql`
-      SELECT state, status, scheduled_for
+      SELECT state, status, scheduled_for, pro_deletion_timing, pro_delete_after
       FROM account_deletion_requests
       WHERE user_id = ${userId}
         AND COALESCE(state, status) NOT IN ('anonymised', 'cancelled')
-      ORDER BY id DESC
+      ORDER BY CASE WHEN state='blocked' THEN 0 WHEN state IN ('scheduled','processing') THEN 1 ELSE 2 END, id DESC
       LIMIT 1
     `;
     if (rows.length) {
       existingScheduledFor = rows[0].scheduled_for ? new Date(rows[0].scheduled_for).toISOString() : null;
       existingRequestState = String(rows[0].state ?? rows[0].status ?? "");
       adminHold = existingRequestState === "blocked";
+      proDeletionTiming = rows[0].pro_deletion_timing ?? null;
+      proDeleteAfter = rows[0].pro_delete_after ? new Date(rows[0].pro_delete_after).toISOString() : null;
     }
   } catch (e: any) {
     // Pre-migration-0006 databases have no `state`/`scheduled_for` column.
@@ -585,13 +594,15 @@ export async function getDeletionStatus(userId: number): Promise<DeletionStatus>
     clearsAutomatically: b.clearsAutomatically,
   }));
 
+  const proStatus = { pro, proDeletionTiming, proDeleteAfter };
   if (adminHold) {
-    return { state: "blocked", scheduledFor: existingScheduledFor ?? undefined, blockers, retention };
+    return { ...proStatus, state: "blocked", scheduledFor: existingScheduledFor ?? undefined, blockers, retention };
   }
 
   // Only a password-CONFIRMED request may be described as scheduled.
   if (existingRequestState === "scheduled" || existingRequestState === "processing") {
     return {
+      ...proStatus,
       state: "scheduled",
       scheduledFor: existingScheduledFor ?? assessment.scheduledFor ?? undefined,
       blockers,
@@ -601,11 +612,11 @@ export async function getDeletionStatus(userId: number): Promise<DeletionStatus>
 
   // Request exists, but the user has not yet completed password confirmation.
   if (existingRequestState === "pending") {
-    return { state: "pending", blockers, retention };
+    return { ...proStatus, state: "pending", blockers, retention };
   }
 
   // Blockers alone do not mean deletion has been requested or confirmed.
-  return { state: "none", blockers, retention };
+  return { ...proStatus, state: "none", blockers, retention };
 }
 
 // ─── Anonymisation ───────────────────────────────────────────────────────────
