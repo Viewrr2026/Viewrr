@@ -84,7 +84,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: NAME[APP_ENV],
   slug: EXPO_SLUG,
-  version: "0.1.0",
+  version: "0.1.1",
   orientation: "portrait",
   scheme: IS_DEV ? "viewrr-dev" : IS_STAGING ? "viewrr-staging" : "viewrr",
   updates: {
@@ -131,6 +131,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   plugins: [
     "expo-router",
+    ["@stripe/stripe-react-native", { merchantIdentifier: "merchant.uk.co.viewrr.app", enableGooglePay: false }],
     ["expo-image-picker", { photosPermission: "Choose photos and videos to share on Viewrr.", cameraPermission: false, microphonePermission: false }],
     [
       "expo-font",
@@ -204,6 +205,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // own keys) instead of replacing the object outright.
     ...config.extra,
     appEnv: APP_ENV,
+    appleMerchantId: "merchant.uk.co.viewrr.app",
+    paymentUrlScheme: IS_DEV ? "viewrr-dev" : IS_STAGING ? "viewrr-staging" : "viewrr",
     apiBaseUrl: API_BASE_URL[APP_ENV],
     eas: {
       ...config.extra?.eas,

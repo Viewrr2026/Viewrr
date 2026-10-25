@@ -18,9 +18,8 @@ import type { Brief, BriefInterest, PublicUser } from "@/api/types";
  *     from the session server-side (contract § D). Sending an id would be both
  *     redundant and a way to ask for someone else's work.
  *   • Payment mutation endpoints (`POST /api/projects/:id/confirm-payment`,
- *     `PATCH /api/invoices/:id/paid`) are DELIBERATELY ABSENT. Payment state is
- *     read-only on mobile; the real money path is web Stripe. There is no
- *     function here that a screen could call to fake a payment.
+ *     `PATCH /api/invoices/:id/paid`) are DELIBERATELY ABSENT. Native checkout lives in api/payments.ts and confirms through Stripe.
+ *     Server verification remains the only way to establish payment.
  */
 
 /* ── Project shapes ───────────────────────────────────────────────────────── */

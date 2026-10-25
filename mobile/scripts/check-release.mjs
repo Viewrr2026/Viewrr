@@ -44,6 +44,13 @@ const notifications = config.plugins.find(
 );
 assert.equal(notifications?.[1]?.mode, "production");
 
+const stripePlugin = config.plugins.find(plugin => Array.isArray(plugin) && plugin[0] === "@stripe/stripe-react-native");
+assert.equal(stripePlugin?.[1]?.merchantIdentifier, "merchant.uk.co.viewrr.app");
+assert.equal(config.extra.appleMerchantId, stripePlugin[1].merchantIdentifier);
+assert.equal(config.extra.paymentUrlScheme, config.scheme);
+// A native Stripe module cannot be delivered over the old 0.1.0 OTA runtime.
+assert.notEqual(config.version, "0.1.0");
+
 console.log(`PASS: production config, ${config.ios.bundleIdentifier}, version ${config.version}`);
 console.log("NOT checked: Apple account, signing, native archive, privacy declarations, payments or device UX.");
 console.log("Passing this command is not App Store submission approval.");
