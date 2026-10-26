@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { parseVideoUrl, isValidVideoUrl } from "@/lib/videoEmbed";
 import VideoEmbed from "@/components/VideoEmbed";
+import FeedVideo from "@/components/FeedVideo";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -431,10 +432,12 @@ function PostCard({ pw }: { pw: PostWithUser }) {
         </DialogContent>
       </Dialog>
 
-      {/* Media — Vimeo/YouTube embed or image */}
+      {/* Uploaded videos play inline; external embeds keep provider controls. */}
       {pw.post.mediaUrl && (
         <div className="mx-5 mb-4">
-          {parseVideoUrl(pw.post.mediaUrl) ? (
+          {parseVideoUrl(pw.post.mediaUrl)?.provider === "upload" && pw.post.mediaUrl.endsWith(".mp4") ? (
+            <FeedVideo key={pw.post.mediaUrl} url={pw.post.mediaUrl} label={`Video by ${pw.user.name}`} />
+          ) : parseVideoUrl(pw.post.mediaUrl) ? (
             <VideoEmbed url={pw.post.mediaUrl} />
           ) : (
             <div className="rounded-xl overflow-hidden bg-muted aspect-video">
