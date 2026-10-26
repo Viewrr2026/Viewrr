@@ -1,9 +1,11 @@
-import { request } from "@/api/client";
-import { Alert } from "react-native";
-import { ExternalLink, Lock } from "lucide-react-native";
-import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { ExternalLink, Eye, Lock } from "lucide-react-native";
+import { useState } from "react";
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { Deliverable } from "@/api/work";
+import { MediaViewer } from "@/components/MediaViewer";
+import { parseVideoUrl } from "@/lib/media";
+import { mediaKind } from "@/lib/mediaPlayback";
 import { radii, spacing, typography, useTheme } from "@/theme";
 
 /** Originals remain payment-gated. Uploaded work can expose a separately
@@ -18,9 +20,11 @@ type DeliverableRowProps = {
 
 export function DeliverableRow({ deliverable, lockCopy }: DeliverableRowProps) {
   const { colors } = useTheme();
+  const [viewing, setViewing] = useState(false);
 
   const target = deliverable.locked ? deliverable.previewUrl ?? null : deliverable.url ?? deliverable.embedUrl ?? null;
   const openable = target !== null;
+  const inApp = !!target && (mediaKind(target) !== "web" || !!parseVideoUrl(target));
 
   const body = (
     <>
@@ -36,7 +40,7 @@ export function DeliverableRow({ deliverable, lockCopy }: DeliverableRowProps) {
         {deliverable.locked ? (
           <Lock size={16} color={colors.mutedForeground} strokeWidth={2.2} />
         ) : (
-          <ExternalLink size={16} color={colors.primary} strokeWidth={2.2} />
+          inApp ? <Eye size={16} color={colors.primary} strokeWidth={2.2} /> : <ExternalLink size={16} color={colors.primary} strokeWidth={2.2} />
         )}
       </View>
 
@@ -70,9 +74,14 @@ export function DeliverableRow({ deliverable, lockCopy }: DeliverableRowProps) {
   }
 
   return (
+    <>
+    {viewing && <MediaViewer source={{ kind: "url", url: target }} title={deliverable.label} backLabel="Back to deliveries" onClose={() => setViewing(false)} />}
     <Pressable
-      onPress={async () => {try {const url=target.startsWith("/api/media/") ? (await request<{url:string}>(target,{query:{resolve:1}})).url : target;await Linking.openURL(url);}catch {Alert.alert("Unable to open file", "Please refresh and try again.");}}}
-      accessibilityRole="link"
+      onPress={() => {
+        if (inApp) setViewing(true);
+        else void Linking.openURL(target).catch(() => Alert.alert("Unable to open link", "Please try again."));
+      }}
+      accessibilityRole="button"
       accessibilityLabel={`Open ${deliverable.label}`}
       style={({ pressed }) => [
         styles.row,
@@ -82,6 +91,7 @@ export function DeliverableRow({ deliverable, lockCopy }: DeliverableRowProps) {
     >
       {body}
     </Pressable>
+    </>
   );
 }
 

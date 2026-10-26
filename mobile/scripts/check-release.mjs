@@ -62,6 +62,11 @@ assert.deepEqual(generatedIos.entitlements["com.apple.developer.in-app-payments"
 assert.equal(config.extra.paymentUrlScheme, config.scheme);
 // A native Stripe module cannot be delivered over the old 0.1.0 OTA runtime.
 assert.notEqual(config.version, "0.1.0");
+// Native video playback also requires a new binary, not a 0.1.1 OTA update.
+assert.notEqual(config.version, "0.1.1");
+assert.equal(config.version, JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version);
+assert.ok(config.plugins.some(plugin => Array.isArray(plugin) && plugin[0] === "expo-video"));
+assert.equal(generatedInfoPlist.UIBackgroundModes?.includes("audio") ?? false, false);
 
 console.log(`PASS: production config, ${config.ios.bundleIdentifier}, version ${config.version}`);
 console.log("PASS: generated iOS camera/photo purpose strings and Apple Pay/push entitlements");

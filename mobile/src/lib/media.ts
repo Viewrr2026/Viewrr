@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "@/config/env";
+import { mediaKind } from "@/lib/mediaPlayback";
 /** Shared rendering rules for public R2 media and external video links. */
 
 export type VideoProvider = "vimeo" | "youtube" | "upload";
@@ -8,7 +9,7 @@ export type ParsedVideo = {
   id: string;
   /** Poster frame, served by the provider. */
   thumbnailUrl: string;
-  /** The canonical watch page, opened externally. */
+  /** Canonical media/watch URL; playback stays inside Viewrr. */
   watchUrl: string;
 };
 
@@ -24,6 +25,9 @@ export function parseVideoUrl(url: string | null | undefined): ParsedVideo | nul
   const clean = trimmed.startsWith(`${API_BASE_URL}/api/media/`) ? trimmed.slice(API_BASE_URL.length) : trimmed;
 
   if (/^\/api\/media\/\d+\/[a-f0-9-]+\/(original|preview)\.(jpg|mp4)$/.test(clean)) return {provider:"upload",id:clean,watchUrl:`${API_BASE_URL}${clean}`,thumbnailUrl:clean.endsWith(".jpg")?`${API_BASE_URL}${clean}`:""};
+  if (/^https?:\/\//i.test(trimmed) && mediaKind(trimmed) === "video") {
+    return { provider: "upload", id: trimmed, watchUrl: trimmed, thumbnailUrl: "" };
+  }
   const vimeo = VIMEO.exec(clean);
   if (vimeo?.[1]) {
     return {
