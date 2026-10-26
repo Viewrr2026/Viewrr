@@ -86,7 +86,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: NAME[APP_ENV],
   slug: EXPO_SLUG,
-  version: "0.1.1",
+  // expo-video adds native code; isolate its updates from the 0.1.1 runtime.
+  version: "0.1.2",
   orientation: "portrait",
   scheme: IS_DEV ? "viewrr-dev" : IS_STAGING ? "viewrr-staging" : "viewrr",
   updates: {
@@ -137,6 +138,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   plugins: [
     "expo-router",
+    ["expo-video", { supportsBackgroundPlayback: false, supportsPictureInPicture: false }],
     ["@stripe/stripe-react-native", { merchantIdentifier: "merchant.uk.co.viewrr.app", enableGooglePay: false }],
     [
       "expo-image-picker",

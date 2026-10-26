@@ -10,6 +10,10 @@ import { Screen } from '@/components/Screen';
 import { Card } from '@/components/Card';
 import { Button } from '@/components/Button';
 import { MediaUpload } from '@/components/MediaUpload';
+import { MediaViewer } from '@/components/MediaViewer';
+import { API_BASE_URL } from '@/config/env';
+import { mediaKind, retainerMediaSource, type MediaSource } from '@/lib/mediaPlayback';
+import { parseVideoUrl } from '@/lib/media';
 import { useSession } from '@/session/SessionProvider';
 import { useTheme } from '@/theme';
 
@@ -60,6 +64,7 @@ export default function RetainerDeliveries() {
 function WorkItem({snapshot,cycle,task,userId,refresh}:{snapshot:Snapshot;cycle:any;task:any;userId?:number;refresh:()=>Promise<void>}) {
   const {colors}=useTheme();const {custom,data,publicId}=snapshot;
   const [note,setNote]=useState(''),[file,setFile]=useState(''),[busy,setBusy]=useState(false),[uploading,setUploading]=useState(false),[error,setError]=useState('');
+  const [viewing,setViewing]=useState<MediaSource|null>(null);
   const taskId=task.public_id??task.publicId;
   const freelancer=userId===(custom?data.freelancerId:data.agreement.freelancerUserId);
   const subs=snapshot.submissions.filter((s:any)=>custom?s.retainer_cycle_task_id===task.id:s.taskPublicId===taskId).sort((a:any,b:any)=>Number(b.version)-Number(a.version));
@@ -69,12 +74,20 @@ function WorkItem({snapshot,cycle,task,userId,refresh}:{snapshot:Snapshot;cycle:
   const final=Number(task.stageIndex??task.stage_index??0)>=Math.max(0,(task.stages?.length??1)-1);
   const media=custom?(data.media??[]).filter((m:any)=>m.task_id===task.id):[];
   async function run(fn:()=>Promise<unknown>){setBusy(true);setError('');try{await fn();await refresh();}catch(e){setError(message(e));}finally{setBusy(false);}}
-  async function open(reference:string,original=false){
-    if(custom){const result=await request<{url:string}>(`/api/custom-retainers/${publicId}/media/${reference}`,{query:{original:original?'true':'false'}});await Linking.openURL(result.url);}
-    else if(reference.startsWith('/api/media/')){const path=original?reference:reference.replace('/original.','/preview.');const result=await request<{url:string}>(path,{query:{resolve:1}});await Linking.openURL(result.url);}
-    else if(/^https?:\/\//i.test(reference))await Linking.openURL(reference);
+  function open(reference:string,original=false,mimeType=''){
+    // Keep existing support for external document/prototype links. Uploaded
+    // images, videos and provider videos always use the in-app viewer.
+    if(!custom&&mediaKind(reference)==='web'&&!parseVideoUrl(reference)){
+      if(!/^https?:\/\//i.test(reference)){setError('This link cannot be opened.');return;}
+      void Linking.openURL(reference).catch(()=>setError('Unable to open this link. Please try again.'));
+      return;
+    }
+    setViewing(custom
+      ? {kind:'retainer',retainerId:publicId,mediaId:reference,original,mimeType}
+      : retainerMediaSource(reference,original,API_BASE_URL));
   }
   return <Card><View style={{gap:12}}>
+    {viewing&&<MediaViewer source={viewing} title={task.title??task.name??'Work preview'} backLabel="Back to deliveries" onClose={()=>setViewing(null)} />}
     <Text style={{color:colors.foreground,fontWeight:'700'}}>{task.title??task.name??`Work item ${task.item_number??task.id}`}</Text>
     {!custom&&<Text style={{color:colors.mutedForeground}}>Stage: {task.stages?.[Number(task.stageIndex??task.stage_index??0)]??"Not configured"}</Text>}
     <Text style={{color:colors.mutedForeground}}>{task.status.replaceAll('_',' ')}</Text>
@@ -94,9 +107,9 @@ function WorkItem({snapshot,cycle,task,userId,refresh}:{snapshot:Snapshot;cycle:
     {subs.map((s:any)=>{
       const reference=custom?s.media_id:s.deliverableUrl;
       return <View key={s.id} style={{gap:8,borderTopWidth:1,borderColor:colors.border,paddingTop:12}}><Text style={{color:colors.foreground}}>Version {s.version} · {s.status}</Text><Text style={{color:colors.mutedForeground}}>{s.note}</Text>
-        {!!reference&&<><Button label="Open preview" disabled={busy} onPress={()=>void run(()=>open(reference))}/><Button label="Download original" disabled={busy} onPress={()=>void run(()=>open(reference,true))}/></>}
+        {!!reference&&<><Button label="Open preview" disabled={busy} onPress={()=>open(reference,false,s.mime_type)}/><Button label="Open original" disabled={busy} onPress={()=>open(reference,true,s.mime_type)}/></>}
       </View>;
     })}
-    {!custom&&snapshot.updates.filter((u:any)=>u.taskPublicId===taskId).map((u:any)=><View key={u.id} style={{gap:6}}><Text style={{color:colors.foreground}}>{u.stageName}: {u.note}</Text>{!!u.deliverableUrl&&<Button label="Open progress preview" onPress={()=>void run(()=>open(u.deliverableUrl))}/>}</View>)}
+    {!custom&&snapshot.updates.filter((u:any)=>u.taskPublicId===taskId).map((u:any)=><View key={u.id} style={{gap:6}}><Text style={{color:colors.foreground}}>{u.stageName}: {u.note}</Text>{!!u.deliverableUrl&&<Button label="Open progress preview" onPress={()=>open(u.deliverableUrl)}/>}</View>)}
   </View></Card>;
 }

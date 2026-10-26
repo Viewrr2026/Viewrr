@@ -1,8 +1,8 @@
 {
   "name": "viewrr-mobile",
   "main": "expo-router/entry",
-  "version": "0.1.1",
-  "description": "Viewrr mobile app (React Native + Expo). Isolated package \u2014 not part of the root web/server build.",
+  "version": "0.1.2",
+  "description": "Viewrr mobile app (React Native + Expo). Isolated package — not part of the root web/server build.",
   "dependencies": {
     "@stripe/stripe-react-native": "0.64.0",
     "expo": "~57.0.31",
@@ -23,6 +23,7 @@
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.4",
     "expo-updates": "~57.0.26",
+    "expo-video": "~57.0.5",
     "lucide-react-native": "^1.37.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -38,6 +39,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "react-test-renderer": "19.2.3",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -49,13 +51,14 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "release:config": "node scripts/check-release.mjs",
-    "release:preflight": "npm run fonts:check && npm run release:config && npm run test:dependencies && npm run typecheck && expo install --check",
+    "release:preflight": "npm run fonts:check && npm run release:config && npm run test:dependencies && npm run test:media && npm run typecheck && expo install --check",
     "doctor": "npx expo-doctor",
     "lint": "expo lint",
     "postinstall": "node scripts/patch-query-string.cjs && node scripts/prepare-fonts.mjs",
     "test:dependencies": "node --test scripts/dependency-security.test.cjs",
     "fonts:prepare": "node scripts/prepare-fonts.mjs",
-    "fonts:check": "node scripts/prepare-fonts.mjs --check"
+    "fonts:check": "node scripts/prepare-fonts.mjs --check",
+    "test:media": "node --test scripts/media-playback.test.cjs"
   },
   "private": true,
   "overrides": {

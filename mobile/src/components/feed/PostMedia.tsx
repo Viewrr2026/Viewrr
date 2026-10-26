@@ -1,22 +1,13 @@
 import { Image } from "expo-image";
 import { Play } from "lucide-react-native";
 import { useState } from "react";
-import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { MediaViewer } from "@/components/MediaViewer";
 import { postMedia } from "@/lib/media";
 import { radii, spacing, typography, useTheme } from "@/theme";
 
-/**
- * A post's single media slot.
- *
- * Viewrr stores one optional `mediaUrl` per post and nothing else — there is no
- * gallery, no carousel and no uploaded asset anywhere in the schema. Images are
- * remote URLs; videos are Vimeo/YouTube links which the website embeds in an
- * iframe. Native has no iframe, so a video renders as the provider's own poster
- * frame with a play affordance and opens in the system player on tap. That is
- * an honest representation of what the data is, not a stand-in for playback
- * that does not exist.
- */
+/** Uploaded videos use native playback; provider links stay embedded in-app. */
 export function PostMediaView({
   mediaUrl,
   mediaType,
@@ -26,6 +17,7 @@ export function PostMediaView({
 }) {
   const { colors } = useTheme();
   const [failed, setFailed] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
   const media = postMedia(mediaUrl, mediaType);
   if (!media) return null;
@@ -45,11 +37,13 @@ export function PostMediaView({
   }
 
   const { video } = media;
-  const label = video.provider === "upload" ? "Watch video" : video.provider === "vimeo" ? "Watch on Vimeo" : "Watch on YouTube";
+  const label = "Play video";
 
   return (
+    <>
+    {playing && <MediaViewer source={{ kind: "url", url: mediaUrl! }} title="Feed video" backLabel="Back to feed" onClose={() => setPlaying(false)} />}
     <Pressable
-      onPress={() => void Linking.openURL(video.watchUrl)}
+      onPress={() => setPlaying(true)}
       accessibilityRole="button"
       accessibilityLabel={label}
       style={({ pressed }) => [styles.videoWrap, pressed && styles.pressed]}
@@ -77,6 +71,7 @@ export function PostMediaView({
         <Text style={styles.providerLabel}>{label}</Text>
       </View>
     </Pressable>
+    </>
   );
 }
 
