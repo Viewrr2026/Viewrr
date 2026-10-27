@@ -105,8 +105,8 @@ export default function ProjectDeliverables() {
                   </CardLabel>
                   <Text style={[styles.copy, { color: colors.foreground }]}>
                     {party === "client"
-                      ? "Locked files stay hidden until payment clears. Once it does, they unlock here automatically."
-                      : "Locked files stay hidden from your client until the project is paid."}
+                      ? "Review watermarked previews here. Original files unlock after Viewrr verifies payment."
+                      : "Your client can review watermarked previews. Originals unlock after verified payment."}
                   </Text>
                   {party === "client" && !project.isRetainer ? (
                     <InvoicePaymentButton target={{ kind: "project", projectId: project.id }} onChanged={reload} />
@@ -116,7 +116,12 @@ export default function ProjectDeliverables() {
 
               <View style={styles.list}>
                 {deliverables.map((item) => (
-                  <DeliverableRow key={item.id} deliverable={item} lockCopy={lockCopy} />
+                  <View key={item.id} style={{ gap: spacing[2] }}>
+                    <DeliverableRow deliverable={item} lockCopy={lockCopy} />
+                    {party === "freelancer" && !project.isRetainer && !["completed", "cancelled"].includes(project.status) && !item.previewUrl && (
+                      <DeliveryPreviewAttachment projectId={project.id} deliveryId={item.id} onSaved={reload} />
+                    )}
+                  </View>
                 ))}
               </View>
             </View>
@@ -157,6 +162,7 @@ const styles = StyleSheet.create({
 function DeliveryComposer({ projectId, onSaved }: { projectId: number; onSaved: () => void }) {
   const { colors } = useTheme();
   const [label, setLabel] = useState(''), [url, setUrl] = useState('');
+  const [previewUploadUrl, setPreviewUploadUrl] = useState('');
   const [busy, setBusy] = useState(false), [feedback, setFeedback] = useState('');
   async function save() {
     if (busy) return;
@@ -165,18 +171,42 @@ function DeliveryComposer({ projectId, onSaved }: { projectId: number; onSaved: 
       const parsed = new URL(url.trim(), "https://www.viewrr.co.uk");
       if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('Use a public HTTPS delivery link.');
       setBusy(true); setFeedback('');
-      await api.post(`/api/projects/${projectId}/deliverables`, { label: label.trim(), url: uploaded ? url : parsed.href, embedUrl: uploaded ? url : parsed.href, platform: uploaded ? 'Viewrr upload' : 'link' });
-      setLabel(''); setUrl(''); Alert.alert('Delivery shared', 'You can now submit the stage for client review.'); onSaved();
+      await api.post(`/api/projects/${projectId}/deliverables`, { label: label.trim(), url: uploaded ? url : parsed.href, embedUrl: uploaded ? url : parsed.href, platform: uploaded ? 'Viewrr upload' : 'link', ...(previewUploadUrl ? { previewUploadUrl } : {}) });
+      setLabel(''); setUrl(''); setPreviewUploadUrl(''); Alert.alert('Delivery shared', 'You can now submit the stage for client review.'); onSaved();
     } catch (e) { setFeedback(e instanceof Error ? e.message : 'Could not share delivery. Try again.'); }
     finally { setBusy(false); }
   }
   const input = { color: colors.foreground, borderColor: colors.border, borderWidth: 1, borderRadius: 10, padding: 12 };
   return <Card><CardLabel>Share work</CardLabel>
-    <MediaUpload scope="delivery" projectId={projectId} onUploaded={url=>setUrl(url)} />
+    <MediaUpload scope="delivery" projectId={projectId} onUploaded={uploaded=>{setPreviewUploadUrl(uploaded);setUrl(current => /^https:\/\//.test(current.trim()) ? current : uploaded);}} />
     <TextInput accessibilityLabel="Delivery name" placeholder="Delivery name" placeholderTextColor={colors.mutedForeground} value={label} onChangeText={setLabel} maxLength={200} style={input} />
     <TextInput accessibilityLabel="Delivery link" placeholder="https://" placeholderTextColor={colors.mutedForeground} value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={input} />
-    <Text style={{ color: colors.mutedForeground }}>Share a hosted link with the right permissions. Viewrr cannot watermark or revoke access to an external link.</Text>
+    <Text style={{ color: colors.mutedForeground }}>Upload work for an automatic watermarked preview. For a hosted final link, upload a review file as well; the original link unlocks after payment.</Text>
     <Button label="Share delivery" loading={busy} disabled={busy || !label.trim() || !url.trim()} onPress={() => void save()} />
+    {!!feedback && <Text accessibilityRole="alert" style={{ color: colors.foreground }}>{feedback}</Text>}
+  </Card>;
+}
+
+function DeliveryPreviewAttachment({ projectId, deliveryId, onSaved }: { projectId: number; deliveryId: number; onSaved: () => void }) {
+  const { colors } = useTheme();
+  const [open, setOpen] = useState(false), [url, setUrl] = useState('');
+  const [busy, setBusy] = useState(false), [feedback, setFeedback] = useState('');
+  async function attach() {
+    if (busy || !url) return;
+    setBusy(true); setFeedback('');
+    try {
+      await api.patch(`/api/projects/${projectId}/deliverables/${deliveryId}/preview`, { previewUploadUrl: url });
+      setOpen(false); setUrl(''); onSaved();
+    } catch { setFeedback('Could not attach this preview. Please try again.'); }
+    finally { setBusy(false); }
+  }
+  if (!open) return <Button label="Add review preview" onPress={() => setOpen(true)} />;
+  return <Card><CardLabel>Review preview</CardLabel>
+    <Text style={{ color: colors.mutedForeground }}>Upload a copy for your client to review with a watermark before payment.</Text>
+    <MediaUpload scope="delivery" projectId={projectId} onUploaded={setUrl} />
+    {!!url && <Text style={{ color: colors.mutedForeground }}>Preview ready to attach.</Text>}
+    <Button label="Attach preview" disabled={!url || busy} loading={busy} onPress={() => void attach()} />
+    <Button label="Cancel" disabled={busy} onPress={() => setOpen(false)} />
     {!!feedback && <Text accessibilityRole="alert" style={{ color: colors.foreground }}>{feedback}</Text>}
   </Card>;
 }

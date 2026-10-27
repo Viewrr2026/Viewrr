@@ -32,6 +32,7 @@ export default function VideoEmbed({ url, className = "", showBadge = true }: Vi
         src={parsed.embedUrl}
         title="Video"
         allow="autoplay; fullscreen; picture-in-picture"
+        referrerPolicy="strict-origin-when-cross-origin"
         allowFullScreen
         className="absolute inset-0 w-full h-full"
         loading="lazy"

@@ -1,3 +1,4 @@
+import { validateDeliveryUpload, deliveryPreviewRows, projectDeliverableDto, attachDeliveryPreview } from "./delivery-previews";
 import { withAccountDeletionLock, parseProDeletionTiming, processConfirmedDeletion, getProDeletionOptions, applyProDeletionDate } from "./services/pro-deletion";
 import { recordConfirmedDeletion } from "./services/deletion-state";
 import { filterBlockedAuthors, requireOwnUserParam } from "./privacy-guards";
@@ -3784,25 +3785,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const locked = role === "client" && !isAdmin && !verified;
 
       res.set("Cache-Control", "private, no-store");
-      res.json(list.map(d => ({
-        id: d.id,
-        label: d.label,
-        platform: d.platform,
-        locked,
-        // ADDITIVE beyond the contract's minimum shape (mobile ignores extra
-        // fields): the web list needs `createdBy` for the freelancer's delete
-        // control and `createdAt` for its timestamp. Neither is sensitive — an
-        // actor id and a timestamp, both already visible to both parties — and
-        // neither can be used to reach the asset.
-        createdBy: d.createdBy,
-        createdAt: d.createdAt,
-        // OMITTED, not blanked, when locked. Nothing client-side can
-        // reconstruct them.
-        ...(d.platform === "Viewrr upload" ? { previewUrl: d.url.replace("/original.", "/preview.") } : {}),
-        ...(locked
-          ? { lockReason: "awaiting_payment" as const }
-          : { url: d.url, embedUrl: d.embedUrl }),
-      })));
+      const uploads = await deliveryPreviewRows(checkoutPool(), project.id);
+      res.json(list.map(d => projectDeliverableDto(d, locked, uploads)));
     } catch (e: any) {
       if (sendProjectAccessError(res, e)) return;
       res.status(500).json({ error: "Failed to load deliverables" });
@@ -3819,25 +3803,39 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (sendProjectAccessError(res, e)) return;
       return res.status(500).json({ error: "Failed to add deliverable" });
     }
-    let { url, label, platform, embedUrl } = req.body;
-    if (typeof url === "string" && url.startsWith("/api/media/")) {
-      const match = url.match(/^\/api\/media\/(\d+)\/([a-f0-9-]+)\/original\.(jpg|mp4)$/);
-      if (!match) return res.status(400).json({error:"Invalid uploaded file."});
-      const sql = neon(process.env.DATABASE_URL!);
-      const rows = await sql`SELECT id FROM upload_objects WHERE id=${Number(match[1])} AND object_key=${`media/${match[2]}`} AND owner_user_id=${req.auth!.userId} AND resource_id=${Number(req.params.id)} AND resource_type='media_delivery' AND status='ready'`;
-      if (!rows.length) return res.status(403).json({error:"Choose a ready file uploaded for this project."});
-      platform="Viewrr upload"; embedUrl=url;
-    } else if (platform === "Viewrr upload") return res.status(400).json({error:"Invalid uploaded file."});
-    if (!url || !label || !platform || !embedUrl) {
-      return res.status(400).json({ error: "Missing fields" });
+    try {
+      let { url, label, platform, embedUrl, previewUploadUrl } = req.body;
+      let previewMediaId: number | undefined;
+      if (typeof url === "string" && url.startsWith("/api/media/")) {
+        const upload = await validateDeliveryUpload(checkoutPool(), Number(req.params.id), req.auth!.userId, url);
+        platform = "Viewrr upload"; embedUrl = url; previewMediaId = upload.id;
+      } else if (platform === "Viewrr upload") return res.status(400).json({ error: "Invalid uploaded file." });
+      if (previewUploadUrl != null) {
+        previewMediaId = (await validateDeliveryUpload(checkoutPool(), Number(req.params.id), req.auth!.userId, previewUploadUrl)).id;
+      }
+      if (!url || !label || !platform || !embedUrl) return res.status(400).json({ error: "Missing fields" });
+      const d = await storage.addDeliverable({
+        projectId: Number(req.params.id), url: String(url), label: String(label),
+        platform: String(platform), embedUrl: String(embedUrl), createdBy: req.auth!.userId, previewMediaId,
+      });
+      res.json(d);
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.status ? e.message : "Failed to add deliverable" });
     }
-    const d = await storage.addDeliverable({
-      projectId: Number(req.params.id),
-      url: String(url), label: String(label),
-      platform: String(platform), embedUrl: String(embedUrl),
-      createdBy: req.auth!.userId,
-    });
-    res.json(d);
+  });
+
+  app.patch("/api/projects/:id/deliverables/:deliveryId/preview", requireAuth, async (req, res) => {
+    try {
+      const { project, role } = await assertProjectParty(Number(req.params.id), req.auth!.userId);
+      if (role !== "freelancer" || project.isRetainer === 1 || ["completed", "cancelled"].includes(project.status)) {
+        return res.status(403).json({ error: "This project is not open for freelancer uploads." });
+      }
+      await attachDeliveryPreview(checkoutPool(), project.id, Number(req.params.deliveryId), req.auth!.userId, req.body.previewUploadUrl);
+      res.json({ success: true });
+    } catch (e: any) {
+      if (sendProjectAccessError(res, e)) return;
+      res.status(e.status || 500).json({ error: e.status ? e.message : "Failed to attach preview" });
+    }
   });
 
   // PRD-018 A20: requireAuth + session-derived userId

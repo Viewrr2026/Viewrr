@@ -396,6 +396,7 @@ export type DeletedPost = typeof deletedPosts.$inferSelect;
 
 // ─── Deliverables (WIP file sharing) ─────────────────────────────────────────
 export const deliverables = pgTable("deliverables", {
+  previewMediaId: integer("preview_media_id"),
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull(),
   url: text("url").notNull(),
