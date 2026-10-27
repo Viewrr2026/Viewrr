@@ -1,3 +1,6 @@
+import UploadedMedia from "@/components/UploadedMedia";
+import VideoEmbed from "@/components/VideoEmbed";
+import { parseVideoUrl } from "@/lib/videoEmbed";
 import { InvoicePaymentForm } from "@/components/InvoicePaymentForm";
 import { createPortal } from "react-dom";
 import { MediaUpload } from "@/components/MediaUpload";
@@ -37,16 +40,9 @@ function detectPlatform(url: string): PlatformInfo {
     const u = new URL(url);
     const host = u.hostname.replace("www.", "");
 
-    if (host.includes("youtube.com") || host === "youtu.be") {
-      let id = u.searchParams.get("v");
-      if (!id && host === "youtu.be") id = u.pathname.slice(1);
-      if (!id) { const m = u.pathname.match(/\/embed\/([^/?]+)/); if (m) id = m[1]; }
-      return { name: "YouTube", color: "#FF0000", embedUrl: id ? `https://www.youtube.com/embed/${id}?rel=0&autoplay=0` : null, logo: "🎬" };
-    }
-    if (host.includes("vimeo.com")) {
-      const m = u.pathname.match(/\/(\d+)/);
-      return { name: "Vimeo", color: "#1AB7EA", embedUrl: m?.[1] ? `https://player.vimeo.com/video/${m[1]}?title=0&byline=0` : null, logo: "🎞️" };
-    }
+    const video = parseVideoUrl(url);
+    if (video?.provider === "youtube") return { name: "YouTube", color: "#FF0000", embedUrl: video.embedUrl, logo: "🎬" };
+    if (video?.provider === "vimeo") return { name: "Vimeo", color: "#1AB7EA", embedUrl: video.embedUrl, logo: "🎞️" };
     if (host.includes("drive.google.com")) {
       const m = u.pathname.match(/\/d\/([^/]+)/);
       return { name: "Google Drive", color: "#4285F4", embedUrl: m?.[1] ? `https://drive.google.com/file/d/${m[1]}/preview` : null, logo: "📁" };
@@ -77,8 +73,7 @@ function detectPlatform(url: string): PlatformInfo {
 // PRD-1 Decision 10: `GET /api/projects/:id/deliverables` now returns a GATED
 // DTO. When the viewer is the client and the project is not paid, the server
 // does not send `url` / `embedUrl` at all — so both are OPTIONAL here and every
-// consumer must cope with their absence. The watermark overlay below is now
-// only a visual cue; it is no longer what protects the asset.
+// consumer must cope with their absence. Previews are separate encoded files.
 interface Deliverable {
   id: number;
   label: string;
@@ -94,113 +89,16 @@ interface Deliverable {
   createdAt?: string;
 }
 
-// ── Watermark overlay ─────────────────────────────────────────────────────────
-function WatermarkLayer({ username = "" }: { username?: string }) {
-  // Build the repeating horizontal marquee text
-  const displayName = username ? `@${username} on Viewrr` : "Viewrr";
-  // Repeat enough times to guarantee full-width coverage regardless of screen size
-  const marqueeText = Array(12).fill(displayName).join("   ·   ");
-
-  return (
-    <div
-      className="absolute inset-0 pointer-events-none select-none z-10 flex items-center justify-center overflow-hidden"
-      aria-hidden
-    >
-      {/* Diagonal tinted stripe overlay */}
-      <div className="absolute inset-0 opacity-[0.18]" style={{
-        backgroundImage: `repeating-linear-gradient(
-          -45deg,
-          transparent,
-          transparent 60px,
-          rgba(255,90,31,0.15) 60px,
-          rgba(255,90,31,0.15) 61px
-        )`,
-      }} />
-
-      {/* Horizontal username band — centred across the middle */}
-      <div
-        className="absolute left-0 right-0 flex items-center overflow-hidden"
-        style={{
-          top: "50%",
-          transform: "translateY(-50%)",
-          background: "rgba(0,0,0,0.52)",
-          backdropFilter: "blur(3px)",
-          borderTop: "1px solid rgba(255,255,255,0.08)",
-          borderBottom: "1px solid rgba(255,255,255,0.08)",
-          padding: "10px 0",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {/* Static wide text — no animation needed, just overflow:hidden clips it */}
-        <span
-          className="text-sm font-bold tracking-widest uppercase"
-          style={{
-            color: "rgba(255,255,255,0.75)",
-            letterSpacing: "0.18em",
-            paddingLeft: "16px",
-            display: "block",
-            width: "max-content",
-          }}
-        >
-          {marqueeText}
-        </span>
-      </div>
-
-      {/* Centre stamp (Viewrr orange — unchanged) */}
-      <div
-        className="relative z-10 flex flex-col items-center gap-1.5 px-5 py-3 rounded-2xl border-2"
-        style={{
-          background: "rgba(0,0,0,0.38)",
-          borderColor: "rgba(255,90,31,0.6)",
-          backdropFilter: "blur(4px)",
-        }}
-      >
-        <Lock size={18} style={{ color: "#FF5A1F" }} />
-        <p className="text-white text-xs font-bold tracking-wide uppercase">Viewrr preview</p>
-        {username && (
-          <p className="text-white/70 text-[10px] font-semibold" style={{ color: "rgba(255,90,31,0.9)" }}>
-            @{username} on Viewrr
-          </p>
-        )}
-        <p className="text-white/50 text-[10px] text-center leading-relaxed">
-          Final files released after payment
-        </p>
-      </div>
-
-      {/* Tiled diagonal Viewrr text (orange — unchanged) */}
-      {Array.from({ length: 12 }).map((_, i) => (
-        <span
-          key={i}
-          className="absolute text-[10px] font-bold uppercase tracking-widest"
-          style={{
-            color: "rgba(255,90,31,0.22)",
-            top: `${(i % 4) * 26 + 5}%`,
-            left: `${Math.floor(i / 4) * 36 + 5}%`,
-            transform: "rotate(-35deg)",
-            whiteSpace: "nowrap",
-            pointerEvents: "none",
-            userSelect: "none",
-          }}
-        >
-          Viewrr · Pending Payment
-        </span>
-      ))}
-    </div>
-  );
-}
-
 // ── Embed modal (with optional watermark) ─────────────────────────────────────
 function EmbedModal({
   deliverable,
   watermarked,
   fullyRefunded = false,
-  username,
   onClose,
 }: {
   deliverable: Deliverable;
   watermarked: boolean;
   fullyRefunded?: boolean;
-  username?: string;
   onClose: () => void;
 }) {
   // The URL may be absent entirely (locked server-side). `detectPlatform`
@@ -209,6 +107,9 @@ function EmbedModal({
     ? detectPlatform(deliverable.url)
     : { name: deliverable.platform || "Link", color: "#FF5A1F", embedUrl: null, logo: "\u{1F512}" };
   const isLocked = fullyRefunded || deliverable.locked === true || !deliverable.url;
+  const preview = (isLocked || watermarked) ? deliverable.previewUrl : undefined;
+  const uploaded = preview || (!isLocked && deliverable.url?.startsWith('/api/media/') ? deliverable.url : undefined);
+  const video = !isLocked && deliverable.url ? parseVideoUrl(deliverable.url) : null;
 
   return createPortal(
     <div
@@ -222,13 +123,13 @@ function EmbedModal({
           <span className="text-lg">{info.logo}</span>
           <div>
             <p className="font-semibold text-white text-sm">{deliverable.label}</p>
-            <p className="text-xs text-white/70">{deliverable.previewUrl ? "Watermarked preview · Original available after payment" : `${info.name} · External provider access and sign-in may be required`}</p>
+            <p className="text-xs text-white/70">{preview ? "Watermarked preview · Original available after payment" : `${info.name} · External provider access and sign-in may be required`}</p>
           </div>
           {isLocked ? (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: "rgba(255,90,31,0.2)", color: "#FF5A1F", border: "1px solid rgba(255,90,31,0.4)" }}>
               <Lock size={9} /> {fullyRefunded ? "Delivery access withdrawn" : "Locked until payment"}
             </span>
-          ) : watermarked ? (
+          ) : preview ? (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: "rgba(255,90,31,0.2)", color: "#FF5A1F", border: "1px solid rgba(255,90,31,0.4)" }}>
               <Lock size={9} /> Watermarked
             </span>
@@ -248,25 +149,20 @@ function EmbedModal({
 
       {/* Embed + watermark */}
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-        {deliverable.previewUrl ? (
-          <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4">{deliverable.previewUrl.endsWith('.mp4') ? <video src={deliverable.previewUrl} controls playsInline className="block h-full w-full min-h-0 object-contain" /> : <img src={deliverable.previewUrl} alt="Watermarked delivery preview" className="block h-full w-full min-h-0 object-contain" />}</div>
+        {uploaded ? (
+          <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4"><UploadedMedia key={uploaded} url={uploaded} title={deliverable.label} /></div>
+        ) : !isLocked && video ? (
+          <div className="absolute inset-0 flex items-center justify-center"><VideoEmbed url={deliverable.url!} className="w-full max-h-full" showBadge={false} /></div>
         ) : !isLocked && deliverable.embedUrl ? (
-          <iframe
-            src={deliverable.embedUrl}
-            className="absolute inset-0 w-full h-full"
-            allow="autoplay; fullscreen; picture-in-picture; clipboard-write"
-            allowFullScreen
-            title={deliverable.label}
-            style={{ border: "none" }}
-          />
+          <iframe src={deliverable.embedUrl} className="absolute inset-0 w-full h-full" allow="autoplay; fullscreen; picture-in-picture; clipboard-write" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" title={deliverable.label} style={{ border: "none" }} />
         ) : isLocked ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-white/60 text-center px-8">
             <Lock size={40} />
-            <p className="text-sm font-semibold text-white">{fullyRefunded ? "Fully refunded — delivery access withdrawn." : "This deliverable is locked until payment"}</p>
+            <p className="text-sm font-semibold text-white">{fullyRefunded ? "Fully refunded — delivery access withdrawn." : "A review preview hasn’t been added yet"}</p>
             <p className="text-xs text-white/50 max-w-sm">
               {fullyRefunded
                 ? "The original invoice and refund history remain available in the project."
-                : "Viewrr releases the file link once the project is paid. The link is not sent to the browser before then."}
+                : "Ask your freelancer to add a review preview. The original file will unlock after Viewrr verifies payment."}
             </p>
           </div>
         ) : (
@@ -278,7 +174,6 @@ function EmbedModal({
             )}
           </div>
         )}
-        {watermarked && !isLocked && !deliverable.previewUrl && <WatermarkLayer username={username} />}
       </div>
     </div>, document.body
   );
@@ -711,6 +606,9 @@ export default function DeliverablesSection({
   const [, setLocation] = useLocation();
   const [showAdd, setShowAdd] = useState(false);
   const [urlInput, setUrlInput] = useState("");
+  const [previewUploadUrl, setPreviewUploadUrl] = useState("");
+  const [previewTarget, setPreviewTarget] = useState<Deliverable | null>(null);
+  const [attachmentUrl, setAttachmentUrl] = useState("");
   const [labelInput, setLabelInput] = useState(LABEL_OPTIONS[0]);
   const [customLabel, setCustomLabel] = useState("");
   const [embedTarget, setEmbedTarget] = useState<Deliverable | null>(null);
@@ -729,10 +627,7 @@ export default function DeliverablesSection({
   const [invoiceNotes, setInvoiceNotes] = useState('');
   const [vatPercent, setVatPercent] = useState(0);
 
-  // PRD-1 Decision 10: this flag is now COSMETIC ONLY. The watermark overlay it
-  // drives is a visual cue — the actual protection is that the server does not
-  // send `url` / `embedUrl` to an unpaid client at all. Never treat this as the
-  // access decision.
+  // The server decides original access; this chooses the freelancer review copy.
   const isWatermarked = projectStatus === "awaiting_payment" && paymentStatus !== "paid";
   const isClient = !isFreelancer;
 
@@ -787,17 +682,30 @@ export default function DeliverablesSection({
         label: finalLabel,
         platform: info.name,
         embedUrl: info.embedUrl ?? urlInput.trim(),
+        ...(previewUploadUrl ? { previewUploadUrl } : {}),
       });
       if (!res.ok) throw new Error("Failed");
     },
+    onError: () => setUrlError("Could not share this delivery. Please try again."),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "deliverables"] });
-      setUrlInput(""); setLabelInput(LABEL_OPTIONS[0]); setCustomLabel("");
+      setUrlInput(""); setPreviewUploadUrl(""); setLabelInput(LABEL_OPTIONS[0]); setCustomLabel("");
       setShowAdd(false); setUrlError("");
       // Auto-open Send Invoice dialog after sharing work
       if (isFreelancer && !existingInvoice) {
         setInvoiceOpen(true);
       }
+    },
+  });
+
+  const attachPreviewMutation = useMutation({
+    mutationFn: async () => {
+      if (!previewTarget || !attachmentUrl) throw new Error("Choose a preview file first.");
+      await apiRequest("PATCH", `/api/projects/${projectId}/deliverables/${previewTarget.id}/preview`, { previewUploadUrl: attachmentUrl });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "deliverables"] });
+      setPreviewTarget(null); setAttachmentUrl("");
     },
   });
 
@@ -901,7 +809,7 @@ export default function DeliverablesSection({
           >
             <ShieldCheck size={16} style={{ color: "#FF5A1F" }} className="flex-shrink-0" />
             <p className="text-xs text-muted-foreground leading-relaxed flex-1">
-              Your work is shared with a watermark. It will be fully released once the client confirms final payment.
+              Your client can review attached watermarked previews. Original files and final links unlock after Viewrr verifies payment.
             </p>
             {!existingInvoice && (
               <Button size="sm" variant="outline" className="gap-1.5 text-xs flex-shrink-0" onClick={() => setInvoiceOpen(true)}>
@@ -936,8 +844,8 @@ export default function DeliverablesSection({
             <p className="text-xs text-muted-foreground leading-relaxed">
               Add a file, choose a label, then share it with your client.
             </p>
-            <MediaUpload scope="delivery" projectId={projectId} onUploaded={url=>{setUrlInput(url);setUrlError("");}} />
-            <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider text-muted-foreground"><span className="h-px flex-1 bg-border" />Or paste a link<span className="h-px flex-1 bg-border" /></div>
+            <MediaUpload scope="delivery" projectId={projectId} onUploaded={url=>{setPreviewUploadUrl(url);setUrlInput(current => /^https:\/\//.test(current.trim()) ? current : url);setUrlError("");}} />
+            <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider text-muted-foreground"><span className="h-px flex-1 bg-border" />Final delivery link (optional)<span className="h-px flex-1 bg-border" /></div>
             <Input value={urlInput} onChange={e => { setUrlInput(e.target.value); setUrlError(""); }} placeholder="https://vimeo.com/… or drive.google.com/…" className="text-sm h-9" />
             {urlInput.trim() && (() => {
               try {
@@ -952,6 +860,8 @@ export default function DeliverablesSection({
                 );
               } catch { return null; }
             })()}
+            <p className="text-xs text-muted-foreground">Uploaded files get a watermarked review copy. For a hosted final link, upload a preview file above as well.</p>
+            {previewUploadUrl && <p className="text-xs text-green-600">Review preview ready.</p>}
             <div className="flex flex-wrap gap-2">
               {LABEL_OPTIONS.map(l => (
                 <button key={l} onClick={() => setLabelInput(l)} className={`text-xs px-3 py-1 rounded-full border transition-colors ${labelInput === l ? "bg-[#FF5A1F] border-[#FF5A1F] text-white" : "border-border text-muted-foreground hover:border-[#FF5A1F] hover:text-foreground"}`}>{l}</button>
@@ -962,7 +872,7 @@ export default function DeliverablesSection({
             )}
             {urlError && <p className="text-xs text-destructive">{urlError}</p>}
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="flex-1 text-xs" onClick={() => { setShowAdd(false); setUrlInput(""); setUrlError(""); }}>Cancel</Button>
+              <Button size="sm" variant="outline" className="flex-1 text-xs" onClick={() => { setShowAdd(false); setUrlInput(""); setPreviewUploadUrl(""); setUrlError(""); }}>Cancel</Button>
               <Button size="sm" className="flex-1 text-xs text-white" style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }} onClick={handleAdd} disabled={addMutation.isPending}>
                 <Upload size={12} className="mr-1.5" />{addMutation.isPending ? "Sharing…" : "Share"}
               </Button>
@@ -1007,7 +917,7 @@ export default function DeliverablesSection({
                         <span className="flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: "#FF5A1F" }}>
                           <Lock size={8} /> {fullyRefunded ? "Delivery access withdrawn" : "Locked until payment"}
                         </span>
-                      ) : isWatermarked ? (
+                      ) : isWatermarked && d.previewUrl ? (
                         <span className="flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: "#FF5A1F" }}>
                           <Lock size={8} /> Watermarked
                         </span>
@@ -1023,6 +933,9 @@ export default function DeliverablesSection({
                     >
                       <Play size={11} fill="white" /> View
                     </Button>
+                    {isFreelancer && d.createdBy === userId && !d.previewUrl && !["completed", "cancelled"].includes(projectStatus) && (
+                      <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => { setPreviewTarget(d); setAttachmentUrl(""); attachPreviewMutation.reset(); }}>Add preview</Button>
+                    )}
                     {isFreelancer && d.createdBy === userId && projectStatus !== "completed" && (
                       <Button
                         size="sm" variant="ghost"
@@ -1069,13 +982,21 @@ export default function DeliverablesSection({
         )}
       </div>
 
+      <Dialog open={!!previewTarget} onOpenChange={open => { if (!open && !attachPreviewMutation.isPending) setPreviewTarget(null); }}>
+        <DialogContent><DialogHeader><DialogTitle>Add review preview</DialogTitle><DialogDescription>Upload a copy of this delivery. Your client can review a watermarked version before payment; the final link stays protected.</DialogDescription></DialogHeader>
+          {previewTarget && <MediaUpload key={previewTarget.id} scope="delivery" projectId={projectId} onUploaded={setAttachmentUrl} />}
+          {attachmentUrl && <p className="text-sm text-muted-foreground">Preview ready to attach.</p>}
+          {attachPreviewMutation.isError && <p role="alert" className="text-sm text-destructive">Could not attach this preview. Please try again.</p>}
+          <Button disabled={!attachmentUrl || attachPreviewMutation.isPending} onClick={() => attachPreviewMutation.mutate()}>{attachPreviewMutation.isPending ? "Attaching…" : "Attach preview"}</Button>
+        </DialogContent>
+      </Dialog>
+
       {/* ── Embed viewer ────────────────────────────────────────────────────── */}
       {embedTarget && (
         <EmbedModal
-          deliverable={embedTarget}
+          deliverable={deliverables.find(d => d.id === embedTarget.id) ?? embedTarget}
           watermarked={isWatermarked}
           fullyRefunded={isClient && fullyRefunded}
-          username={freelancerName}
           onClose={() => setEmbedTarget(null)}
         />
       )}

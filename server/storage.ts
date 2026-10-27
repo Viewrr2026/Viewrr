@@ -1048,7 +1048,7 @@ class Storage implements IStorage {
 
   async addDeliverable(data: {
     projectId: number; url: string; label: string;
-    platform: string; embedUrl: string; createdBy: number;
+    platform: string; embedUrl: string; createdBy: number; previewMediaId?: number | null;
   }): Promise<schema.Deliverable> {
     const rows = await db.insert(schema.deliverables).values({
       ...data,

@@ -1,3 +1,4 @@
+import { chunkUpload } from './media-chunk-upload';
 import { finishMediaWrite, purgeNextPersonalUpload } from "./media-erasure";
 import type { Express } from 'express';
 import multer from 'multer';
@@ -15,13 +16,12 @@ import { hasVerifiedProjectPayment } from './project-payment-verification';
 import { STORAGE_CONFIGURED, putPrivateObject, readPrivateObject, createPresignedDownloadUrl, deleteObject, multipartObjectStorage } from './object-storage';
 import { createMultipartMediaService } from './media-multipart';
 import { authorizeMediaUpload, publishCustomUpload } from './media-upload-access';
-import { MEDIA_PART_BYTES, mediaUploadLimit, mediaUploadLimitLabel } from '../shared/media-upload';
+import { mediaUploadLimit, mediaUploadLimitLabel } from '../shared/media-upload';
 import { renderRetainerPreview } from './retainer-v1-media';
 import { PUBLIC_MEDIA_SCOPES, MEDIA_MIMES, canReadMedia, mediaPath } from './media-policy';
 const upload = multer({ dest: tmpdir(), limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 0 }, fileFilter: (_req, file, cb) => cb(null, MEDIA_MIMES.has(file.mimetype)) });
 const db = () => retainerPool();
 const multipart = createMultipartMediaService({ transaction: retainerTransaction, storage: multipartObjectStorage, authorize: authorizeMediaUpload, publishCustom: publishCustomUpload });
-const chunkUpload = multer({ dest: tmpdir(), limits: { fileSize: MEDIA_PART_BYTES, files: 1, fields: 0 } });
 const fail = (status: number, message: string): never => { throw Object.assign(new Error(message), { status }); };
 function error(res: any, e: any) { res.status(e.status || (e.code === 'LIMIT_FILE_SIZE' ? 413 : 500)).json({ error: e.status ? e.message : e.code === 'LIMIT_FILE_SIZE' ? 'Maximum upload size is 200 MB.' : 'Unable to process media. Please retry.' }); }
 export function registerMediaRoutes(app: Express) {

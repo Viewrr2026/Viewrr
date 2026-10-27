@@ -196,3 +196,21 @@ test("closing during video loading prevents a late load from starting playback",
   await act(async () => finishLoading());
   assert.equal(player.plays, 0);
 });
+
+test("hosted playback keeps Vimeo private hashes and supplies the provider referrer", async () => {
+  const { MediaViewer } = loadSource("src/components/MediaViewer.tsx", {
+    ...mocks, "expo-router": { useIsFocused: () => true },
+    "react-native-safe-area-context": { SafeAreaProvider: "SafeAreaProvider", SafeAreaView: "SafeAreaView" },
+    "react-native-webview": { WebView: "WebView" },
+    "@/components/NativeVideoPlayer": { NativeVideoPlayer: "NativeVideoPlayer" },
+    "@/config/env": { API_BASE_URL: base }, "@/api/errors": { ApiError: class extends Error {} },
+    "@/api/client": { request: async () => assert.fail("Hosted embeds must not receive an authenticated request") },
+  });
+  let tree;
+  await act(async () => { tree = create(React.createElement(MediaViewer, { source: { kind: "url", url: "https://vimeo.com/123456789/privatehash" }, title: "Review", onClose() {} })); });
+  const web = tree.root.findByType("WebView");
+  assert.equal(new URL(web.props.source.uri).searchParams.get("h"), "privatehash");
+  assert.deepEqual(web.props.source.headers, { Referer: base + "/" });
+  assert.equal(web.props.sharedCookiesEnabled, false);
+  await act(async () => tree.unmount());
+});

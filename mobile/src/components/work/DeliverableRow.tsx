@@ -52,7 +52,7 @@ export function DeliverableRow({ deliverable, lockCopy }: DeliverableRowProps) {
           {deliverable.platform}
         </Text>
         {deliverable.locked ? (
-          <Text style={[styles.lockCopy, { color: colors.mutedForeground }]}>{lockCopy}</Text>
+          <Text style={[styles.lockCopy, { color: colors.mutedForeground }]}>{deliverable.previewUrl ? "Tap to review the watermarked preview. The original unlocks after payment." : "Ask your freelancer to add a review preview. " + lockCopy}</Text>
         ) : null}
       </View>
     </>
