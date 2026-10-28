@@ -26,7 +26,9 @@ import {
   Sparkles, FolderOpen, ThumbsUp, Zap, Info, TrendingUp, ArrowDownToLine, MoreVertical,
   ClipboardList, Rocket, Bell,
 } from "lucide-react";
-import { safeGet, safeSet } from "@/lib/storage";
+import FeedPostComposer from "@/components/FeedPostComposer";
+import { parseVideoUrl } from "@/lib/videoEmbed";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PaymentJourneyBar } from "@/components/PaymentJourney";
 
 import type { ProjectWithDetails } from "../../../server/storage";
@@ -45,6 +47,7 @@ function ReviewModal({
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const { toast } = useToast();
 
   // Who is being reviewed?
   const reviewee = role === "client" ? pw.freelancer : pw.client;
@@ -64,6 +67,7 @@ function ReviewModal({
         role,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      toast({ title: "Review published" });
       onClose(true);
     } catch (e: any) {
       setError(e.message || "Something went wrong.");
@@ -74,12 +78,9 @@ function ReviewModal({
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }}>
-      <div className="bg-card border border-border rounded-2xl w-full max-w-md p-6 shadow-xl">
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="font-bold text-lg">Leave a review</h2>
-          <button onClick={() => onClose()} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
-        </div>
+    <Dialog open={open} onOpenChange={value => !value && !submitting && onClose()}>
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>Leave a review</DialogTitle></DialogHeader>
 
         {/* Reviewee info */}
         <div className="flex items-center gap-3 mb-6 p-3 bg-muted/40 rounded-xl">
@@ -102,6 +103,9 @@ function ReviewModal({
             {[1,2,3,4,5].map(n => (
               <button
                 key={n}
+                type="button"
+                aria-label={`${n} ${n === 1 ? "star" : "stars"}`}
+                aria-pressed={rating === n}
                 onMouseEnter={() => setHovered(n)}
                 onMouseLeave={() => setHovered(0)}
                 onClick={() => setRating(n)}
@@ -128,6 +132,7 @@ function ReviewModal({
         <div className="mb-5">
           <p className="text-sm font-medium mb-2">Your review</p>
           <Textarea
+            aria-label="Your review"
             value={comment}
             onChange={e => setComment(e.target.value)}
             placeholder={`How was working with ${reviewee.name}?`}
@@ -149,8 +154,8 @@ function ReviewModal({
             {submitting ? "Submitting..." : "Publish review"}
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -315,79 +320,6 @@ function UpdateEntry({ update, author, size = "sm" }: { update: any; author: any
   );
 }
 
-// ── Visibility toggle (client only, completed projects) ──────────────────────
-function VisibilityToggle({ projectId, isClient }: { projectId: number; isClient: boolean }) {
-  const key = `project_visibility_${projectId}`;
-  const [isPublic, setIsPublic] = useState(() => safeGet(key) !== "private");
-
-  if (!isClient) return null;
-
-  function toggle() {
-    const next = !isPublic;
-    setIsPublic(next);
-    safeSet(key, next ? "public" : "private");
-  }
-
-  return (
-    <div className={`rounded-2xl border-2 p-4 transition-all ${
-      isPublic ? "border-primary/40 bg-primary/5" : "border-border bg-secondary/40"
-    }`}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-3">
-          <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
-            isPublic ? "bg-primary/15" : "bg-muted"
-          }`}>
-            {isPublic
-              ? <Globe size={16} className="text-primary" />
-              : <Lock size={16} className="text-muted-foreground" />}
-          </div>
-          <div>
-            <p className={`text-sm font-semibold ${ isPublic ? "text-primary" : "text-foreground" }`}>
-              {isPublic ? "Shared to Feed" : "Kept Private"}
-            </p>
-            <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
-              {isPublic
-                ? "This project is visible on the Viewrr feed for others to see."
-                : "Only you and the freelancer can see this project."}
-            </p>
-          </div>
-        </div>
-        {/* iOS-style toggle */}
-        <button
-          onClick={toggle}
-          className={`w-12 h-6 rounded-full transition-colors relative flex-shrink-0 mt-1 ${
-            isPublic ? "bg-primary" : "bg-border"
-          }`}
-          aria-label={isPublic ? "Make private" : "Share to feed"}
-        >
-          <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-            isPublic ? "translate-x-6" : "translate-x-0.5"
-          }`} />
-        </button>
-      </div>
-      {/* Options row */}
-      <div className="flex gap-2 mt-3 pt-3 border-t border-border">
-        <button
-          onClick={() => { setIsPublic(true); safeSet(key, "public"); }}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
-            isPublic ? "bg-primary text-white border-primary" : "border-border text-muted-foreground hover:border-primary/40"
-          }`}
-        >
-          <Globe size={11} /> Share to Feed
-        </button>
-        <button
-          onClick={() => { setIsPublic(false); safeSet(key, "private"); }}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
-            !isPublic ? "bg-foreground text-background border-foreground" : "border-border text-muted-foreground hover:border-foreground/40"
-          }`}
-        >
-          <Lock size={11} /> Keep Private
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ── RetainerCycle type ──────────────────────────────────────────────────────
 type RetainerCycle = {
   id: number;
@@ -411,12 +343,27 @@ function ProjectModal({ pw, currentUserId, onClose }: {
   const [showMeetings, setShowMeetings] = useState(false);
   const [leftTab, setLeftTab] = useState<"progress" | "description">("progress");
   const [showSendWork, setShowSendWork] = useState(false);
+  const [showReview, setShowReview] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
+  const [postPublished, setPostPublished] = useState(false);
   const [retainerPayOpen, setRetainerPayOpen] = useState<{ projectId: number; clientId: number; amountPence: number; freelancerName: string } | null>(null);
   const isFreelancer = currentUserId === pw.freelancer.id;
   const isClient = currentUserId === pw.client.id;
   const canAdvance = isFreelancer && pw.project.currentStage < STAGES.length - 1 && pw.project.status !== "completed" && pw.project.status !== "awaiting_payment";
   const isSendWorkStage = isFreelancer && pw.project.currentStage === STAGES.length - 2; // index 4 = Revisions
   const otherPerson = isFreelancer ? pw.client : pw.freelancer;
+  const alreadyReviewed = reviewSubmitted || (isClient ? pw.project.reviewGivenByClient === 1 : pw.project.reviewGivenByFreelancer === 1);
+  // Only use final links the existing payment-gated API actually released.
+  // Private uploaded originals are never made public by opening the composer.
+  const { data: shareDeliverables = [] } = useQuery<Array<{ url?: string }>>({
+    queryKey: ["/api/projects", pw.project.id, "deliverables"],
+    enabled: isClient && pw.project.status === "completed",
+  });
+  const shareVideo = shareDeliverables.find(delivery => {
+    const provider = delivery.url ? parseVideoUrl(delivery.url)?.provider : undefined;
+    return provider === "youtube" || provider === "vimeo";
+  })?.url ?? "";
 
   // Retainer
   const isRetainerProject = (pw.project as any).isRetainer === 1;
@@ -493,10 +440,10 @@ function ProjectModal({ pw, currentUserId, onClose }: {
 
   // Close on Escape key
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape" && !showReview && !showShare) onClose(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [onClose, showReview, showShare]);
 
   // Lock body scroll
   useEffect(() => {
@@ -1123,14 +1070,15 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                         Congratulations. This project has been completed successfully through Viewrr.
                       </p>
                       <div className="flex flex-col gap-2 mt-4">
-                        {isClient && (
+                        {alreadyReviewed ? (
+                          <p role="status" className="text-sm text-green-700 flex items-center justify-center gap-2"><CheckCircle2 size={14} /> Review submitted</p>
+                        ) : (
                           <Button
                             size="sm"
                             className="w-full text-white text-xs rounded-full"
                             style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                            onClick={() => {
-                              // ReviewModal is triggered externally — just close modal and notify
-                            }}
+                            onClick={() => setShowReview(true)}
+                            data-testid="btn-project-leave-review"
                           >
                             <Star size={12} className="mr-1.5" /> Leave Review
                           </Button>
@@ -1144,11 +1092,20 @@ function ProjectModal({ pw, currentUserId, onClose }: {
                 </div>
               )}
 
-              {/* Visibility toggle — completed projects, client only */}
+              {/* Public posts are an explicit action; the workspace remains private. */}
               {pw.project.status === "completed" && isClient && (
                 <div className="border-t border-border pt-4">
-                  <p className="text-xs font-bold uppercase text-muted-foreground tracking-widest mb-3">Project Visibility</p>
-                  <VisibilityToggle projectId={pw.project.id} isClient={isClient} />
+                  <p className="text-xs font-bold uppercase text-muted-foreground tracking-widest mb-3">Share completed work</p>
+                  <div className="rounded-2xl border border-border p-4 space-y-3">
+                    <p className="text-sm text-muted-foreground">Share a public post about this project. You can edit the text and choose media before publishing. Your project messages, invoices and private files stay private.</p>
+                    {postPublished ? (
+                      <p role="status" className="text-sm text-green-700">Post published. <Link href="/feed" onClick={onClose} className="underline">View feed</Link></p>
+                    ) : (
+                      <Button size="sm" className="rounded-full" onClick={() => setShowShare(true)} data-testid="btn-project-share-feed">
+                        <Globe size={13} className="mr-1.5" /> Share to Feed
+                      </Button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1209,6 +1166,20 @@ function ProjectModal({ pw, currentUserId, onClose }: {
           </div>
         </div>
       </div>
+
+      {showReview && (
+        <ReviewModal open pw={pw} role={isClient ? "client" : "freelancer"} onClose={submitted => {
+          setShowReview(false);
+          if (submitted) setReviewSubmitted(true);
+        }} />
+      )}
+      {showShare && (
+        <FeedPostComposer open onClose={() => setShowShare(false)}
+          projectTitle={pw.project.title}
+          initialCaption={`Completed ${pw.project.title} with ${pw.freelancer.name} on Viewrr.`}
+          initialMediaUrl={shareVideo}
+          onPublished={() => setPostPublished(true)} />
+      )}
 
       {/* Retainer Stripe pay dialog */}
       {retainerPayOpen && (
@@ -1556,8 +1527,6 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
       : !planStages.length ? "No stages available" : currentPlanStage?.title ?? "All stages complete"
     : STAGES[pw.project.currentStage]?.label;
   const isCompleted = pw.project.status === "completed";
-  const visKey = `project_visibility_${pw.project.id}`;
-  const [isPublic, setIsPublic] = useState(() => safeGet(visKey) !== "private");
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"complete" | "delete" | null>(null);
   const { toast } = useToast();
@@ -1663,24 +1632,9 @@ function ProjectCard({ pw, currentUserId, onOpen, onReviewOpen, onRefresh }: {
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusPill(pw.project.status)}`}>
             {statusLabel(pw.project.status)}
           </span>
-          {/* Visibility badge — client only, completed only */}
           {isCompleted && isClient && (
-            <span
-              onClick={e => {
-                e.stopPropagation();
-                const next = !isPublic;
-                setIsPublic(next);
-                safeSet(visKey, next ? "public" : "private");
-              }}
-              className={`flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full cursor-pointer transition-all ${
-                isPublic
-                  ? "bg-primary/10 text-primary hover:bg-primary/20"
-                  : "bg-muted text-muted-foreground hover:bg-muted/80"
-              }`}
-              title={isPublic ? "Visible on Feed — click to make private" : "Private — click to share to Feed"}
-            >
-              {isPublic ? <Globe size={9} /> : <Lock size={9} />}
-              {isPublic ? "Feed" : "Private"}
+            <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-muted text-muted-foreground" title="Project messages, invoices and files are private to the participants">
+              <Lock size={9} /> Private workspace
             </span>
           )}
           {/* Freelancer-only quick-action menu — active projects only */}

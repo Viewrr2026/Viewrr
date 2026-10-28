@@ -42,6 +42,7 @@ import Invoice from "@/pages/Invoice";
 import NotificationPreferences from "@/pages/NotificationPreferences";
 import HelpCentre from "@/pages/HelpCentre";
 import ResetPassword from "@/pages/ResetPassword";
+import VerifyEmail from "@/pages/VerifyEmail";
 import RetainerBuilder from "@/pages/RetainerBuilder";
 import RetainerWorkspace from "@/pages/RetainerWorkspace";
 import CookieBanner from "@/components/CookieBanner";
@@ -92,6 +93,7 @@ export default function App() {
               <Route path="/invoice/:projectId" component={Invoice} />
               <Route path="/settings/notifications" component={NotificationPreferences} />
               <Route path="/reset-password" component={ResetPassword} />
+              <Route path="/verify-email" component={VerifyEmail} />
               <Route path="/resetpassword" component={ResetPassword} />
               <Route path="/help" component={HelpCentre} />
               <Route path="/help/:category" component={HelpCentre} />

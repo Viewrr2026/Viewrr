@@ -110,6 +110,13 @@ export default function Navbar() {
                       <p className="text-xs text-muted-foreground">{displayRole(user.role)}</p>
                     </div>
                     <DropdownMenuSeparator />
+                    {user.emailVerified === false && (
+                      <DropdownMenuItem asChild>
+                        <Link href="/verify-email" className="flex items-center gap-2 text-primary">
+                          <ShieldCheck size={14} /> Verify email
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuItem asChild>
                       <Link href="/dashboard" className="flex items-center gap-2 cursor-pointer">
                         <LayoutDashboard size={14} /> Dashboard
