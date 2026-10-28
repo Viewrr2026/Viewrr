@@ -3,6 +3,7 @@ import { withAccountDeletionLock, parseProDeletionTiming, processConfirmedDeleti
 import { recordConfirmedDeletion } from "./services/deletion-state";
 import { filterBlockedAuthors, requireOwnUserParam } from "./privacy-guards";
 import { verifySignupEmail } from "./signup-verification";
+import { registerAccountEmailVerification } from "./account-email-verification";
 import { registerMediaRoutes } from "./media-routes";
 import { runStripeEventJob } from "./stripe-event-job";
 import { invitationEstimate } from "../shared/project-estimate";
@@ -869,61 +870,28 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // PRD 1: resend the verification code for the AUTHENTICATED user only.
-  // Unlike /api/auth/send-verification this cannot be pointed at a third
-  // party's address, because the address is read from the session.
-  app.post("/api/auth/mobile/resend-verification", requireAuth, verificationLimiter, async (req, res) => {
-    try {
-      const user = await storage.getUser(req.auth!.userId);
-      if (!user?.email) return res.status(404).json({ error: "Account not found" });
-      if ((user as any).emailVerified) {
-        return res.json({ sent: true, alreadyVerified: true });
-      }
-      const sent = await sendVerificationEmail(user.email);
-      if (!sent.ok && !sent.dev) {
-        return res.status(503).json({ error: "Email service unavailable. Please try again shortly." });
-      }
-      return res.json({ sent: true, dev: sent.dev ? true : undefined });
-    } catch (e: any) {
-      console.error("[mobile/resend-verification] Failed:", e?.message);
-      return res.status(500).json({ error: "Could not send verification email" });
-    }
-  });
-
-  // PRD 1: confirm the emailed code. requireAuth, so the code can only ever
-  // verify the session holder's own address.
-  app.post("/api/auth/mobile/verify-email", requireAuth, verifyCodeLimiter, async (req, res) => {
-    try {
-      const parsed = z.object({ code: z.string().trim().min(4).max(12) }).safeParse(req.body);
-      if (!parsed.success) return res.status(400).json({ error: "Verification code required" });
-
-      const user = await storage.getUser(req.auth!.userId);
-      if (!user?.email) return res.status(404).json({ error: "Account not found" });
-      if ((user as any).emailVerified) return res.json({ verified: true, alreadyVerified: true });
-
-      const result = await verifyCode(user.email, "email_verification", parsed.data.code);
-      if (!result.ok) {
-        return res.status(400).json({ error: result.error ?? "Invalid or expired code", code: "INVALID_CODE" });
-      }
-
-      const nowIso = new Date().toISOString();
-      await db.update(schema.users)
-        .set({ emailVerified: true, emailVerifiedAt: new Date(nowIso) } as any)
-        .where(eq(schema.users.id, user.id));
-
-      return res.json({ verified: true, emailVerified: true, emailVerifiedAt: nowIso });
-    } catch (e: any) {
-      console.error("[mobile/verify-email] Failed:", e?.message);
-      return res.status(500).json({ error: "Could not verify your email" });
-    }
+  registerAccountEmailVerification(app, {
+    requireAuth,
+    resendLimiter: verificationLimiter,
+    verifyLimiter: verifyCodeLimiter,
+    getUser: id => storage.getUser(id),
+    sendEmail: sendVerificationEmail,
+    consumeCode: verifyCode,
+    markVerified: async (id, email, at) => {
+      const changed = await db.update(schema.users)
+        .set({ emailVerified: true, emailVerifiedAt: at })
+        .where(and(eq(schema.users.id, id), eq(schema.users.email, email)))
+        .returning({ id: schema.users.id });
+      return changed.length === 1;
+    },
   });
 
   // PRD 1 / Decision 4: enforce email verification for NEW accounts ONLY.
   //
   // This middleware needs no date check. Migration 0006 backfills
-  // email_verified = true for every account that existed before the migration
-  // ran, so a false value can only mean "created after verification shipped and
-  // has not confirmed yet". Existing users can never be locked out by this.
+  // email_verified = true for accounts present at that migration. Accounts
+  // created later by the old web signup can still be false. Those accounts
+  // can now confirm their address through the signed-in verification flow.
   //
   // Applied to content-producing endpoints only — never to reading, never to
   // auth, never to account deletion or data export (blocking a GDPR right
