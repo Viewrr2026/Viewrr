@@ -1,3 +1,4 @@
+import { invoiceIssueDetailsSchema, normalizeInvoiceBranding, createInvoicePresentation } from "../shared/invoice-presentation";
 import { calculateEstimate } from '../shared/project-estimate';
 import { retainerPool,retainerTransaction,retainerError,type RetainerDb } from './retainer-v1-db';
 async function project(db:RetainerDb,id:number,userId:number) {
@@ -44,6 +45,7 @@ export async function reviewEstimate(id:number,userId:number,version:number,acti
 }
 export async function issueProjectInvoice(id:number,freelancerId:number,raw:any) {
   const requested=calculateEstimate(raw);
+  const input=invoiceIssueDetailsSchema.parse(raw);
   return retainerTransaction(async db=>{
     const p=await project(db,id,freelancerId);
     if(p.freelancer_id!==freelancerId) retainerError('Only the freelancer can issue the invoice',403);
@@ -54,18 +56,35 @@ export async function issueProjectInvoice(id:number,freelancerId:number,raw:any)
     const agreed=latest ? calculateEstimate(latest.snapshot) : null;
     if(agreed && (requested.totalPence!==agreed.totalPence || requested.vatPercent!==agreed.vatPercent || requested.vatPence!==agreed.vatPence))
       retainerError('Invoice total or VAT differs from the agreed estimate. Send an amended estimate for approval first.');
+    if(!agreed && p.agreed_amount_pence>0 && requested.subtotalPence>p.agreed_amount_pence)
+      retainerError('Invoice subtotal exceeds the agreed budget. Agree an amended estimate first.');
     // The final invoice may describe and itemise the completed work differently.
     // Keep the accepted estimate unchanged and calculate invoice amounts on the server.
     const final=requested;
     // Lock freelancer as well to serialize numbering across their projects.
     await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[freelancerId]);
-    const {rows:[count]}=await db.query('SELECT COUNT(*)::int AS count FROM invoices WHERE freelancer_id=$1',[freelancerId]);
+    const {rows:[template]}=await db.query('SELECT * FROM invoice_templates WHERE user_id=$1',[freelancerId]);
+    const {rows:people}=await db.query('SELECT id,name,email FROM users WHERE id IN ($1,$2)',[freelancerId,p.client_id]);
+    const freelancer=people.find(person=>person.id===freelancerId), client=people.find(person=>person.id===p.client_id);
+    const camelTemplate=Object.fromEntries(Object.entries(template??{}).map(([key,value])=>[key.replace(/_([a-z])/g,(_,c)=>c.toUpperCase()),value]));
+    const branding=normalizeInvoiceBranding(input.branding??camelTemplate,freelancer?.name??'');
     const now=new Date().toISOString();
+    const presentation=createInvoicePresentation(branding,p.title,input.details,now);
+    const {rows:numbers}=await db.query('SELECT invoice_number FROM invoices WHERE freelancer_id=$1',[freelancerId]);
+    const used=new Set(numbers.map(row=>String(row.invoice_number).toLowerCase()));
+    let number=presentation.details.invoiceNumber;
+    if(number && used.has(number.toLowerCase())) retainerError('This invoice number is already in use. Choose a different number.',409);
+    if(!number) {
+      let next=numbers.length+1;
+      do { number=`${branding.customization.invoicePrefix}-${String(next++).padStart(5,'0')}`; } while(used.has(number.toLowerCase()));
+    }
+    presentation.details.invoiceNumber=number;
+    const notes=raw.notes??branding.customization.defaultNotes??final.notes??'';
     const {rows:[invoice]}=await db.query(`INSERT INTO invoices
-      (invoice_number,project_id,freelancer_id,client_id,client_name,client_email,project_title,line_items,subtotal_pence,vat_pence,total_pence,notes,status,issued_at,created_at,estimate_version_id)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'sent',$13,$13,$14) RETURNING *`,
-      [`INV-${String(count.count+1).padStart(5,'0')}`,id,freelancerId,p.client_id,String(raw.clientName??'').slice(0,300),String(raw.clientEmail??'').slice(0,300),p.title,
-      JSON.stringify(final.lineItems),final.subtotalPence,final.vatPence,final.totalPence,String(raw.notes??final.notes??'').slice(0,4000),now,latest?.id??null]);
+      (invoice_number,project_id,freelancer_id,client_id,client_name,client_email,project_title,line_items,subtotal_pence,vat_pence,total_pence,notes,status,issued_at,created_at,estimate_version_id,presentation)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'sent',$13,$13,$14,$15) RETURNING *`,
+      [number,id,freelancerId,p.client_id,input.clientName??client?.name??'',input.clientEmail??client?.email??'',p.title,
+      JSON.stringify(final.lineItems),final.subtotalPence,final.vatPence,final.totalPence,String(notes).slice(0,4000),now,latest?.id??null,JSON.stringify(presentation)]);
     return Object.fromEntries(Object.entries(invoice).map(([key,value])=>[key.replace(/_([a-z])/g,(_,c)=>c.toUpperCase()),value]));
   });
 }

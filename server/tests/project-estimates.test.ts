@@ -11,6 +11,7 @@ before(async()=>{
   await db.exec(`CREATE TABLE project_invitations(id SERIAL PRIMARY KEY,sender_id INTEGER,recipient_id INTEGER,title TEXT,description TEXT,category TEXT,budget TEXT,status TEXT DEFAULT 'pending',is_retainer INTEGER DEFAULT 0);
     ALTER TABLE projects ADD COLUMN brief_category TEXT,ADD COLUMN planning_status TEXT,ADD COLUMN agreed_amount_pence INTEGER;`);
   await db.exec(await readFile(new URL('../../migrations/0015_project_estimates.sql',import.meta.url),'utf8'));
+  await db.exec(await readFile(new URL('../../migrations/0020_invoice_customization.sql',import.meta.url),'utf8'));
   await db.exec(`INSERT INTO users(id,name,email,role) VALUES(1,'Client','client@example.test','client'),(2,'Freelancer','freelancer@example.test','freelancer'),(3,'Stranger','stranger@example.test','client');
     INSERT INTO projects(id,client_id,freelancer_id,title,created_at) VALUES(1,1,2,'Estimate test','2026-09-30'),(2,1,2,'Legacy project','2026-09-30')`);
   setRetainerTestDatabase({query:async(sql,params)=>await db.query(sql,params) as any,transaction:fn=>db.transaction(tx=>fn({query:async(sql,params)=>await tx.query(sql,params) as any}))});
