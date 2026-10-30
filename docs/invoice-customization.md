@@ -3,10 +3,15 @@
 Freelancers open **Dashboard → Invoice settings** to save business details,
 logo, colour, typeface, layout, document heading, payment terms and footer.
 They can also choose an invoice prefix, payment window and default notes.
+The default accent is Viewrr orange (`#FF5A1F`); saved custom colours stay in use.
 
 **Create invoice** in a one-off project opens the live editor. Details, line
-items and branding are editable before sending. The document preview uses the
-same component as the client's invoice and print view. Per-invoice changes do
+items and branding are editable before sending. The project title is read-only,
+with an asterisk explaining that it comes from the linked project. The server
+uses that project's current title when issuing the invoice, ignoring any title
+override in the request. The settings preview explains its sample title in the
+same way. The document preview uses the same component as the client's invoice
+and print view. Per-invoice changes do
 not overwrite saved defaults. A failed send keeps the entered details open.
 Sending waits until a logo upload is ready.
 

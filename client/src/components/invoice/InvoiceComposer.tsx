@@ -26,7 +26,8 @@ function LoadComposer(props:Props) {
 }
 function ComposerForm(props:Props&{template:any;latest:any;name:string}) {
   const [branding,setBranding]=useState(()=>normalizeInvoiceBranding(props.template,props.name));
-  const [details,setDetails]=useState(()=>createInvoicePresentation(branding,props.projectTitle).details);
+  const [editableDetails,setDetails]=useState(()=>createInvoicePresentation(branding,props.projectTitle).details);
+  const details={...editableDetails,invoiceTitle:props.projectTitle};
   const [clientName,setClientName]=useState(props.clientName||''),[clientEmail,setClientEmail]=useState(props.clientEmail||'');
   const [notes,setNotes]=useState(branding.customization.defaultNotes);
   const accepted=props.latest?.status==='accepted' ? props.latest.snapshot : null;
@@ -51,7 +52,7 @@ function ComposerForm(props:Props&{template:any;latest:any;name:string}) {
   const preview={...calculated,lineItems:calculated?.lineItems||raw.lineItems,clientName,clientEmail,projectTitle:props.projectTitle,notes};
   const update=(i:number,patch:Partial<Item>)=>setItems(items.map((item,j)=>i===j?{...item,...patch}:item));
   const move=(i:number,delta:number)=>setItems(current=>{const result=[...current];[result[i],result[i+delta]]=[result[i+delta],result[i]];return result;});
-  const field=(label:string,key:keyof typeof details,type='text',multi=false)=><label>{label}{multi?<Textarea rows={3} value={details[key]} onChange={e=>setDetails({...details,[key]:e.target.value})}/>:<Input type={type} value={details[key]} onChange={e=>setDetails({...details,[key]:e.target.value})}/>}</label>;
+  const field=(label:string,key:Exclude<keyof typeof details,'invoiceTitle'>,type='text',multi=false)=><label>{label}{multi?<Textarea rows={3} value={details[key]} onChange={e=>setDetails({...details,[key]:e.target.value})}/>:<Input type={type} value={details[key]} onChange={e=>setDetails({...details,[key]:e.target.value})}/>}</label>;
   async function send() {
     if(validation||!calculated||uploadBusy)return;setSending(true);setError('');
     try {
@@ -61,7 +62,7 @@ function ComposerForm(props:Props&{template:any;latest:any;name:string}) {
     } catch(e){setError(invoiceError(e));} finally {setSending(false);}
   }
   return <><div className="invoice-editor-body"><div className="invoice-editor-form"><div className="invoice-tab-row" aria-label="Invoice sections">{(['details','items','branding'] as const).map(t=><Button key={t} size="sm" variant={tab===t?'default':'outline'} aria-pressed={tab===t} onClick={()=>setTab(t)}>{t==='items'?'Line items':t==='branding'?'Branding':'Details'}</Button>)}</div>
-    {tab==='details'&&<div className="invoice-fields">{field('Invoice title','invoiceTitle')}{field('Invoice number (blank for automatic)','invoiceNumber')}
+    {tab==='details'&&<div className="invoice-fields"><div><label>Project title *<Input value={details.invoiceTitle} readOnly aria-describedby="invoice-project-title-note" /></label><p id="invoice-project-title-note" className="text-xs text-muted-foreground mt-2">* Automatically uses this project's title.</p></div>{field('Invoice number (blank for automatic)','invoiceNumber')}
       <div className="invoice-two-fields">{field('Invoice date','invoiceDate','date')}{field('Due date','dueDate','date')}</div>{field('Reference / purchase order','purchaseOrder')}
       <label>Client name<Input value={clientName} onChange={e=>setClientName(e.target.value)}/></label><label>Client billing email<Input type="email" value={clientEmail} onChange={e=>setClientEmail(e.target.value)}/></label>
       {field('Client address','clientAddress','text',true)}<label>Notes<Textarea value={notes} rows={4} onChange={e=>setNotes(e.target.value)}/></label></div>}

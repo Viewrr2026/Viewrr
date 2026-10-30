@@ -25,7 +25,7 @@ function SettingsForm({existing,name,onClose}:{existing:any;name:string;onClose:
   const [uploadBusy,setUploadBusy]=useState(false);
   const queryClient=useQueryClient(); const {toast}=useToast();
   const safeBranding=normalizeInvoiceBranding(branding,name);
-  const presentation=createInvoicePresentation(safeBranding,'Your project title');
+  const presentation=createInvoicePresentation(safeBranding,'Your project title *');
   presentation.details.invoiceNumber=`${safeBranding.customization.invoicePrefix}-00001`;
   const sample={clientName:'Example Client',clientEmail:'client@example.com',notes:branding.customization.defaultNotes,
     lineItems:[{description:'Creative production',quantity:1,unitPricePence:80000,totalPence:80000}],subtotalPence:80000,vatPence:0,totalPence:80000};
@@ -34,5 +34,5 @@ function SettingsForm({existing,name,onClose}:{existing:any;name:string;onClose:
     try {await apiRequest('POST','/api/invoice-template',invoiceBrandingSchema.parse(branding));await queryClient.invalidateQueries({queryKey:['/api/invoice-template']});toast({title:'Invoice settings saved'});onClose();}
     catch(e){setError(invoiceError(e));} finally {setSaving(false);}
   }
-  return <><div className="invoice-editor-body"><div className="invoice-editor-form"><InvoiceBrandingFields value={branding} onChange={setBranding} onUploadBusy={setUploadBusy} defaults/>{error&&<p role="alert" className="invoice-editor-error">{error}</p>}</div><div className="invoice-editor-preview"><h3>Live preview · sample details</h3><InvoiceDocument invoice={sample} presentation={presentation} preview/></div></div><div className="invoice-editor-footer"><Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={save} disabled={saving||uploadBusy}>{saving?'Saving…':'Save invoice settings'}</Button></div></>;
+  return <><div className="invoice-editor-body"><div className="invoice-editor-form"><InvoiceBrandingFields value={branding} onChange={setBranding} onUploadBusy={setUploadBusy} defaults/>{error&&<p role="alert" className="invoice-editor-error">{error}</p>}</div><div className="invoice-editor-preview"><h3>Live preview · sample details</h3><p className="text-xs text-muted-foreground mb-3">* Automatically uses the title of the project you're invoicing.</p><InvoiceDocument invoice={sample} presentation={presentation} preview/></div></div><div className="invoice-editor-footer"><Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={save} disabled={saving||uploadBusy}>{saving?'Saving…':'Save invoice settings'}</Button></div></>;
 }
