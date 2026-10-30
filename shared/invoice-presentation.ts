@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export const DEFAULT_INVOICE_ACCENT_COLOR = '#FF5A1F';
+
 const copy = (max: number) => z.string().trim().max(max).default('');
 const email = z.union([z.literal(''), z.string().trim().email().max(254)]).default('');
 const date = z.string().refine(v => !v || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v), 'Enter a valid calendar date.').default('');
@@ -25,7 +27,7 @@ export const invoiceBrandingSchema = z.object({
   businessPhone: copy(60), logoUrl: logo, vatNumber: copy(80),
   paymentTerms: z.string().trim().max(4000).default('Payment processed securely through Viewrr'),
   footerNote: copy(1000),
-  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a six-digit hex colour, such as #1F6255.').default('#1F6255'),
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, `Use a six-digit hex colour, such as ${DEFAULT_INVOICE_ACCENT_COLOR}.`).default(DEFAULT_INVOICE_ACCENT_COLOR),
   customization: invoiceCustomizationSchema,
 });
 export const invoiceDetailsSchema = z.object({
@@ -64,7 +66,8 @@ export function dateAfterDays(value: string, days: number) {
 }
 export function createInvoicePresentation(branding: InvoiceBranding, title: string, input?: Partial<InvoiceDetails>, now = new Date().toISOString()): InvoicePresentation {
   const invoiceDate = input?.invoiceDate || now.slice(0, 10);
-  const details = invoiceDetailsSchema.parse({invoiceTitle: title, ...input, invoiceDate,
+  // The project owns the title; an invoice request cannot replace it.
+  const details = invoiceDetailsSchema.parse({...input, invoiceTitle: title, invoiceDate,
     dueDate: input?.dueDate ?? dateAfterDays(invoiceDate, branding.customization.dueDays)});
   return {version: 1, branding, details};
 }

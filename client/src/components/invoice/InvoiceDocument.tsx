@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import { resolveInvoicePresentation, type InvoicePresentation } from '@shared/invoice-presentation';
+import { DEFAULT_INVOICE_ACCENT_COLOR, resolveInvoicePresentation, type InvoicePresentation } from '@shared/invoice-presentation';
 import './invoice.css';
 
 export const money = (pence: number) => new Intl.NumberFormat('en-GB', {style:'currency', currency:'GBP'}).format((Number(pence)||0)/100);
@@ -10,7 +10,7 @@ export function InvoiceDocument({invoice, template, presentation: override, prev
   const {customization: x} = b;
   let items: any[] = [];
   try {items = Array.isArray(invoice.lineItems) ? invoice.lineItems : JSON.parse(invoice.lineItems || '[]');} catch {}
-  const accent = /^#[0-9a-f]{6}$/i.test(b.accentColor) ? b.accentColor : '#1F6255';
+  const accent = /^#[0-9a-f]{6}$/i.test(b.accentColor) ? b.accentColor : DEFAULT_INVOICE_ACCENT_COLOR;
   const font = {modern:"'Satoshi',system-ui,sans-serif",serif:'Georgia,serif',mono:'ui-monospace,monospace'}[x.font];
   return <article aria-label={preview ? 'Invoice preview' : 'Invoice document'} className={`invoice-document invoice-${x.layout}`} style={{'--invoice-accent':accent,fontFamily:font} as CSSProperties}>
     <header className={`invoice-brand invoice-logo-${x.logoPosition}`}>

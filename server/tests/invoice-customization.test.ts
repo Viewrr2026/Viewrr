@@ -35,9 +35,13 @@ test('migration freezes legacy branding and can be safely rerun',async()=>{
 test('freelancer choices are snapshotted while identities, totals and payment status stay server-owned',async()=>{
   const invoice:any=await issueProjectInvoice(100,2,{...terms,branding,details:{invoiceNumber:'MY-0042',invoiceTitle:'Autumn brand film',invoiceDate:'2026-10-29',dueDate:'2026-11-12',clientAddress:'Client billing address',purchaseOrder:'PO-104'},clientName:'Client company',clientEmail:'billing@example.com',notes:'Invoice-specific notes',status:'paid',clientId:3,freelancerId:3,totalPence:1});
   assert.equal(invoice.status,'sent');assert.equal(invoice.totalPence,80000);assert.equal(invoice.clientId,1);assert.equal(invoice.freelancerId,2);
+  assert.equal(invoice.projectTitle,'Project 100');assert.equal(invoice.presentation.details.invoiceTitle,'Project 100');
   assert.deepEqual(invoice.presentation.branding,branding);assert.equal(invoice.presentation.details.purchaseOrder,'PO-104');assert.equal(invoice.presentation.details.dueDate,'2026-11-12');
   assert.equal(invoice.clientEmail,'billing@example.com');assert.equal(invoice.notes,'Invoice-specific notes');
   await db.exec("UPDATE invoice_templates SET business_name='Changed defaults' WHERE user_id=2");
+  await db.exec("UPDATE projects SET title='Renamed project' WHERE id=100");
+  const savedInvoice=(await db.query<any>('SELECT presentation FROM invoices WHERE project_id=100')).rows[0];
+  assert.equal(resolveInvoicePresentation(savedInvoice).details.invoiceTitle,'Project 100');
   assert.equal(resolveInvoicePresentation(invoice,{businessName:'Changed defaults'}).branding.businessName,'Example Studio');
   await assert.rejects(issueProjectInvoice(100,2,{...terms,branding:{businessName:'Overwrite'}}),/already has an invoice/);
 });
@@ -45,6 +49,7 @@ test('saved defaults apply to future invoices; numbering rejects duplicates only
   await db.query('UPDATE invoice_templates SET business_name=$1,customization=$2 WHERE user_id=2',[branding.businessName,JSON.stringify(branding.customization)]);
   await assert.rejects(issueProjectInvoice(101,2,{...terms,details:{invoiceNumber:'my-0042'}}),/already in use/);
   const other:any=await issueProjectInvoice(120,3,{...terms,details:{invoiceNumber:'MY-0042'}});assert.equal(other.invoiceNumber,'MY-0042');
+  assert.equal(other.presentation.details.invoiceTitle,'Other project');assert.equal(other.presentation.branding.accentColor,'#FF5A1F');
   const next:any=await issueProjectInvoice(101,2,terms);assert.match(next.invoiceNumber,/^STUDIO-/);assert.equal(next.notes,'Saved notes');
   const d=next.presentation.details;assert.equal((Date.parse(d.dueDate)-Date.parse(d.invoiceDate))/86400000,21);
   assert.equal(next.presentation.branding.customization.font,'serif');assert.equal(next.presentation.branding.customization.showViewrrBranding,false);
@@ -66,5 +71,5 @@ test('invalid presentation values are rejected and unknown identity fields strip
   for(const bad of [{logoUrl:'javascript:alert(1)'},{accentColor:'url(evil)'},{businessName:'x'.repeat(201)},{customization:{font:'evil'}},{customization:{invoicePrefix:'x\nDROP TABLE'}}]) assert.equal(invoiceBrandingSchema.safeParse(bad).success,false);
   for(const details of [{invoiceDate:'2026-02-30'},{invoiceDate:'2026-10-29',dueDate:'2026-10-01'},{invoiceNumber:'<script>'}]) assert.equal(invoiceDetailsSchema.safeParse(details).success,false);
   const parsed=invoiceBrandingSchema.parse({...branding,userId:3,id:99,updatedAt:'fake'});assert.equal('userId' in parsed,false);assert.equal('id' in parsed,false);
-  const recovered=normalizeInvoiceBranding({businessName:'Retained',logoUrl:'javascript:evil',accentColor:'bad'});assert.equal(recovered.businessName,'Retained');assert.equal(recovered.logoUrl,'');assert.equal(recovered.accentColor,'#1F6255');
+  const recovered=normalizeInvoiceBranding({businessName:'Retained',logoUrl:'javascript:evil',accentColor:'bad'});assert.equal(recovered.businessName,'Retained');assert.equal(recovered.logoUrl,'');assert.equal(recovered.accentColor,'#FF5A1F');
 });
