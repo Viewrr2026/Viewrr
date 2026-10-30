@@ -1,6 +1,7 @@
 import { pgTable, text, integer, bigint, jsonb, real, serial, boolean, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { invoiceCustomizationSchema, invoicePresentationSchema, type InvoicePresentation, type InvoiceBranding } from "./invoice-presentation";
 
 // ─── Users ───────────────────────────────────────────────────────────────────
 export const users = pgTable("users", {
@@ -599,10 +600,11 @@ export const invoiceTemplates = pgTable("invoice_templates", {
   paymentTerms: text("payment_terms").notNull().default("Payment processed securely through Viewrr"),
   footerNote: text("footer_note").notNull().default(""),
   accentColor: text("accent_color").notNull().default("#FF5A1F"),
+  customization: jsonb("customization").$type<InvoiceBranding["customization"]>().notNull().default({} as InvoiceBranding["customization"]),
   updatedAt: text("updated_at").notNull().default(new Date().toISOString()),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
-export const insertInvoiceTemplateSchema = createInsertSchema(invoiceTemplates).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertInvoiceTemplateSchema = createInsertSchema(invoiceTemplates, { customization: invoiceCustomizationSchema }).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertInvoiceTemplate = z.infer<typeof insertInvoiceTemplateSchema>;
 export type InvoiceTemplate = typeof invoiceTemplates.$inferSelect;
 
@@ -610,6 +612,7 @@ export type InvoiceTemplate = typeof invoiceTemplates.$inferSelect;
 export const invoices = pgTable("invoices", {
   id: serial("id").primaryKey(),
   invoiceNumber: text("invoice_number").notNull(), // e.g. "INV-00001"
+  presentation: jsonb("presentation").$type<InvoicePresentation>(),
   projectId: integer("project_id").notNull(),
   freelancerId: integer("freelancer_id").notNull(),
   clientId: integer("client_id").notNull(),
@@ -626,7 +629,7 @@ export const invoices = pgTable("invoices", {
   paidAt: text("paid_at"),
   createdAt: text("created_at").notNull().default(new Date().toISOString()),
 });
-export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
+export const insertInvoiceSchema = createInsertSchema(invoices, { presentation: invoicePresentationSchema.nullable().optional() }).omit({ id: true, createdAt: true });
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type Invoice = typeof invoices.$inferSelect;
 

@@ -1,3 +1,4 @@
+import { invoiceBrandingSchema, resolveInvoicePresentation } from "../shared/invoice-presentation";
 import { validateDeliveryUpload, deliveryPreviewRows, projectDeliverableDto, attachDeliveryPreview } from "./delivery-previews";
 import { withAccountDeletionLock, parseProDeletionTiming, processConfirmedDeletion, getProDeletionOptions, applyProDeletionDate } from "./services/pro-deletion";
 import { recordConfirmedDeletion } from "./services/deletion-state";
@@ -5646,11 +5647,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // PRD-018 B7: requireAuth + session-derived userId
   app.post('/api/invoice-template', requireAuth, async (req, res) => {
     try {
-      const { userId: _ignored, ...rest } = req.body;
-      const template = await storage.upsertInvoiceTemplate(req.auth!.userId, rest);
+      const branding = invoiceBrandingSchema.parse(req.body);
+      const template = await storage.upsertInvoiceTemplate(req.auth!.userId, branding);
       res.json(template);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(e.name === "ZodError" ? 400 : 500).json({ error: e.message });
     }
   });
 
@@ -5676,7 +5677,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const refunds = await db`SELECT r.stripe_refund_id,r.amount_pence,r.status,r.created_at
         FROM payment_refunds r JOIN payments p ON p.id=r.payment_id
         WHERE p.invoice_id=${invoice.id} ORDER BY r.created_at DESC`;
-      res.json({ invoice, template: template || null, refunds });
+      res.json({ invoice, template: resolveInvoicePresentation(invoice, template).branding, refunds });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
