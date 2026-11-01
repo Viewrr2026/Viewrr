@@ -509,7 +509,7 @@ export default function Dashboard() {
     queryKey: ["/api/profiles/own", user?.id],
     queryFn: async () => {
       try {
-        const res = await fetch(`/api/profiles/${user!.id}`);
+        const res = await fetch(`/api/profiles/by-user/${user!.id}`);
         if (!res.ok) return null;
         return res.json();
       } catch { return null; }
@@ -1236,7 +1236,7 @@ export default function Dashboard() {
                     <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Your connections</h4>
                     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                       {connections.map((conn: any) => (
-                        <Link key={conn.id} href={conn.role === 'freelancer' ? `/profile/${conn.id}` : `/profile/${conn.id}`}>
+                        <Link key={conn.id} href={`/profile/user/${conn.id}`}>
                           <div className="flex items-center gap-3 bg-muted/30 hover:bg-muted/60 rounded-xl p-3 transition-colors cursor-pointer border border-border hover:border-primary/30">
                             <Avatar className="w-10 h-10 flex-shrink-0">
                               <AvatarImage src={conn.avatar} />

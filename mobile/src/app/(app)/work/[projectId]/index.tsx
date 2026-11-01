@@ -1,5 +1,6 @@
 import { InvoicePaymentButton } from "@/components/work/InvoicePaymentButton";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { profileForUser } from "@/navigation/linkResolver";
 import { Activity, ExternalLink, ListChecks, Package } from "lucide-react-native";
 import { useCallback } from "react";
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
@@ -173,10 +174,7 @@ export default function ProjectDetail() {
                   onPress={
                     party === "client" && freelancer?.id
                       ? () =>
-                          router.push({
-                            pathname: "/(app)/discover/[profileId]",
-                            params: { profileId: String(freelancer.id) },
-                          })
+                          router.push(profileForUser(freelancer.id))
                       : undefined
                   }
                 />

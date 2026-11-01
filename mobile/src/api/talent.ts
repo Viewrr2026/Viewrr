@@ -50,15 +50,15 @@ export async function loadTalent({
 }
 
 /**
- * One creative. The path segment accepts a profile id or a user id — the
- * handler resolves both (`routes.ts:1058-1066`), which is what lets a feed
- * author (a user id) open the same screen.
+ * One creative. Account links explicitly use the user-ID endpoint so they
+ * cannot collide with another creative's profile ID.
  *
  * Reviews arrive inlined and unpaginated in this same response; there is no
  * separate reviews endpoint.
  */
-export async function loadTalentDetail(id: number, signal?: AbortSignal): Promise<TalentDetail> {
-  return api.get<TalentDetail>(`/api/profiles/${id}`, { signal });
+export async function loadTalentDetail(id: number, signal?: AbortSignal, idKind: "profile" | "user" = "profile"): Promise<TalentDetail> {
+  const path = idKind === "user" ? `/api/profiles/by-user/${id}` : `/api/profiles/${id}`;
+  return api.get<TalentDetail>(path, { signal });
 }
 
 /**

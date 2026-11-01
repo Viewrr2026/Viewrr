@@ -1,4 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { profileForUser } from "@/navigation/linkResolver";
 import { useCallback, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -184,10 +185,7 @@ export default function BriefDetail() {
                             onPress={
                               owner
                                 ? () =>
-                                    router.push({
-                                      pathname: "/(app)/discover/[profileId]",
-                                      params: { profileId: String(interest.freelancerId) },
-                                    })
+                                    router.push(profileForUser(interest.freelancerId))
                                 : undefined
                             }
                           />

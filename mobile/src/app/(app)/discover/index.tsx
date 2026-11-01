@@ -1,4 +1,5 @@
 import { useRouter } from "expo-router";
+import { profileForUser } from "@/navigation/linkResolver";
 import { Search, SlidersHorizontal, Users, X } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -334,7 +335,7 @@ export default function DiscoverScreen() {
             <TalentCard
               item={item}
               onPress={() =>
-                router.push(`/(app)/discover/${item.profile.id ?? item.user.id}`)
+                router.push(profileForUser(item.user.id))
               }
             />
           </View>

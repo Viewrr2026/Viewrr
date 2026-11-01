@@ -279,8 +279,7 @@ function PostCard({ pw }: { pw: PostWithUser }) {
     toast({ title: `Reposted ${pw.user.name}'s post to your feed` });
   }
 
-  // Determine profile ID from userId — use userId as profileId approximation
-  const profileHref = `/profile/${pw.user.id}`;
+  const profileHref = `/profile/user/${pw.user.id}`;
 
   return (
     <article className="bg-card border border-border rounded-2xl overflow-hidden" data-testid={`post-card-${pw.post.id}`}>

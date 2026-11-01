@@ -1,7 +1,8 @@
 import { uploadPublicImage } from "@/lib/uploadMedia";
+import { compressImage } from "@/lib/compressImage";
 /**
  * ImageUpload — drag-and-drop / camera roll image picker with in-browser compression.
- * Outputs a base64 data URL (JPEG) capped at the given maxSizeKB.
+ * Uploads the compressed JPEG and returns its server-hosted image URL.
  */
 
 import { useRef, useState, useCallback } from "react";
@@ -9,63 +10,13 @@ import { UploadCloud, X, AlertCircle } from "lucide-react";
 
 interface Props {
   value?: string;           // current data URL or remote URL (for preview)
-  onChange: (dataUrl: string | undefined) => void;
+  onChange: (url: string | undefined) => void;
   label: string;
   hint?: string;
   aspectRatio?: number;     // target w/h — e.g. 4 (banner) or 1 (avatar)
   maxSizeKB?: number;       // max output JPEG size in KB (default 400)
   maxWidthPx?: number;      // resize canvas to this width max (default 800)
   roundedFull?: boolean;    // show circle preview
-}
-
-const INITIAL_QUALITY = 0.82;
-const MIN_QUALITY     = 0.35;
-
-/** Compress an image file to a JPEG data URL within maxSizeKB. */
-async function compressImage(
-  file: File,
-  maxWidthPx: number,
-  maxSizeKB: number,
-): Promise<{ dataUrl: string; sizeKB: number }> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-
-      // Scale down to maxWidthPx preserving aspect ratio
-      let w = img.naturalWidth;
-      let h = img.naturalHeight;
-      if (w > maxWidthPx) {
-        h = Math.round((h * maxWidthPx) / w);
-        w = maxWidthPx;
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width  = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0, w, h);
-
-      // Binary-search for the best quality that fits under maxSizeKB
-      let lo = MIN_QUALITY, hi = INITIAL_QUALITY, best = "";
-      for (let i = 0; i < 8; i++) {
-        const q = (lo + hi) / 2;
-        const attempt = canvas.toDataURL("image/jpeg", q);
-        const kb = Math.round((attempt.length * 3) / 4 / 1024);
-        if (kb <= maxSizeKB) { best = attempt; lo = q; }
-        else                  { hi = q; }
-      }
-      if (!best) {
-        // Last resort — minimum quality
-        best = canvas.toDataURL("image/jpeg", MIN_QUALITY);
-      }
-      const sizeKB = Math.round((best.length * 3) / 4 / 1024);
-      resolve({ dataUrl: best, sizeKB });
-    };
-    img.onerror = reject;
-    img.src = url;
-  });
 }
 
 export default function ImageUpload({
@@ -102,12 +53,11 @@ export default function ImageUpload({
 
     setLoading(true);
     try {
-      const { dataUrl, sizeKB } = await compressImage(file, maxWidthPx, maxSizeKB);
-      const blob = await (await fetch(dataUrl)).blob();
+      const blob = await compressImage(file, maxWidthPx, maxSizeKB);
       onChange(await uploadPublicImage(new File([blob], "profile.jpg", {type:"image/jpeg"})));
-      setInfo(`Compressed to ${sizeKB}KB`);
-    } catch {
-      setError("Could not process this image. Please try another.");
+      setInfo(`Compressed to ${Math.round(blob.size / 1024)}KB`);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Could not upload this image. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -186,7 +136,8 @@ export default function ImageUpload({
           accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
           capture="environment"
           className="hidden"
-          onChange={e => handleFiles(e.target.files)}
+          disabled={loading}
+          onChange={e => { handleFiles(e.target.files); e.target.value = ""; }}
         />
       </div>
     );
@@ -273,7 +224,8 @@ export default function ImageUpload({
         accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
         capture="environment"
         className="hidden"
-        onChange={e => handleFiles(e.target.files)}
+        disabled={loading}
+        onChange={e => { handleFiles(e.target.files); e.target.value = ""; }}
       />
     </div>
   );

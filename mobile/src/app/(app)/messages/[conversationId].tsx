@@ -1,4 +1,5 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { profileForUser } from "@/navigation/linkResolver";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ChevronLeft,
@@ -424,7 +425,7 @@ export default function Conversation() {
 
   const profileIntro = counterparty ? (
     <Pressable
-      onPress={() => router.push(`/(app)/discover/${otherUserId}`)}
+      onPress={() => router.push(profileForUser(otherUserId))}
       accessibilityRole="button"
       accessibilityLabel={`View ${counterparty.name}'s profile`}
       style={({ pressed }) => [
@@ -529,7 +530,7 @@ export default function Conversation() {
 
         {counterparty ? (
           <Pressable
-            onPress={() => router.push(`/(app)/discover/${otherUserId}`)}
+            onPress={() => router.push(profileForUser(otherUserId))}
             accessibilityRole="button"
             accessibilityLabel={`View ${counterparty.name}'s profile`}
             style={({ pressed }) => [
