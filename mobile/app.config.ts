@@ -86,8 +86,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: NAME[APP_ENV],
   slug: EXPO_SLUG,
-  // expo-video adds native code; isolate its updates from the 0.1.1 runtime.
-  version: "0.1.2",
+  // First App Store release; isolate its updates from the 0.1.x TestFlight runtimes.
+  version: "1.0.0",
   orientation: "portrait",
   scheme: IS_DEV ? "viewrr-dev" : IS_STAGING ? "viewrr-staging" : "viewrr",
   updates: {
