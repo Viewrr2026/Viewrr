@@ -292,7 +292,7 @@ export default function AgencyProfile() {
                   <button
                     key={member.id}
                     data-testid={`card-agency-member-${member.id}`}
-                    onClick={() => navigate(`/profile/${user.id}`)}
+                    onClick={() => navigate(`/profile/user/${user.id}`)}
                     className="group text-left rounded-2xl border border-border bg-card hover:border-primary/40 hover:shadow-md transition-all p-4 flex flex-col gap-3"
                   >
                     {/* Avatar row */}

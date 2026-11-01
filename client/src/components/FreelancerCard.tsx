@@ -173,7 +173,7 @@ export default function FreelancerCard({ pw, savedInit = false }: { pw: ProfileW
 
   return (
     <div className="relative">
-      <Link href={`/profile/${pw.profile.id}`} data-testid={`card-freelancer-${pw.profile.id}`}>
+      <Link href={`/profile/user/${pw.user.id}`} data-testid={`card-freelancer-${pw.profile.id}`}>
         <div className="group bg-card border border-border rounded-2xl overflow-hidden card-lift cursor-pointer">
           {/* Portfolio preview strip */}
           <div className="relative h-44 overflow-hidden bg-muted">

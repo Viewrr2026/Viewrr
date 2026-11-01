@@ -51,7 +51,7 @@ export type NativeLink =
   | { pathname: "/(app)/briefs" }
   | { pathname: "/(app)/briefs/[briefId]"; params: { briefId: string } }
   | { pathname: "/(app)/discover" }
-  | { pathname: "/(app)/discover/[profileId]"; params: { profileId: string } }
+  | { pathname: "/(app)/discover/[profileId]"; params: { profileId: string; idKind?: "user" } }
   | { pathname: "/(app)/notifications" };
 
 export const HOME_LINK: NativeLink = { pathname: "/(app)" };
@@ -169,7 +169,9 @@ function familyOf(type: string): "stage" | "project" | "interest" | "message" | 
 /** Strip origin, query and hash, collapse slashes, drop the trailing slash. */
 function segmentsOf(link: string): string[] {
   const withoutOrigin = link.replace(/^https?:\/\/[^/]+/i, "");
-  const path = (withoutOrigin.split(/[?#]/)[0] ?? "").trim();
+  const hashRoute = withoutOrigin.indexOf("#/");
+  const route = hashRoute >= 0 ? withoutOrigin.slice(hashRoute + 1) : withoutOrigin;
+  const path = (route.split(/[?#]/)[0] ?? "").trim();
   return path.split("/").filter(Boolean);
 }
 
@@ -218,6 +220,11 @@ const profileDetail = (profileId: string): NativeLink => ({
   params: { profileId },
 });
 
+export const profileForUser = (userId: string | number): NativeLink => ({
+  pathname: "/(app)/discover/[profileId]",
+  params: { profileId: String(userId), idKind: "user" },
+});
+
 /** Where a work-shaped notification goes when no id survived. */
 function workFallback(role: ViewerRole): NativeLink {
   return role === "freelancer" ? { pathname: "/(app)/briefs" } : { pathname: "/(app)/work" };
@@ -253,7 +260,7 @@ export function resolveNotificationTarget(input: NotificationTargeting): NativeL
       case "conversation":
         return conversation(targetId);
       case "profile":
-        return profileDetail(targetId);
+        return profileForUser(targetId);
       case "post":
         // Feed detail is out of mobile V1 — Home is the honest destination.
         return HOME_LINK;
@@ -302,8 +309,15 @@ export function resolveNotificationTarget(input: NotificationTargeting): NativeL
       return linkProjectId ? projectDetail(linkProjectId) : { pathname: "/(app)/work" };
 
     case "profile": {
+      // Notification actors are account IDs, including old rows whose link
+      // incorrectly pointed to the recipient's profile.
+      if (actorId) return profileForUser(actorId);
+      if (head === "profile" && second === "user") {
+        const userId = asId(segments[2]);
+        return userId ? profileForUser(userId) : { pathname: "/(app)/discover" };
+      }
       if ((head === "profile" || head === "marketplace") && pathId) return profileDetail(pathId);
-      return actorId ? profileDetail(actorId) : { pathname: "/(app)/discover" };
+      return { pathname: "/(app)/discover" };
     }
 
     case null:
@@ -331,6 +345,11 @@ export function resolveNotificationTarget(input: NotificationTargeting): NativeL
       return pathId ? briefDetail(pathId) : { pathname: "/(app)/briefs" };
 
     case "profile":
+      if (second === "user") {
+        const userId = asId(segments[2]);
+        return userId ? profileForUser(userId) : { pathname: "/(app)/discover" };
+      }
+      return pathId ? profileDetail(pathId) : { pathname: "/(app)/discover" };
     case "marketplace":
       return pathId ? profileDetail(pathId) : { pathname: "/(app)/discover" };
 

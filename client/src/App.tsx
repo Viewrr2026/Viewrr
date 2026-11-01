@@ -60,6 +60,7 @@ export default function App() {
             <Switch>
               <Route path="/" component={Landing} />
               <Route path="/marketplace" component={Marketplace} />
+              <Route path="/profile/user/:userId" component={ProfilePage} />
               <Route path="/profile/:id" component={ProfilePage} />
               <Route path="/ai-search" component={AISearch} />
               <Route path="/dashboard" component={Dashboard} />

@@ -339,7 +339,7 @@ export default function SignupModal({ open, onClose }: { open: boolean; onClose:
     } else if (userId) {
       // Fallback: fetch the profile by userId if ID not returned
       try {
-        const pr = await fetch(`/api/profiles/${userId}`);
+        const pr = await fetch(`/api/profiles/by-user/${userId}`);
         if (pr.ok) {
           const pd = await pr.json();
           const pid = pd?.profile?.id ?? pd?.id ?? null;

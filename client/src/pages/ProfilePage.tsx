@@ -40,7 +40,8 @@ function Stars({ rating, size = 14 }: { rating: number; size?: number }) {
 }
 
 export default function ProfilePage() {
-  const { id } = useParams<{ id: string }>();
+  const { id, userId } = useParams<{ id?: string; userId?: string }>();
+  const profileEndpoint = userId ? `/api/profiles/by-user/${userId}` : `/api/profiles/${id}`;
   const { user } = useAuth();
   const { toast } = useToast();
   const [msgOpen, setMsgOpen] = useState(false);
@@ -48,27 +49,14 @@ export default function ProfilePage() {
   const [isSaved, setIsSaved] = useState(false);
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [activeVideo, setActiveVideo] = useState<{ url: string; title: string } | null>(null);
-  const profileIdNum = Number(id);
   const [connStatus, setConnStatus] = useState<ConnStatus>('none');
   const [connRequestId, setConnRequestId] = useState<number | null>(null);
   const [connLoading, setConnLoading] = useState(false);
-  // PRD-018 D2: real connection count from /api/connections
-  const { data: connectionsData } = useQuery<{ count: number } | unknown[]>({
-    queryKey: ["/api/connections", profileIdNum],
-    queryFn: async () => {
-      const res = await fetch(`/api/connections?userId=${profileIdNum}`);
-      if (!res.ok) return [];
-      return res.json();
-    },
-    enabled: !!profileIdNum,
-  });
-  const connCount = Array.isArray(connectionsData) ? connectionsData.length : 0;
-
   const { data, isLoading, isError } = useQuery<ProfileData>({
-    queryKey: ["/api/profiles", id],
+    queryKey: [profileEndpoint],
     queryFn: async () => {
       try {
-        const res = await fetch(`/api/profiles/${id}`);
+        const res = await fetch(profileEndpoint);
         if (!res.ok) return null;
         return res.json();
       } catch {
@@ -76,6 +64,18 @@ export default function ProfilePage() {
       }
     },
   });
+
+  const profileUserId = data?.user?.id;
+  const { data: connectionsData } = useQuery<{ count: number } | unknown[]>({
+    queryKey: ["/api/connections", profileUserId],
+    queryFn: async () => {
+      const res = await fetch(`/api/connections?userId=${profileUserId}`);
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: !!profileUserId,
+  });
+  const connCount = Array.isArray(connectionsData) ? connectionsData.length : 0;
 
   useEffect(() => {
     if (!user || !data?.user?.id || user.id === data.user.id) return;
@@ -132,13 +132,13 @@ export default function ProfilePage() {
   }
 
   useEffect(() => {
-    if (!id) return;
-    fetch(`/api/profile-views/${id}`, {
+    if (!profileUserId) return;
+    fetch(`/api/profile-views/user/${profileUserId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ viewerId: user?.id ?? null }),
     }).catch(() => {});
-  }, [id]);
+  }, [profileUserId]);
 
   const specialisms: string[] = data ? JSON.parse(data.profile.specialisms || "[]") : [];
   const skills: string[] = data ? JSON.parse(data.profile.skills || "[]") : [];

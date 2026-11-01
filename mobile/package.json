@@ -51,14 +51,15 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "release:config": "node scripts/check-release.mjs",
-    "release:preflight": "npm run fonts:check && npm run release:config && npm run test:dependencies && npm run test:media && npm run typecheck && expo install --check",
+    "release:preflight": "npm run fonts:check && npm run release:config && npm run test:dependencies && npm run test:media && npm run test:profiles && npm run typecheck && expo install --check",
     "doctor": "npx expo-doctor",
     "lint": "expo lint",
     "postinstall": "node scripts/patch-query-string.cjs && node scripts/prepare-fonts.mjs",
     "test:dependencies": "node --test scripts/dependency-security.test.cjs",
     "fonts:prepare": "node scripts/prepare-fonts.mjs",
     "fonts:check": "node scripts/prepare-fonts.mjs --check",
-    "test:media": "node --test scripts/media-playback.test.cjs"
+    "test:media": "node --test scripts/media-playback.test.cjs",
+    "test:profiles": "node --test scripts/profile-navigation.test.cjs"
   },
   "private": true,
   "overrides": {

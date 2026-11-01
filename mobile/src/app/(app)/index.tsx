@@ -1,4 +1,5 @@
 import { useRouter } from "expo-router";
+import { profileForUser } from "@/navigation/linkResolver";
 import { PenLine, Rss } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
@@ -207,7 +208,7 @@ export default function FeedScreen() {
   }, [items]);
 
   const openAuthor = useCallback(
-    (userId: number) => router.push(`/(app)/discover/${userId}`),
+    (userId: number) => router.push(profileForUser(userId)),
     [router],
   );
 

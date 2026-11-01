@@ -392,9 +392,9 @@ function ConnectionRequestPanel({
 
   // Fetch the sender's full profile
   const { data: profileData, isLoading: profileLoading } = useQuery<any>({
-    queryKey: ["/api/profiles", notification?.actorId],
+    queryKey: ["/api/profiles/by-user", notification?.actorId],
     queryFn: async () => {
-      const res = await fetch(`/api/profiles/${notification!.actorId}`);
+      const res = await fetch(`/api/profiles/by-user/${notification!.actorId}`);
       return res.ok ? res.json() : null;
     },
     enabled: !!notification?.actorId,
@@ -566,7 +566,7 @@ function ConnectionRequestPanel({
             {/* View profile link */}
             <div className="pt-3">
               <a
-                href={`/#/profile/${notification?.actorId}`}
+                href={`/#/profile/user/${notification?.actorId}`}
                 onClick={onClose}
                 className="text-xs text-primary font-medium hover:underline flex items-center gap-1"
               >
@@ -627,9 +627,9 @@ function ProfileViewPanel({
 }) {
   // Fetch viewer's profile
   const { data: profile, isLoading } = useQuery<any>({
-    queryKey: ["/api/profiles", notification?.actorId],
+    queryKey: ["/api/profiles/by-user", notification?.actorId],
     queryFn: async () => {
-      const res = await fetch(`/api/profiles/${notification!.actorId}`);
+      const res = await fetch(`/api/profiles/by-user/${notification!.actorId}`);
       return res.ok ? res.json() : null;
     },
     enabled: !!notification?.actorId,
@@ -665,7 +665,7 @@ function ProfileViewPanel({
             )}
             <p className="text-sm text-muted-foreground">{notification?.actorName} viewed your profile</p>
             <Button asChild className="bg-primary hover:bg-primary/90 text-white rounded-full w-full mt-2">
-              <a href={`/#/profile/${notification?.actorId}`} onClick={onClose}>
+              <a href={`/#/profile/user/${notification?.actorId}`} onClick={onClose}>
                 <User size={14} className="mr-1.5" /> View their profile
               </a>
             </Button>

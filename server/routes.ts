@@ -3,6 +3,7 @@ import { validateDeliveryUpload, deliveryPreviewRows, projectDeliverableDto, att
 import { withAccountDeletionLock, parseProDeletionTiming, processConfirmedDeletion, getProDeletionOptions, applyProDeletionDate } from "./services/pro-deletion";
 import { recordConfirmedDeletion } from "./services/deletion-state";
 import { filterBlockedAuthors, requireOwnUserParam } from "./privacy-guards";
+import { resolvePublicProfile } from "./public-profile";
 import { verifySignupEmail } from "./signup-verification";
 import { registerAccountEmailVerification } from "./account-email-verification";
 import { registerMediaRoutes } from "./media-routes";
@@ -1498,30 +1499,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   // ─── Profile Views ───────────────────────────────────────────────────────
   // Called by ProfilePage on load — records one view per viewer per 24h
   // PRD-018 E3: rate limited to prevent view inflation; unauthenticated (public profiles)
-  app.post("/api/profile-views/:id", optionalAuth, profileViewLimiter, async (req, res) => {
+  app.post(["/api/profile-views/user/:userId", "/api/profile-views/:id"], optionalAuth, profileViewLimiter, async (req, res) => {
     try {
-      const rawId = Number(req.params.id);
+      const rawId = Number(req.params.userId ?? req.params.id);
       const viewerId: number | null = req.auth?.userId ?? null;
       const viewerIp: string = (req.headers["x-forwarded-for"] as string || req.socket.remoteAddress || "unknown").split(",")[0].trim();
 
-      // Resolve to a user ID — the URL may carry either a profile ID or a user ID.
-      // Try looking up as a profile ID first; if that gives us a user, use that user's ID.
-      // Otherwise treat the raw value as a user ID directly.
-      let profileOwnerId = rawId;
-      const profileRow = await storage.getProfile(rawId);
-      if (profileRow) {
-        if (profileRow.user.accountStatus !== "active" || profileRow.user.isAdmin || profileRow.user.role !== "freelancer") {
-          return res.json({ ok: true, notFound: true });
-        }
-        profileOwnerId = profileRow.user.id;
-      } else {
-        // Might already be a user ID — verify the user exists and is public.
-        const userRow = await storage.getUser(rawId);
-        if (!userRow || userRow.accountStatus !== "active" || userRow.isAdmin || userRow.role !== "freelancer") {
-          return res.json({ ok: true, notFound: true });
-        }
-        profileOwnerId = userRow.id;
-      }
+      const target = await resolvePublicProfile(storage, rawId, req.params.userId ? "user" : "legacy");
+      if (!target) return res.json({ ok: true, notFound: true });
+      const profileOwnerId = target.user.id;
 
       if (viewerId && await isBlockedEitherWay(viewerId, profileOwnerId)) return res.json({ ok: true, notFound: true });
 
@@ -1545,13 +1531,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
             actorAvatar: viewer.avatar ?? "",
             type: "profile_view",
             message: `${viewer.name} viewed your profile`,
-            link: `/profile/${rawId}`,
-            // Decision 14: the useful destination is the VIEWER's profile, not
-            // the recipient's own. The web `link` points at `rawId` (the
-            // profile that was viewed, i.e. the recipient) because that is what
-            // the web centre has always done and it must not change — so the
-            // structured target has to be explicit here rather than derived
-            // from the link.
+            link: `/profile/user/${viewer.id}`,
+            // Both web and native destinations identify the viewer by user ID.
             targetType: "profile",
             targetId: viewer.id,
           });
@@ -1604,31 +1585,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.get("/api/profiles/:id", optionalAuth, async (req, res) => {
+  app.get(["/api/profiles/by-user/:userId", "/api/profiles/:id"], optionalAuth, async (req, res) => {
     res.set("Cache-Control", "private, no-store");
-    const idNum = Number(req.params.id);
-    // 1. Try by profile ID first
-    let pw = await storage.getProfile(idNum);
-    // 2. Fall back to user ID (handles freelancer links from Feed)
-    if (!pw) {
-      const profileByUser = await storage.getProfileByUserId(idNum);
-      if (profileByUser) pw = await storage.getProfile(profileByUser.id);
-    }
-    // Public profile visibility is server-authoritative.
-    if (pw && (pw.user.accountStatus !== "active" || pw.user.isAdmin || pw.user.role !== "freelancer")) {
-      return res.status(404).json({ error: "Profile not found" });
-    }
+    const idNum = Number(req.params.userId ?? req.params.id);
+    const pw = await resolvePublicProfile(storage, idNum, req.params.userId ? "user" : "legacy");
+    if (!pw) return res.status(404).json({ error: "Profile not found" });
+    if (req.auth && await isBlockedEitherWay(req.auth.userId, pw.user.id)) return res.status(404).json({ error: "Profile not found" });
 
-    if (req.auth && await isBlockedEitherWay(req.auth.userId, pw?.user.id ?? idNum)) return res.status(404).json({ error: "Profile not found" });
-
-    // 3. If still nothing — check if it's a valid public user
-    // (e.g. an active client with no profile row).
-    if (!pw) {
-      const userOnly = await storage.getUser(idNum);
-      if (!userOnly || userOnly.accountStatus !== "active" || userOnly.isAdmin || userOnly.role !== "freelancer") {
-        return res.status(404).json({ error: "Profile not found" });
-      }
-      // Return a synthetic profile stub so the frontend can render a client card
+    if (!pw.profile) {
+      const userOnly = pw.user;
+      // Preserve the existing response for an active freelancer without a profile row.
       return res.json({
         isClientStub: true,
         profile: {

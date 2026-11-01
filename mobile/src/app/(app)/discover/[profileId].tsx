@@ -40,9 +40,8 @@ import { radii, spacing, typography, useTheme } from "@/theme";
 /**
  * A creative's profile.
  *
- * Reachable from Discover (profile id) and from a Feed author (user id) — the
- * handler resolves either (`routes.ts:1058-1066`), which is why one route
- * serves both entry points.
+ * Account links carry idKind=user. Historical profile-ID links remain
+ * supported without interpreting an account ID as someone else's profile ID.
  *
  * ── What is deliberately absent ───────────────────────────────────────────
  * • **View tracking.** Web fires `POST /api/profile-views/:id` with a
@@ -69,15 +68,16 @@ export default function TalentProfileScreen() {
   const { colors, shadows } = useTheme();
   const router = useRouter();
   const { user } = useSession();
-  const params = useLocalSearchParams<{ profileId: string }>();
+  const params = useLocalSearchParams<{ profileId: string; idKind?: string }>();
   const id = Number(params.profileId);
+  const idKind = params.idKind === "user" ? "user" : "profile";
 
   const loader = useCallback(
-    (signal: AbortSignal) => loadTalentDetail(id, signal),
-    [id],
+    (signal: AbortSignal) => loadTalentDetail(id, signal, idKind),
+    [id, idKind],
   );
   const { resource, refreshing, refresh, reload } = useAsyncResource<TalentDetail>(loader, {
-    deps: [id],
+    deps: [id, idKind],
   });
 
   if (!Number.isFinite(id)) {
