@@ -9,7 +9,7 @@ import { request } from "@/api/client";
 import { ApiError } from "@/api/errors";
 import { NativeVideoPlayer } from "@/components/NativeVideoPlayer";
 import { API_BASE_URL } from "@/config/env";
-import { parseVideoUrl } from "@/lib/media";
+import { parseVideoUrl, videoEmbedUrl } from "@/lib/media";
 import { resolveMediaSource, type MediaSource, type ResolvedMedia } from "@/lib/mediaPlayback";
 
 // Keep provider videos inline so the native Back control remains reachable.
@@ -85,9 +85,7 @@ function MediaContent({ source, onRetry }: { source: MediaSource; onRetry: () =>
     accessibilityLabel="Uploaded image" onError={() => setError("This image couldn’t load. Please try again.")} />;
 
   const video = parseVideoUrl(media.uri);
-  const vimeoHash = (() => { try { const url = new URL(media.uri); return url.searchParams.get("h") ?? url.pathname.match(/\/\d+\/([a-zA-Z0-9]+)/)?.[1]; } catch { return null; } })();
-  const embed = video?.provider === "youtube" ? `https://www.youtube-nocookie.com/embed/${video.id}?playsinline=1&fs=0&rel=0`
-    : video?.provider === "vimeo" ? `https://player.vimeo.com/video/${video.id}?playsinline=1&fullscreen=0&dnt=1${vimeoHash ? `&h=${encodeURIComponent(vimeoHash)}` : ""}` : null;
+  const embed = video ? videoEmbedUrl(video) : null;
   if (!embed) return <View style={styles.message}><Text style={styles.text}>This file type cannot be previewed here.</Text></View>;
 
   // External video providers stay embedded inside the app. Never send the

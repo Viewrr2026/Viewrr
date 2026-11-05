@@ -60,6 +60,10 @@ type PostCardProps = {
   item: FeedItem;
   /** The signed-in user, so the card can offer owner actions. */
   viewerId: number;
+  mediaActive: boolean;
+  onOpenVideo: (url: string) => void;
+  registerVideo: (id: number, view: View | null) => void;
+  onVideoLayout: () => void;
   onOpenAuthor: (userId: number) => void;
   onToggleLike: (postId: number) => void;
   onCommentAdded: (postId: number) => void;
@@ -70,6 +74,10 @@ type PostCardProps = {
 function PostCardBase({
   item,
   viewerId,
+  mediaActive,
+  onOpenVideo,
+  registerVideo,
+  onVideoLayout,
   onOpenAuthor,
   onToggleLike,
   onCommentAdded,
@@ -233,7 +241,9 @@ function PostCardBase({
         </View>
       ) : null}
 
-      <PostMediaView mediaUrl={post.mediaUrl} mediaType={post.mediaType} />
+      <PostMediaView mediaUrl={post.mediaUrl} mediaType={post.mediaType}
+        active={mediaActive && !trustMenuOpen && !reporting && !gatePrompt}
+        onOpenVideo={onOpenVideo} postId={post.id} registerVideo={registerVideo} onVideoLayout={onVideoLayout} />
 
       <View style={[styles.actions, { borderTopColor: colors.border }]}>
         <Pressable

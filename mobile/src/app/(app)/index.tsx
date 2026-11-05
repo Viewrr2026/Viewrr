@@ -16,6 +16,8 @@ import { SkeletonCard } from "@/components/Skeleton";
 import { Composer } from "@/components/feed/Composer";
 import { OpportunitiesCard } from "@/components/feed/OpportunitiesCard";
 import { PostCard } from "@/components/feed/PostCard";
+import { useFeedPlayback } from "@/components/feed/useFeedPlayback";
+import { MediaViewer } from "@/components/MediaViewer";
 import { useSession } from "@/session/SessionProvider";
 import { gutter, radii, spacing, typography, useTheme } from "@/theme";
 
@@ -51,6 +53,9 @@ export default function FeedScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [exhausted, setExhausted] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const playback = useFeedPlayback(phase === "ready" && !composerOpen && viewerUrl === null);
+  const closeViewer = useCallback(() => setViewerUrl(null), []);
 
   const mounted = useRef(true);
   const inFlight = useRef<AbortController | null>(null);
@@ -275,13 +280,24 @@ export default function FeedScreen() {
         <AppHeader title="Home" brand />
       </View>
 
+      <View ref={playback.viewportRef} collapsable={false} onLayout={playback.measureVideos} style={styles.viewport}>
       <FlatList
         data={items}
+        extraData={playback.activePostId}
+        viewabilityConfig={playback.viewabilityConfig}
+        onViewableItemsChanged={playback.onViewableItemsChanged}
+        onScroll={playback.measureVideos}
+        onContentSizeChange={playback.measureVideos}
+        scrollEventThrottle={100}
         keyExtractor={(item) => String(item.post.id)}
         renderItem={({ item }) => (
           <PostCard
             item={item}
             viewerId={viewerId ?? -1}
+            mediaActive={playback.activePostId === item.post.id}
+            onOpenVideo={setViewerUrl}
+            registerVideo={playback.registerVideo}
+            onVideoLayout={playback.measureVideos}
             onOpenAuthor={openAuthor}
             onToggleLike={onToggleLike}
             onCommentAdded={onCommentAdded}
@@ -330,6 +346,10 @@ export default function FeedScreen() {
         }
       />
 
+      </View>
+      {viewerUrl && <MediaViewer source={{ kind: "url", url: viewerUrl }} title="Feed video"
+        backLabel="Back to feed" onClose={closeViewer} />}
+
       <Composer
         visible={composerOpen}
         onClose={() => setComposerOpen(false)}
@@ -344,6 +364,7 @@ export default function FeedScreen() {
 }
 
 const styles = StyleSheet.create({
+  viewport: { flex: 1 },
   gutter: {
     paddingHorizontal: gutter,
   },
