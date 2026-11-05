@@ -11,9 +11,8 @@ import {
 } from "@/theme/tokens";
 
 /**
- * Mirrors client/src/components/ThemeProvider.tsx on web: the theme follows the
- * OS colour-scheme preference by default and can be toggled at runtime. Web
- * defaults to prefers-color-scheme, so native defaults to useColorScheme().
+ * Starts in light mode, matching the web default. Users can switch to dark
+ * mode or explicitly follow their device appearance for the current session.
  */
 
 type ThemeValue = {
@@ -31,7 +30,7 @@ const ThemeContext = createContext<ThemeValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemScheme: ColorScheme = useColorScheme() === "dark" ? "dark" : "light";
-  const [override, setOverride] = useState<ColorScheme | null>(null);
+  const [override, setOverride] = useState<ColorScheme | null>("light");
 
   const scheme = override ?? systemScheme;
 
