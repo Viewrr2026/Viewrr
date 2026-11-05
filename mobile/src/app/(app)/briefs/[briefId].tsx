@@ -3,7 +3,11 @@ import { profileForUser } from "@/navigation/linkResolver";
 import { useCallback, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { loadBriefDetail, type BriefDetailSnapshot, type BriefInterest } from "@/api/work";
+import {
+  loadBriefDetail,
+  type BriefDetailSnapshot,
+  type BriefInterest,
+} from "@/api/work";
 import { AppHeader } from "@/components/AppHeader";
 import { Avatar } from "@/components/Avatar";
 import { Card, CardLabel } from "@/components/Card";
@@ -13,6 +17,7 @@ import { ErrorState } from "@/components/ErrorState";
 import { ListRow } from "@/components/ListRow";
 import { Screen } from "@/components/Screen";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ApplyToBrief } from "@/components/work/ApplyToBrief";
 import { InterestThread } from "@/components/work/InterestThread";
 import { useAsyncResource } from "@/hooks/useAsyncResource";
 import { formatBudget, formatPence } from "@/lib/format";
@@ -33,8 +38,7 @@ import { spacing, typography, useTheme } from "@/theme";
  * Negotiation messages are read here, in Brief context, never in the Messages
  * inbox. They are read-only in V1 — see `InterestThread`.
  *
- * Expressing interest, accepting and counter-offering are not in this release;
- * the screen points at the web rather than shipping a button that half-works.
+ * Creatives can apply here. The existing negotiation thread stays in Brief context.
  */
 
 export default function BriefDetail() {
@@ -57,10 +61,11 @@ export default function BriefDetail() {
     [id, viewerId, viewerRole],
   );
 
-  const { resource, refreshing, refresh, reload } = useAsyncResource<BriefDetailSnapshot>(
-    loader,
-    { enabled: valid && Boolean(user), deps: [id, viewerId, viewerRole] },
-  );
+  const { resource, refreshing, refresh, reload } =
+    useAsyncResource<BriefDetailSnapshot>(loader, {
+      enabled: valid && Boolean(user),
+      deps: [id, viewerId, viewerRole],
+    });
 
   if (!valid) {
     return (
@@ -78,6 +83,7 @@ export default function BriefDetail() {
     <Screen
       edges={["top", "left", "right"]}
       scroll
+      keyboard
       refreshing={refreshing}
       onRefresh={refresh}
       style={styles.content}
@@ -87,19 +93,27 @@ export default function BriefDetail() {
       <DataState resource={resource} onRetry={reload} skeleton="dashboard">
         {({ brief, interests, interestsFailed }) => {
           const owner = brief.clientId === viewerId;
-          const budget = formatBudget(brief.budgetMin, brief.budgetMax, brief.budgetType);
+          const budget = formatBudget(
+            brief.budgetMin,
+            brief.budgetMax,
+            brief.budgetType,
+          );
           const posted = relativeTime(brief.createdAt);
 
           return (
             <View style={styles.body}>
               {/* ── The brief ────────────────────────────────────────── */}
               <Card>
-                <Text style={[styles.title, { color: colors.foreground }]}>{brief.title}</Text>
+                <Text style={[styles.title, { color: colors.foreground }]}>
+                  {brief.title}
+                </Text>
 
                 <View style={styles.badges}>
                   <StatusBadge status={brief.status} />
                   {brief.category ? (
-                    <Text style={[styles.meta, { color: colors.mutedForeground }]}>
+                    <Text
+                      style={[styles.meta, { color: colors.mutedForeground }]}
+                    >
                       {brief.category}
                     </Text>
                   ) : null}
@@ -111,17 +125,46 @@ export default function BriefDetail() {
 
                 <View style={styles.metaRow}>
                   {budget ? (
-                    <Text style={[styles.meta, { color: colors.mutedForeground }]}>{budget}</Text>
+                    <Text
+                      style={[styles.meta, { color: colors.mutedForeground }]}
+                    >
+                      {budget}
+                    </Text>
                   ) : null}
-                  <Text style={[styles.meta, { color: colors.mutedForeground }]}>
-                    {brief.remote === 1 ? "Remote" : brief.location || "Location not set"}
+                  <Text
+                    style={[styles.meta, { color: colors.mutedForeground }]}
+                  >
+                    {[brief.location, brief.remote === 1 ? "Remote ok" : ""]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </Text>
                   {posted ? (
-                    <Text style={[styles.meta, { color: colors.mutedForeground }]}>
+                    <Text
+                      style={[styles.meta, { color: colors.mutedForeground }]}
+                    >
                       Posted {posted}
                     </Text>
                   ) : null}
                 </View>
+                {brief.startDate ? (
+                  <Text
+                    style={[styles.meta, { color: colors.mutedForeground }]}
+                  >
+                    Start date · {brief.startDate}
+                  </Text>
+                ) : null}
+                {brief.duration ? (
+                  <Text
+                    style={[styles.meta, { color: colors.mutedForeground }]}
+                  >
+                    Duration · {brief.duration}
+                  </Text>
+                ) : null}
+                {brief.requirements ? (
+                  <Text style={[styles.copy, { color: colors.foreground }]}>
+                    {brief.requirements}
+                  </Text>
+                ) : null}
               </Card>
 
               {/* ── Who posted it ────────────────────────────────────── */}
@@ -131,96 +174,133 @@ export default function BriefDetail() {
                   title={brief.clientName}
                   subtitle={owner ? "You" : "Client"}
                   leading={
-                    <Avatar name={brief.clientName} uri={brief.clientAvatar} size="md" />
+                    <Avatar
+                      name={brief.clientName}
+                      uri={brief.clientAvatar}
+                      size="md"
+                    />
                   }
                 />
               </Card>
 
+              {!owner &&
+              viewerRole === "freelancer" &&
+              !interestsFailed &&
+              interests.length === 0 &&
+              brief.isActive &&
+              brief.status === "open" ? (
+                <Card>
+                  <ApplyToBrief
+                    key={brief.id}
+                    briefId={brief.id}
+                    onSent={refresh}
+                  />
+                </Card>
+              ) : null}
               {/* ── Interests ────────────────────────────────────────── */}
-              <Card>
-                <CardLabel>
-                  {owner
-                    ? `Interest (${brief.applicationCount})`
-                    : "Your interest"}
-                </CardLabel>
+              {owner || viewerRole === "freelancer" ? (
+                <Card>
+                  <CardLabel>
+                    {owner
+                      ? `Interest (${brief.applicationCount})`
+                      : "Your interest"}
+                  </CardLabel>
 
-                {interestsFailed ? (
-                  <ErrorState
-                    title="Couldn't load interest"
-                    message="The applications on this brief didn't load. Pull down to try again."
-                    onRetry={reload}
-                    inline
-                  />
-                ) : interests.length === 0 ? (
-                  <EmptyState
-                    title={owner ? "No applicants yet" : "You haven't applied"}
-                    body={
-                      owner
-                        ? "When creatives express interest, they'll be listed here with their proposals."
-                        : "Expressing interest is on the Viewrr website for now. Once you've applied, your proposal and messages appear here."
-                    }
-                    inline
-                  />
-                ) : (
-                  <View style={styles.interests}>
-                    {interests.map((interest) => {
-                      const expanded = openInterestId === interest.id;
+                  {interestsFailed ? (
+                    <ErrorState
+                      title="Couldn't load interest"
+                      message="The applications on this brief didn't load. Pull down to try again."
+                      onRetry={reload}
+                      inline
+                    />
+                  ) : interests.length === 0 ? (
+                    <EmptyState
+                      title={
+                        owner ? "No applicants yet" : "You haven't applied"
+                      }
+                      body={
+                        owner
+                          ? "When creatives express interest, they'll be listed here with their proposals."
+                          : "Your proposal and messages will appear here after you express interest."
+                      }
+                      inline
+                    />
+                  ) : (
+                    <View style={styles.interests}>
+                      {interests.map((interest) => {
+                        const expanded = openInterestId === interest.id;
 
-                      return (
-                        <View
-                          key={interest.id}
-                          style={[styles.interest, { borderColor: colors.border }]}
-                        >
-                          <ListRow
-                            title={interest.freelancerName}
-                            subtitle={proposalFor(interest)}
-                            leading={
-                              <Avatar
-                                name={interest.freelancerName}
-                                uri={interest.freelancerAvatar}
-                                size="md"
-                              />
-                            }
-                            trailing={<StatusBadge status={interest.status} />}
-                            onPress={
-                              owner
-                                ? () =>
-                                    router.push(profileForUser(interest.freelancerId))
-                                : undefined
-                            }
-                          />
-
-                          <Pressable
-                            onPress={() =>
-                              setOpenInterestId(expanded ? null : interest.id)
-                            }
-                            accessibilityRole="button"
-                            accessibilityState={{ expanded }}
-                            accessibilityLabel={
-                              expanded
-                                ? "Hide the messages on this interest"
-                                : "Show the messages on this interest"
-                            }
-                            style={({ pressed }) => [styles.toggle, pressed && styles.pressed]}
+                        return (
+                          <View
+                            key={interest.id}
+                            style={[
+                              styles.interest,
+                              { borderColor: colors.border },
+                            ]}
                           >
-                            <Text style={[styles.toggleLabel, { color: colors.primary }]}>
-                              {expanded ? "Hide messages" : "Messages"}
-                            </Text>
-                          </Pressable>
-
-                          {expanded ? (
-                            <InterestThread
-                              briefId={brief.id}
-                              interestId={interest.id}
-                              viewerId={viewerId}
+                            <ListRow
+                              title={interest.freelancerName}
+                              subtitle={proposalFor(interest)}
+                              leading={
+                                <Avatar
+                                  name={interest.freelancerName}
+                                  uri={interest.freelancerAvatar}
+                                  size="md"
+                                />
+                              }
+                              trailing={
+                                <StatusBadge status={interest.status} />
+                              }
+                              onPress={
+                                owner
+                                  ? () =>
+                                      router.push(
+                                        profileForUser(interest.freelancerId),
+                                      )
+                                  : undefined
+                              }
                             />
-                          ) : null}
-                        </View>
-                      );
-                    })}
-                  </View>
-                )}
-              </Card>
+
+                            <Pressable
+                              onPress={() =>
+                                setOpenInterestId(expanded ? null : interest.id)
+                              }
+                              accessibilityRole="button"
+                              accessibilityState={{ expanded }}
+                              accessibilityLabel={
+                                expanded
+                                  ? "Hide the messages on this interest"
+                                  : "Show the messages on this interest"
+                              }
+                              style={({ pressed }) => [
+                                styles.toggle,
+                                pressed && styles.pressed,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.toggleLabel,
+                                  { color: colors.primary },
+                                ]}
+                              >
+                                {expanded ? "Hide messages" : "Messages"}
+                              </Text>
+                            </Pressable>
+
+                            {expanded ? (
+                              <InterestThread
+                                briefId={brief.id}
+                                interestId={interest.id}
+                                viewerId={viewerId}
+                              />
+                            ) : null}
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
+                </Card>
+              ) : null}
             </View>
           );
         }}

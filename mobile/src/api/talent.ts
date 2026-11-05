@@ -41,7 +41,8 @@ export async function loadTalent({
   return api.get<TalentItem[]>("/api/profiles", {
     query: {
       specialism: specialism && specialism !== "all" ? specialism : undefined,
-      availability: availability && availability !== "all" ? availability : undefined,
+      availability:
+        availability && availability !== "all" ? availability : undefined,
       search: search?.trim() ? search.trim() : undefined,
       surface: "ios",
     },
@@ -56,8 +57,13 @@ export async function loadTalent({
  * Reviews arrive inlined and unpaginated in this same response; there is no
  * separate reviews endpoint.
  */
-export async function loadTalentDetail(id: number, signal?: AbortSignal, idKind: "profile" | "user" = "profile"): Promise<TalentDetail> {
-  const path = idKind === "user" ? `/api/profiles/by-user/${id}` : `/api/profiles/${id}`;
+export async function loadTalentDetail(
+  id: number,
+  signal: AbortSignal | undefined,
+  idKind: "profile" | "user",
+): Promise<TalentDetail> {
+  const path =
+    idKind === "user" ? `/api/profiles/by-user/${id}` : `/api/profiles/${id}`;
   return api.get<TalentDetail>(path, { signal });
 }
 
@@ -74,7 +80,11 @@ export async function toggleSaved(
   profileId: number,
   signal?: AbortSignal,
 ): Promise<{ saved: boolean }> {
-  return api.post<{ saved: boolean }>("/api/saved/toggle", { profileId }, { signal });
+  return api.post<{ saved: boolean }>(
+    "/api/saved/toggle",
+    { profileId },
+    { signal },
+  );
 }
 
 /** Saved profile ids for the signed-in client. Used to seed the save control. */

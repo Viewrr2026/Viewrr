@@ -1,4 +1,4 @@
-import type { ProjectStage, WorkProject } from "@/api/work";
+import type { ProjectStage, WorkProject, WorkProjectDetail } from "@/api/work";
 
 /** UI mirrors server transition checks; the server remains authoritative. */
 
@@ -45,7 +45,12 @@ export function allowsRevisions(stage: ProjectStage): boolean {
   return true;
 }
 
-export type StageActionKind = "approve" | "request-changes" | "complete" | "start" | "submit";
+export type StageActionKind =
+  | "approve"
+  | "request-changes"
+  | "complete"
+  | "start"
+  | "submit";
 
 export type StageAction = {
   kind: StageActionKind;
@@ -68,7 +73,11 @@ export type StageGating = {
   active: boolean;
 };
 
-const ACTIVE_STATUSES = new Set(["in_progress", "awaiting_client", "changes_requested"]);
+const ACTIVE_STATUSES = new Set([
+  "in_progress",
+  "awaiting_client",
+  "changes_requested",
+]);
 
 /** Role-specific actions. The screen and server also check stage order. */
 export function gateStage(
@@ -79,7 +88,11 @@ export function gateStage(
   const active = ACTIVE_STATUSES.has(stage.status);
   const approvalRequired = stage.approvalRequired === 1;
 
-  if (!isProjectMutable(project) || party === "observer" || isRetainer(project)) {
+  if (
+    !isProjectMutable(project) ||
+    party === "observer" ||
+    isRetainer(project)
+  ) {
     return { actions: [], note: null, active };
   }
 
@@ -126,12 +139,27 @@ export function gateStage(
     };
   }
 
-  if (stage.status === "approved") return { actions: [], note: "Approved by your client.", active };
-  if (stage.status === "upcoming") return { actions: [{ kind: "start", label: "Start stage", emphasis: "primary" }], note: null, active };
+  if (stage.status === "approved")
+    return { actions: [], note: "Approved by your client.", active };
+  if (stage.status === "upcoming")
+    return {
+      actions: [{ kind: "start", label: "Start stage", emphasis: "primary" }],
+      note: null,
+      active,
+    };
   if (stage.status === "in_progress" || stage.status === "changes_requested") {
     if (approvalRequired) {
-      return { actions: [{ kind: "submit", label: "Submit for client review", emphasis: "primary" }],
-        note: "Share your work in Deliverables before submitting this stage.", active };
+      return {
+        actions: [
+          {
+            kind: "submit",
+            label: "Submit for client review",
+            emphasis: "primary",
+          },
+        ],
+        note: "Share your work in Deliverables before submitting this stage.",
+        active,
+      };
     }
 
     return {
@@ -178,36 +206,39 @@ export type LegacyStageRow = {
  * of these rows: advancing a legacy project is a web operation.
  */
 export function legacyStageRows(project: WorkProject): LegacyStageRow[] {
-  const current = Number.isFinite(project.currentStage) ? project.currentStage : 0;
+  const current = Number.isFinite(project.currentStage)
+    ? project.currentStage
+    : 0;
   const finished = project.status === "completed";
 
   return LEGACY_STAGES.map((title, index) => ({
     index,
     title,
-    status: finished || index < current ? "completed" : index === current ? "in_progress" : "upcoming",
+    status:
+      finished || index < current
+        ? "completed"
+        : index === current
+          ? "in_progress"
+          : "upcoming",
   }));
 }
 
 /* ── List sectioning ─────────────────────────────────────────────────────── */
 
-export type WorkSection = "active" | "awaiting_payment" | "completed";
+export type WorkSection = "all" | "active" | "awaiting_payment" | "completed";
 
-/**
- * Which section of the Work list a project belongs to.
- *
- * "Awaiting payment" is finished work that has not been paid: the project is
- * complete but `paymentStatus` is not "paid". It is a section rather than a
- * badge because it is the one state where a client has something to do and a
- * creative has something to chase.
- *
- * Cancelled work falls under "completed" — it is closed, and hiding it would
- * lose it entirely.
- */
-export function sectionFor(project: WorkProject): WorkSection {
-  const paid = project.paymentStatus === "paid";
-  const closed = project.status === "completed" || project.status === "cancelled";
-
-  if (project.status === "completed" && !paid) return "awaiting_payment";
-  if (closed) return "completed";
-  return "active";
+/** Match the web's project counts. Payment is an additional, overlapping filter. */
+export function workLists(rows: WorkProjectDetail[]) {
+  const all = rows.filter((row) => !row.project.deletedAt);
+  return {
+    all,
+    active: all.filter((row) => row.project.status !== "completed"),
+    completed: all.filter((row) => row.project.status === "completed"),
+    awaiting_payment: all.filter(
+      (row) =>
+        row.project.status === "awaiting_payment" ||
+        (row.project.status === "completed" &&
+          row.project.paymentStatus !== "paid"),
+    ),
+  };
 }

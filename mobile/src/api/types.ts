@@ -108,6 +108,9 @@ export type ConversationSummary = {
 
 /** GET /api/briefs (paginated: limit default 50, max 200; offset). */
 export type Brief = {
+  startDate?: string | null;
+  duration?: string | null;
+  requirements?: string;
   id: number;
   clientId: number;
   clientName: string;

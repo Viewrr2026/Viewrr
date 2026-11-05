@@ -1,4 +1,5 @@
 import { api } from "@/api/client";
+import { loadTalentDetail } from "@/api/talent";
 import { ApiError } from "@/api/errors";
 
 /**
@@ -87,14 +88,21 @@ export type DmUnreadCount = { count: number };
  * can be rendered immediately without waiting for the next poll. Nothing is
  * invented — a row with neither field yields an empty string, not filler.
  */
-type RawMessage = Partial<Record<keyof DirectMessage, unknown>> & { content?: unknown };
+type RawMessage = Partial<Record<keyof DirectMessage, unknown>> & {
+  content?: unknown;
+};
 
 function toNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function normaliseMessage(raw: RawMessage): DirectMessage {
-  const text = typeof raw.body === "string" ? raw.body : typeof raw.content === "string" ? raw.content : "";
+  const text =
+    typeof raw.body === "string"
+      ? raw.body
+      : typeof raw.content === "string"
+        ? raw.content
+        : "";
   return {
     id: toNumber(raw.id),
     fromId: toNumber(raw.fromId),
@@ -109,8 +117,13 @@ function normaliseMessage(raw: RawMessage): DirectMessage {
 /* ── Loaders ──────────────────────────────────────────────────────────────── */
 
 /** The inbox. DM conversations only — interest threads are excluded server-side. */
-export async function loadConversations(signal?: AbortSignal): Promise<ConversationList> {
-  const response = await api.get<Partial<ConversationList>>("/api/conversations", { signal });
+export async function loadConversations(
+  signal?: AbortSignal,
+): Promise<ConversationList> {
+  const response = await api.get<Partial<ConversationList>>(
+    "/api/conversations",
+    { signal },
+  );
   const items = Array.isArray(response?.items) ? response.items : [];
   return {
     items,
@@ -153,7 +166,8 @@ export async function loadMessages(
   return {
     items,
     nextCursor:
-      typeof response?.nextCursor === "number" && Number.isFinite(response.nextCursor)
+      typeof response?.nextCursor === "number" &&
+      Number.isFinite(response.nextCursor)
         ? response.nextCursor
         : null,
     hasMore: response?.hasMore === true,
@@ -185,7 +199,10 @@ export async function markConversationRead(
  * two are never added together and never share a store.
  */
 export async function loadDmUnreadCount(signal?: AbortSignal): Promise<number> {
-  const result = await api.get<Partial<DmUnreadCount>>("/api/messages/unread-count", { signal });
+  const result = await api.get<Partial<DmUnreadCount>>(
+    "/api/messages/unread-count",
+    { signal },
+  );
   return toNumber(result?.count);
 }
 
@@ -229,4 +246,42 @@ export function describeSendFailure(error: unknown): string {
     return error.serverMessage ?? error.userMessage;
   }
   return "That message didn't send. Try again.";
+}
+
+/** Resolve account IDs explicitly. Clients may have no public talent profile. */
+export async function loadConversationParticipant(
+  otherUserId: number,
+  signal?: AbortSignal,
+) {
+  try {
+    const { user } = await loadTalentDetail(otherUserId, signal, "user");
+    if (user.id === otherUserId && user.name.trim()) {
+      return {
+        name: user.name,
+        avatar: user.avatar ?? null,
+        bio: user.bio ?? null,
+        headline: user.headline ?? null,
+        location: user.location ?? null,
+        hasPublicProfile: true,
+      };
+    }
+  } catch (error) {
+    if (
+      signal?.aborted ||
+      (error instanceof ApiError && error.kind === "unauthorized")
+    )
+      throw error;
+  }
+  const { items } = await loadConversations(signal);
+  const person = items.find((item) => item.otherUserId === otherUserId);
+  return person
+    ? {
+        name: person.name,
+        avatar: person.avatar,
+        headline: person.headline,
+        bio: null,
+        location: null,
+        hasPublicProfile: false,
+      }
+    : null;
 }
