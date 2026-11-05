@@ -13,12 +13,6 @@ export type ParsedVideo = {
   watchUrl: string;
 };
 
-const VIMEO =
-  /(?:vimeo\.com\/(?:video\/|channels\/[^/]+\/|groups\/[^/]+\/videos\/|album\/[^/]+\/video\/)?|player\.vimeo\.com\/video\/)(\d+)/;
-
-const YOUTUBE =
-  /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
-
 export function parseVideoUrl(url: string | null | undefined): ParsedVideo | null {
   if (!url || !url.trim()) return null;
   const trimmed = url.trim();
@@ -28,27 +22,65 @@ export function parseVideoUrl(url: string | null | undefined): ParsedVideo | nul
   if (/^https?:\/\//i.test(trimmed) && mediaKind(trimmed) === "video") {
     return { provider: "upload", id: trimmed, watchUrl: trimmed, thumbnailUrl: "" };
   }
-  const vimeo = VIMEO.exec(clean);
-  if (vimeo?.[1]) {
+  let parsed: URL;
+  try { parsed = new URL(trimmed); } catch { return null; }
+  if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+  const host = parsed.hostname.toLowerCase();
+  if (["vimeo.com", "www.vimeo.com", "player.vimeo.com"].includes(host)) {
+    const match = parsed.pathname.match(/^\/(?:video\/|channels\/[^/]+\/|groups\/[^/]+\/videos\/|album\/\d+\/video\/)?(\d+)(?:\/([a-zA-Z0-9]+))?\/?$/);
+    if (!match?.[1]) return null;
     return {
       provider: "vimeo",
-      id: vimeo[1],
-      thumbnailUrl: `https://vumbnail.com/${vimeo[1]}.jpg`,
-      watchUrl: `https://vimeo.com/${vimeo[1]}`,
+      id: match[1],
+      thumbnailUrl: `https://vumbnail.com/${match[1]}.jpg`,
+      watchUrl: parsed.href,
     };
   }
 
-  const youtube = YOUTUBE.exec(clean);
-  if (youtube?.[1]) {
+  if (["youtube.com", "www.youtube.com", "m.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com", "youtu.be", "www.youtu.be"].includes(host)) {
+    const id = host.endsWith("youtu.be") ? parsed.pathname.split("/")[1]
+      : parsed.pathname === "/watch" ? parsed.searchParams.get("v")
+      : parsed.pathname.match(/^\/(?:embed|shorts|live)\/([a-zA-Z0-9_-]{11})\/?$/)?.[1];
+    if (!id || !/^[a-zA-Z0-9_-]{11}$/.test(id)) return null;
     return {
       provider: "youtube",
-      id: youtube[1],
-      thumbnailUrl: `https://img.youtube.com/vi/${youtube[1]}/hqdefault.jpg`,
-      watchUrl: `https://www.youtube.com/watch?v=${youtube[1]}`,
+      id,
+      thumbnailUrl: `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
+      watchUrl: `https://www.youtube.com/watch?v=${id}`,
     };
   }
 
   return null;
+}
+
+/** Provider-owned players; only feed previews autoplay, muted and on a loop. */
+export function videoEmbedUrl(video: ParsedVideo, autoplay = false): string | null {
+  if (video.provider === "upload") return null;
+  const url = new URL(video.provider === "youtube"
+    ? `https://www.youtube-nocookie.com/embed/${video.id}`
+    : `https://player.vimeo.com/video/${video.id}`);
+  url.searchParams.set("playsinline", "1");
+  if (video.provider === "youtube") {
+    url.searchParams.set("fs", "0");
+    url.searchParams.set("rel", "0");
+    if (autoplay) {
+      url.searchParams.set("mute", "1");
+      // A one-video playlist is required for YouTube single-video looping.
+      url.searchParams.set("playlist", video.id);
+    }
+  } else {
+    const original = new URL(video.watchUrl);
+    const hash = original.searchParams.get("h") ?? original.pathname.match(/\/\d+\/([a-zA-Z0-9]+)/)?.[1];
+    if (hash) url.searchParams.set("h", hash);
+    url.searchParams.set("fullscreen", "0");
+    url.searchParams.set("dnt", "1");
+    if (autoplay) url.searchParams.set("muted", "1");
+  }
+  if (autoplay) {
+    url.searchParams.set("autoplay", "1");
+    url.searchParams.set("loop", "1");
+  }
+  return url.href;
 }
 
 /** True for a URL this app can render as an image. */

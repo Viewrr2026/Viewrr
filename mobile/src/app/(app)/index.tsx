@@ -16,6 +16,8 @@ import { SkeletonCard } from "@/components/Skeleton";
 import { Composer } from "@/components/feed/Composer";
 import { OpportunitiesCard } from "@/components/feed/OpportunitiesCard";
 import { PostCard } from "@/components/feed/PostCard";
+import { useFeedPlayback } from "@/components/feed/useFeedPlayback";
+import { MediaViewer } from "@/components/MediaViewer";
 import { useSession } from "@/session/SessionProvider";
 import { gutter, radii, spacing, typography, useTheme } from "@/theme";
 
@@ -51,6 +53,9 @@ export default function FeedScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [exhausted, setExhausted] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const playback = useFeedPlayback(phase === "ready" && !composerOpen && viewerUrl === null);
+  const closeViewer = useCallback(() => setViewerUrl(null), []);
 
   const mounted = useRef(true);
   const inFlight = useRef<AbortController | null>(null);
@@ -275,60 +280,74 @@ export default function FeedScreen() {
         <AppHeader title="Home" brand />
       </View>
 
-      <FlatList
-        data={items}
-        keyExtractor={(item) => String(item.post.id)}
-        renderItem={({ item }) => (
-          <PostCard
-            item={item}
-            viewerId={viewerId ?? -1}
-            onOpenAuthor={openAuthor}
-            onToggleLike={onToggleLike}
-            onCommentAdded={onCommentAdded}
-            onDelete={onDelete}
-            onAuthorBlocked={(blockedUserId) =>
-              setItems((current) =>
-                current.filter((entry) => entry.user.id !== blockedUserId),
-              )
-            }
-          />
-        )}
-        ListHeaderComponent={header}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
-        contentContainerStyle={styles.list}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        onEndReached={() => void loadMore()}
-        onEndReachedThreshold={0.6}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => void loadFirstPage("refresh")}
-            tintColor={colors.mutedForeground}
-            colors={[colors.primary]}
-          />
-        }
-        ListEmptyComponent={
-          <EmptyState
-            icon={Rss}
-            title="The feed is quiet"
-            body="Posts from creatives and clients you work alongside show up here. Share the first update."
-            actionLabel="Share an update"
-            onAction={() => setComposerOpen(true)}
-            inline
-          />
-        }
-        ListFooterComponent={
-          loadingMore ? (
-            <ActivityIndicator color={colors.mutedForeground} style={styles.footer} />
-          ) : exhausted && items.length > 0 ? (
-            <Text style={[styles.caughtUp, { color: colors.mutedForeground }]}>
-              You&rsquo;re all caught up
-            </Text>
-          ) : null
-        }
-      />
+      <View ref={playback.viewportRef} collapsable={false} onLayout={playback.measureVideos} style={styles.viewport}>
+        <FlatList
+          data={items}
+          extraData={playback.activePostId}
+          viewabilityConfig={playback.viewabilityConfig}
+          onViewableItemsChanged={playback.onViewableItemsChanged}
+          onScroll={playback.measureVideos}
+          onContentSizeChange={playback.measureVideos}
+          scrollEventThrottle={100}
+          keyExtractor={(item) => String(item.post.id)}
+          renderItem={({ item }) => (
+            <PostCard
+              item={item}
+              viewerId={viewerId ?? -1}
+              mediaActive={playback.activePostId === item.post.id}
+              onOpenVideo={setViewerUrl}
+              registerVideo={playback.registerVideo}
+              onVideoLayout={playback.measureVideos}
+              onOpenAuthor={openAuthor}
+              onToggleLike={onToggleLike}
+              onCommentAdded={onCommentAdded}
+              onDelete={onDelete}
+              onAuthorBlocked={(blockedUserId) =>
+                setItems((current) =>
+                  current.filter((entry) => entry.user.id !== blockedUserId),
+                )
+              }
+            />
+          )}
+          ListHeaderComponent={header}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          contentContainerStyle={styles.list}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          onEndReached={() => void loadMore()}
+          onEndReachedThreshold={0.6}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => void loadFirstPage("refresh")}
+              tintColor={colors.mutedForeground}
+              colors={[colors.primary]}
+            />
+          }
+          ListEmptyComponent={
+            <EmptyState
+              icon={Rss}
+              title="The feed is quiet"
+              body="Posts from creatives and clients you work alongside show up here. Share the first update."
+              actionLabel="Share an update"
+              onAction={() => setComposerOpen(true)}
+              inline
+            />
+          }
+          ListFooterComponent={
+            loadingMore ? (
+              <ActivityIndicator color={colors.mutedForeground} style={styles.footer} />
+            ) : exhausted && items.length > 0 ? (
+              <Text style={[styles.caughtUp, { color: colors.mutedForeground }]}>
+                You&rsquo;re all caught up
+              </Text>
+            ) : null
+          }
+        />
+      </View>
+      {viewerUrl && <MediaViewer source={{ kind: "url", url: viewerUrl }} title="Feed video"
+        backLabel="Back to feed" onClose={closeViewer} />}
 
       <Composer
         visible={composerOpen}
@@ -344,6 +363,7 @@ export default function FeedScreen() {
 }
 
 const styles = StyleSheet.create({
+  viewport: { flex: 1 },
   gutter: {
     paddingHorizontal: gutter,
   },

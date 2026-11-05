@@ -4,13 +4,22 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, View } from "react-native";
 
 /** Receives only a media URL, never the Viewrr session credential. */
-export function NativeVideoPlayer({ uri, onRetry }: { uri: string; onRetry: () => void }) {
+export function NativeVideoPlayer({ uri, onRetry, feedPreview = false }: {
+  uri: string;
+  onRetry: () => void;
+  /** Feed players start silently, loop, and expose an explicit sound control. */
+  feedPreview?: boolean;
+}) {
   const [failed, setFailed] = useState(false);
   const player = useVideoPlayer(null, player => {
     player.staysActiveInBackground = false;
     player.showNowPlayingNotification = false;
+    player.loop = feedPreview;
+    player.muted = feedPreview;
+    player.audioMixingMode = "auto";
   });
   const { status } = useEvent(player, "statusChange", { status: player.status });
+  const { muted } = useEvent(player, "mutedChange", { muted: player.muted });
 
   useEffect(() => {
     let active = true;
@@ -36,6 +45,7 @@ export function NativeVideoPlayer({ uri, onRetry }: { uri: string; onRetry: () =
       player={player}
       style={styles.fill}
       contentFit="contain"
+      surfaceType={feedPreview ? "textureView" : "surfaceView"}
       nativeControls
       fullscreenOptions={{ enable: true }}
       allowsPictureInPicture={false}
@@ -53,6 +63,12 @@ export function NativeVideoPlayer({ uri, onRetry }: { uri: string; onRetry: () =
         <Text style={styles.text}>Try again</Text>
       </Pressable>
     </View>}
+    {feedPreview && !error && status === "readyToPlay" && (
+      <Pressable accessibilityRole="button" accessibilityLabel={muted ? "Unmute video" : "Mute video"}
+        onPress={() => { player.muted = !player.muted; }} style={styles.sound}>
+        <Text style={styles.soundText}>{muted ? "Sound off" : "Sound on"}</Text>
+      </Pressable>
+    )}
   </View>;
 }
 
@@ -62,4 +78,6 @@ const styles = StyleSheet.create({
   error: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center", gap: 20, padding: 24, backgroundColor: "#111" },
   text: { color: "white", fontSize: 16, textAlign: "center", lineHeight: 24 },
   button: { minHeight: 48, justifyContent: "center", paddingHorizontal: 20, backgroundColor: "#292929", borderRadius: 12 },
+  sound: { position: "absolute", top: 8, right: 8, minHeight: 44, minWidth: 44, justifyContent: "center", paddingHorizontal: 12, backgroundColor: "rgba(0,0,0,0.7)", borderRadius: 22 },
+  soundText: { color: "white", fontSize: 12, fontWeight: "600" },
 });

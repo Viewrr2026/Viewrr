@@ -59,7 +59,7 @@
     "test:dependencies": "node --test scripts/dependency-security.test.cjs",
     "fonts:prepare": "node scripts/prepare-fonts.mjs",
     "fonts:check": "node scripts/prepare-fonts.mjs --check",
-    "test:media": "node --test scripts/media-playback.test.cjs",
+    "test:media": "node --test scripts/media-playback.test.cjs scripts/feed-playback.test.cjs",
     "test:profiles": "node --test scripts/profile-navigation.test.cjs",
     "test:work": "node --test scripts/work-flows.test.cjs"
   },
