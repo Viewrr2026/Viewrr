@@ -26,12 +26,12 @@ import {
 import {
   describeSendFailure,
   loadMessages,
+  loadConversationParticipant,
   markConversationRead,
   sendMessage,
   type DirectMessage,
   type MessagePage,
 } from "@/api/messages";
-import { loadTalentDetail } from "@/api/talent";
 import { blockUser } from "@/api/trust";
 import { ActionSheet } from "@/components/ActionSheet";
 import { AppHeader } from "@/components/AppHeader";
@@ -83,7 +83,17 @@ const POLL_INTERVAL_MS = 5_000;
 let pendingSeq = 0;
 
 export default function Conversation() {
-  const params = useLocalSearchParams<{ conversationId?: string }>();
+  const { conversationId } = useLocalSearchParams<{ conversationId?: string }>();
+  const { user } = useSession();
+  return (
+    <ConversationThread
+      key={`${user?.id}:${conversationId}`}
+      otherUserId={Number(conversationId)}
+    />
+  );
+}
+
+function ConversationThread({ otherUserId }: { otherUserId: number }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const keyboardHostRef = useRef<View>(null);
@@ -111,7 +121,6 @@ export default function Conversation() {
   const { user } = useSession();
   const { colors } = useTheme();
 
-  const otherUserId = Number(params.conversationId);
   const valid = Number.isInteger(otherUserId) && otherUserId > 0;
   const meId = user?.id ?? null;
 
@@ -134,6 +143,7 @@ export default function Conversation() {
     bio: string | null;
     headline: string | null;
     location: string | null;
+    hasPublicProfile: boolean;
   } | null>(null);
 
   const loadFirstPage = useCallback(
@@ -165,18 +175,8 @@ export default function Conversation() {
 
     void (async () => {
       try {
-        const detail = await loadTalentDetail(otherUserId, controller.signal);
-        if (controller.signal.aborted) return;
-        const name = detail.user?.name;
-        if (typeof name === "string" && name.length > 0) {
-          setCounterparty({
-            name,
-            avatar: detail.user?.avatar ?? null,
-            bio: detail.user?.bio ?? null,
-            headline: detail.user?.headline ?? null,
-            location: detail.user?.location ?? null,
-          });
-        }
+        const person = await loadConversationParticipant(otherUserId, controller.signal);
+        if (!controller.signal.aborted) setCounterparty(person);
       } catch {
         // The header falls back to "Conversation". A missing or forbidden
         // profile is not worth an error state on a working thread, and a name
@@ -425,8 +425,9 @@ export default function Conversation() {
 
   const profileIntro = counterparty ? (
     <Pressable
+      disabled={!counterparty.hasPublicProfile}
       onPress={() => router.push(profileForUser(otherUserId))}
-      accessibilityRole="button"
+      accessibilityRole={counterparty.hasPublicProfile ? "button" : undefined}
       accessibilityLabel={`View ${counterparty.name}'s profile`}
       style={({ pressed }) => [
         styles.profileIntro,
@@ -476,9 +477,11 @@ export default function Conversation() {
           </Text>
         ) : null}
 
-        <Text style={[styles.profileIntroLink, { color: colors.primary }]}>
-          View profile
-        </Text>
+        {counterparty.hasPublicProfile ? (
+          <Text style={[styles.profileIntroLink, { color: colors.primary }]}>
+            View profile
+          </Text>
+        ) : null}
       </View>
     </Pressable>
   ) : null;
@@ -530,8 +533,9 @@ export default function Conversation() {
 
         {counterparty ? (
           <Pressable
+            disabled={!counterparty.hasPublicProfile}
             onPress={() => router.push(profileForUser(otherUserId))}
-            accessibilityRole="button"
+            accessibilityRole={counterparty.hasPublicProfile ? "button" : undefined}
             accessibilityLabel={`View ${counterparty.name}'s profile`}
             style={({ pressed }) => [
               styles.threadIdentity,

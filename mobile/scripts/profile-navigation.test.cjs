@@ -47,7 +47,7 @@ test("an account ID never falls back to the ambiguous profile endpoint, includin
   const signal = new AbortController().signal;
   await assert.rejects(loadTalentDetail(42, signal, "user"), /Profile not found/);
   assert.deepEqual(calls, [{ path: "/api/profiles/by-user/42", options: { signal } }]);
-  const legacy = await loadTalentDetail(42, signal);
+  const legacy = await loadTalentDetail(42, signal, "profile");
   assert.equal(legacy.user.id, 7);
   assert.equal(calls[1].path, "/api/profiles/42");
 });

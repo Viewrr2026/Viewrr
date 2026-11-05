@@ -16,6 +16,7 @@
     "expo-image-picker": "~57.0.20",
     "expo-linear-gradient": "~57.0.2",
     "expo-linking": "~57.0.13",
+    "expo-modules-core": "~57.0.24",
     "expo-notifications": "~57.0.24",
     "expo-router": "~57.0.29",
     "expo-secure-store": "~57.0.4",
@@ -51,7 +52,7 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "release:config": "node scripts/check-release.mjs",
-    "release:preflight": "npm run fonts:check && npm run release:config && npm run test:dependencies && npm run test:media && npm run test:profiles && npm run typecheck && expo install --check",
+    "release:preflight": "npm run fonts:check && npm run release:config && npm run test:dependencies && npm run test:media && npm run test:profiles && npm run test:work && npm run typecheck && expo install --check",
     "doctor": "npx expo-doctor",
     "lint": "expo lint",
     "postinstall": "node scripts/patch-query-string.cjs && node scripts/prepare-fonts.mjs",
@@ -59,7 +60,8 @@
     "fonts:prepare": "node scripts/prepare-fonts.mjs",
     "fonts:check": "node scripts/prepare-fonts.mjs --check",
     "test:media": "node --test scripts/media-playback.test.cjs",
-    "test:profiles": "node --test scripts/profile-navigation.test.cjs"
+    "test:profiles": "node --test scripts/profile-navigation.test.cjs",
+    "test:work": "node --test scripts/work-flows.test.cjs"
   },
   "private": true,
   "overrides": {
