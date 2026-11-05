@@ -281,71 +281,70 @@ export default function FeedScreen() {
       </View>
 
       <View ref={playback.viewportRef} collapsable={false} onLayout={playback.measureVideos} style={styles.viewport}>
-      <FlatList
-        data={items}
-        extraData={playback.activePostId}
-        viewabilityConfig={playback.viewabilityConfig}
-        onViewableItemsChanged={playback.onViewableItemsChanged}
-        onScroll={playback.measureVideos}
-        onContentSizeChange={playback.measureVideos}
-        scrollEventThrottle={100}
-        keyExtractor={(item) => String(item.post.id)}
-        renderItem={({ item }) => (
-          <PostCard
-            item={item}
-            viewerId={viewerId ?? -1}
-            mediaActive={playback.activePostId === item.post.id}
-            onOpenVideo={setViewerUrl}
-            registerVideo={playback.registerVideo}
-            onVideoLayout={playback.measureVideos}
-            onOpenAuthor={openAuthor}
-            onToggleLike={onToggleLike}
-            onCommentAdded={onCommentAdded}
-            onDelete={onDelete}
-            onAuthorBlocked={(blockedUserId) =>
-              setItems((current) =>
-                current.filter((entry) => entry.user.id !== blockedUserId),
-              )
-            }
-          />
-        )}
-        ListHeaderComponent={header}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
-        contentContainerStyle={styles.list}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        onEndReached={() => void loadMore()}
-        onEndReachedThreshold={0.6}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => void loadFirstPage("refresh")}
-            tintColor={colors.mutedForeground}
-            colors={[colors.primary]}
-          />
-        }
-        ListEmptyComponent={
-          <EmptyState
-            icon={Rss}
-            title="The feed is quiet"
-            body="Posts from creatives and clients you work alongside show up here. Share the first update."
-            actionLabel="Share an update"
-            onAction={() => setComposerOpen(true)}
-            inline
-          />
-        }
-        ListFooterComponent={
-          loadingMore ? (
-            <ActivityIndicator color={colors.mutedForeground} style={styles.footer} />
-          ) : exhausted && items.length > 0 ? (
-            <Text style={[styles.caughtUp, { color: colors.mutedForeground }]}>
-              You&rsquo;re all caught up
-            </Text>
-          ) : null
-        }
-      />
-
+        <FlatList
+          data={items}
+          extraData={playback.activePostId}
+          viewabilityConfig={playback.viewabilityConfig}
+          onViewableItemsChanged={playback.onViewableItemsChanged}
+          onScroll={playback.measureVideos}
+          onContentSizeChange={playback.measureVideos}
+          scrollEventThrottle={100}
+          keyExtractor={(item) => String(item.post.id)}
+          renderItem={({ item }) => (
+            <PostCard
+              item={item}
+              viewerId={viewerId ?? -1}
+              mediaActive={playback.activePostId === item.post.id}
+              onOpenVideo={setViewerUrl}
+              registerVideo={playback.registerVideo}
+              onVideoLayout={playback.measureVideos}
+              onOpenAuthor={openAuthor}
+              onToggleLike={onToggleLike}
+              onCommentAdded={onCommentAdded}
+              onDelete={onDelete}
+              onAuthorBlocked={(blockedUserId) =>
+                setItems((current) =>
+                  current.filter((entry) => entry.user.id !== blockedUserId),
+                )
+              }
+            />
+          )}
+          ListHeaderComponent={header}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          contentContainerStyle={styles.list}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          onEndReached={() => void loadMore()}
+          onEndReachedThreshold={0.6}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => void loadFirstPage("refresh")}
+              tintColor={colors.mutedForeground}
+              colors={[colors.primary]}
+            />
+          }
+          ListEmptyComponent={
+            <EmptyState
+              icon={Rss}
+              title="The feed is quiet"
+              body="Posts from creatives and clients you work alongside show up here. Share the first update."
+              actionLabel="Share an update"
+              onAction={() => setComposerOpen(true)}
+              inline
+            />
+          }
+          ListFooterComponent={
+            loadingMore ? (
+              <ActivityIndicator color={colors.mutedForeground} style={styles.footer} />
+            ) : exhausted && items.length > 0 ? (
+              <Text style={[styles.caughtUp, { color: colors.mutedForeground }]}>
+                You&rsquo;re all caught up
+              </Text>
+            ) : null
+          }
+        />
       </View>
       {viewerUrl && <MediaViewer source={{ kind: "url", url: viewerUrl }} title="Feed video"
         backLabel="Back to feed" onClose={closeViewer} />}

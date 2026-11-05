@@ -102,17 +102,21 @@ const rn = {
 const theme = { useTheme: () => ({ colors: {} }), radii: {}, spacing: {}, typography: {} };
 const mocks = { "react-native": rn, "expo-image": { Image: "Image" }, "@/lib/media": media, "@/lib/mediaPlayback": playback,
   "@/components/MediaViewer": { MediaViewer: "MediaViewer" }, "@/theme": theme,
-  "lucide-react-native": { Play: "Play", Eye: "Eye", ExternalLink: "ExternalLink", Lock: "Lock" } };
+  "@/components/feed/FeedVideo": { FeedVideo: "FeedVideo" },
+  "lucide-react-native": { Film: "Film", Play: "Play", Eye: "Eye", ExternalLink: "ExternalLink", Lock: "Lock" } };
 
-test("tapping an uploaded feed video opens the in-app viewer and Close returns to the card", async () => {
+test("feed cards mount inline playback only while active and retain manual viewing", async () => {
   const { PostMediaView } = loadSource("src/components/feed/PostMedia.tsx", mocks);
-  let tree;
-  await act(async () => { tree = create(React.createElement(PostMediaView, { mediaUrl: preview, mediaType: "video" })); });
-  await act(async () => tree.root.findByType("Pressable").props.onPress());
-  const viewer = tree.root.findByType("MediaViewer");
-  assert.deepEqual(viewer.props.source, { kind: "url", url: preview });
-  await act(async () => viewer.props.onClose());
-  assert.equal(tree.root.findAllByType("MediaViewer").length, 0);
+  let tree, opened;
+  const props = { mediaUrl: preview, mediaType: "video", postId: 1, registerVideo() {}, onVideoLayout() {}, onOpenVideo: url => { opened = url; } };
+  await act(async () => { tree = create(React.createElement(PostMediaView, props)); });
+  assert.equal(tree.root.findAllByType("FeedVideo").length, 0);
+  await act(async () => tree.root.findByProps({ accessibilityLabel: "Play video" }).props.onPress());
+  assert.equal(opened, preview);
+  await act(async () => tree.update(React.createElement(PostMediaView, { ...props, active: true })));
+  assert.equal(tree.root.findByType("FeedVideo").props.url, preview);
+  await act(async () => tree.update(React.createElement(PostMediaView, props)));
+  assert.equal(tree.root.findAllByType("FeedVideo").length, 0);
   await act(async () => tree.unmount());
 });
 
