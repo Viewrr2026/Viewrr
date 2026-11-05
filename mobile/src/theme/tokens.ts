@@ -11,9 +11,9 @@
  * `--background: 20 14% 97%` → #F8F7F6. Nothing is imported from the web
  * package: values are ported by value so /mobile stays an isolated package.
  *
- * Web ships BOTH themes (ThemeProvider follows prefers-color-scheme and offers
- * a toggle), so mobile does the same via useColorScheme. Light is the canonical
- * Viewrr surface; dark is the same brand on the warm near-black ramp.
+ * Web and mobile both start in light mode and offer a dark-mode toggle.
+ * Mobile can also follow the device appearance when explicitly selected.
+ * Light is the canonical Viewrr surface; dark uses the warm near-black ramp.
  */
 
 /* ── Brand ─────────────────────────────────────────────────────────────────

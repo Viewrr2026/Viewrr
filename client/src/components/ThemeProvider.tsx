@@ -4,9 +4,7 @@ type Theme = "dark" | "light";
 const ThemeContext = createContext<{ theme: Theme; toggle: () => void }>({ theme: "light", toggle: () => {} });
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(() =>
-    window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
-  );
+  const [theme, setTheme] = useState<Theme>("light");
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
