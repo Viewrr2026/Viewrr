@@ -76,12 +76,13 @@ test('older or incomplete retention responses render without promising missing e
 async function submitReview(role, serverError) {
   const state = [5, 0, '  Excellent completed project.  ', false, ''];
   let stateIndex = 0;
-  const requests = [], invalidations = [], closed = [];
+  const requests = [], invalidations = [], closed = [], toasts = [];
   const { ReviewModal } = loadSource('client/src/pages/YourWork.tsx', {
     react: { useState: () => {
       const index = stateIndex++;
       return [state[index], (value) => { state[index] = value; }];
     } },
+    '@/hooks/use-toast': { useToast: () => ({ toast: value => toasts.push(value) }) },
     '@/lib/queryClient': {
       apiRequest: async (method, path, body) => {
         requests.push({ method, path, body });
@@ -102,7 +103,7 @@ async function submitReview(role, serverError) {
   const button = find(tree, (node) => typeof node.props?.onClick === 'function' && text(node) === 'Publish review');
   assert.ok(button, 'the review submission control exists');
   await button.props.onClick();
-  return { requests: JSON.parse(JSON.stringify(requests)), invalidations, closed, state };
+  return { requests: JSON.parse(JSON.stringify(requests)), invalidations, closed, state, toasts };
 }
 
 for (const role of ['client', 'freelancer']) {
@@ -114,6 +115,7 @@ for (const role of ['client', 'freelancer']) {
     assert.deepEqual(result.closed, [true]);
     assert.equal(result.invalidations.length, 1);
     assert.equal(result.state[3], false);
+    assert.equal(result.toasts[0]?.title, 'Review published');
   });
 }
 
@@ -123,6 +125,7 @@ test('a server-rejected review stays open and shows the server error', async () 
   assert.equal(result.invalidations.length, 0);
   assert.equal(result.state[3], false);
   assert.equal(result.state[4], 'Reviews are only accepted on completed projects');
+  assert.equal(result.toasts.length, 0);
 });
 
 test('Pro timing choices show both outcomes, the expiry date and the refund explanation', () => {

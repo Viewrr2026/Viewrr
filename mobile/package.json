@@ -5,25 +5,25 @@
   "description": "Viewrr mobile app (React Native + Expo). Isolated package — not part of the root web/server build.",
   "dependencies": {
     "@stripe/stripe-react-native": "0.64.0",
-    "expo": "~57.0.31",
-    "expo-constants": "~57.0.22",
-    "expo-dev-client": "~57.0.20",
+    "expo": "~57.0.32",
+    "expo-constants": "~57.0.23",
+    "expo-dev-client": "~57.0.21",
     "expo-device": "~57.0.2",
     "expo-document-picker": "~57.0.3",
     "expo-font": "~57.0.2",
     "expo-image": "~57.0.5",
-    "expo-image-manipulator": "~57.0.21",
-    "expo-image-picker": "~57.0.20",
+    "expo-image-manipulator": "~57.0.22",
+    "expo-image-picker": "~57.0.21",
     "expo-linear-gradient": "~57.0.2",
     "expo-linking": "~57.0.13",
-    "expo-modules-core": "~57.0.24",
-    "expo-notifications": "~57.0.24",
-    "expo-router": "~57.0.29",
+    "expo-modules-core": "~57.0.25",
+    "expo-notifications": "~57.0.25",
+    "expo-router": "~57.0.30",
     "expo-secure-store": "~57.0.4",
-    "expo-splash-screen": "~57.0.10",
+    "expo-splash-screen": "~57.0.11",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.4",
-    "expo-updates": "~57.0.26",
+    "expo-updates": "~57.0.27",
     "expo-video": "~57.0.5",
     "lucide-react-native": "^1.37.0",
     "react": "19.2.3",
@@ -67,6 +67,6 @@
   "overrides": {
     "shell-quote": "1.11.0",
     "brace-expansion": "5.0.12",
-    "decode-uri-component": "0.5.0"
+    "decode-uri-component": "0.5.1"
   }
 }

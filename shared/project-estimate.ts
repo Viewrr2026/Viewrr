@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { boundedArray } from './bounded-array';
 export const estimateSchema = z.object({
-  lineItems:z.array(z.object({description:z.string().trim().min(1).max(500),quantity:z.number().positive().max(10000),unitPricePence:z.number().int().nonnegative().max(10_000_000)})).min(1).max(100),
+  lineItems:boundedArray(z.object({description:z.string().trim().min(1).max(500),quantity:z.number().positive().max(10000),unitPricePence:z.number().int().nonnegative().max(10_000_000)}),100,1),
   vatPercent:z.number().min(0).max(100).default(0),
   notes:z.string().trim().max(4000).default(''),
 });

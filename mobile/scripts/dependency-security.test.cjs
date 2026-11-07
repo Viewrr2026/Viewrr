@@ -22,6 +22,21 @@ test('malformed percent-encoded queries terminate without hanging navigation', (
   `], { cwd: require('node:path').resolve(__dirname, '..'), timeout: 5000, stdio: 'pipe' });
 });
 
+test('many distinct encoded runs do not stall the router query parser', () => {
+  // A distinct run per pair exercises the quadratic replacement bug that
+  // repeated copies of the same malformed sequence do not catch.
+  execFileSync(process.execPath, ['-e', `
+    const q = require('query-string');
+    const assert = require('node:assert/strict');
+    const runs = Array.from({ length: 32000 }, (_, i) =>
+      '%' + (i >> 8).toString(16).padStart(2, '0') +
+      '%' + (i & 255).toString(16).padStart(2, '0') + 'x');
+    const parsed = q.parse('value=' + runs.join('') + '%zz');
+    assert.equal(typeof parsed.value, 'string');
+    assert.ok(parsed.value.endsWith('%zz'));
+  `], { cwd: require('node:path').resolve(__dirname, '..'), timeout: 5000, stdio: 'pipe' });
+});
+
 test('shell quoting rejects newline tokens after comments', () => {
   const { quote } = require('shell-quote');
   assert.throws(() => quote(['echo', { comment: 'note' }, 'value\nexample']), TypeError);

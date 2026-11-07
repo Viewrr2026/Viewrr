@@ -12,13 +12,14 @@ import { parseVideoUrl } from '../../client/src/lib/videoEmbed';
 test('real browser multipart requests accept full 8 MiB parts and reject the first excess byte', async () => {
   const app = express(); app.use(express.json());
   const parts: number[] = [];
+  const contentsMatch: boolean[] = [];
   app.post('/api/media/uploads/feed', (_req, res) => res.json({ id: 1, partSize: MEDIA_PART_BYTES }));
   app.put('/api/media/uploads/1/parts/:part', (req, res) => {
     chunkUpload.single('file')(req, res, async error => {
       if (error) { res.status(413).json({ error: 'Upload chunk exceeds 8 MB.' }); return; }
       const file = req.file!;
       try {
-        const bytes = await readFile(file.path); assert.ok(bytes.every(byte => byte === 7));
+        const bytes = await readFile(file.path); contentsMatch.push(bytes.every(byte => byte === 7));
         parts.push(bytes.length); res.json({ ok: true });
       } finally { await rm(file.path, { force: true }); }
     });
@@ -31,6 +32,7 @@ test('real browser multipart requests accept full 8 MiB parts and reject the fir
   try {
     const result = await uploadLargeMedia(new File([new Uint8Array(MEDIA_PART_BYTES * 2 + 17).fill(7)], 'film.mp4', { type: 'video/mp4' }), 'feed', {}, () => {});
     assert.equal(result.id, 1); assert.deepEqual(parts, [MEDIA_PART_BYTES, MEDIA_PART_BYTES, 17]);
+    assert.ok(contentsMatch.every(Boolean), 'uploaded chunks retain all file bytes');
     const body = new FormData(); body.append('file', new Blob([new Uint8Array(MEDIA_PART_BYTES + 1)]), 'chunk');
     assert.equal((await realFetch(`${base}/api/media/uploads/1/parts/1`, { method: 'PUT', body })).status, 413);
   } finally { globalThis.fetch = realFetch; server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
