@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boundedArray } from "./bounded-array";
 
 const dateOnly = z
   .string()
@@ -19,26 +20,25 @@ export const customCycleSchema = z.object({
   revisionAllowance: z.number().int().min(0).max(100),
   paymentDays: z.number().int().min(0).max(365),
   earlyStart: z.boolean().optional(),
-  deliverables: z
-    .array(
-      z.object({
-        id: identifier,
-        name: z.string().trim().min(1).max(120),
-        quantity: z.number().int().min(1).max(200),
-        brief: z.string().trim().max(5000).default(""),
-        itemBriefs: z.array(z.string().trim().max(5000)).max(200).optional(),
-      }),
-    )
-    .min(1)
-    .max(50),
+  deliverables: boundedArray(
+    z.object({
+      id: identifier,
+      name: z.string().trim().min(1).max(120),
+      quantity: z.number().int().min(1).max(200),
+      brief: z.string().trim().max(5000).default(""),
+      itemBriefs: boundedArray(z.string().trim().max(5000), 200).optional(),
+    }),
+    50,
+    1,
+  ),
 });
-export const customRetainerSchema = z
+const retainerPlanSchema = z
   .object({
     title: z.string().trim().min(1).max(160),
     startDate: dateOnly,
     endDate: dateOnly,
     gapsAcknowledged: z.boolean().default(false),
-    cycles: z.array(customCycleSchema).min(1).max(52),
+    cycles: boundedArray(customCycleSchema, 52, 1),
   })
   .superRefine((plan, ctx) => {
     const problem = (message: string) =>
@@ -73,6 +73,34 @@ export const customRetainerSchema = z
     if (scheduleGaps(plan).length && !plan.gapsAcknowledged)
       problem("Resolve or acknowledge the unallocated dates");
   });
+
+export const customRetainerSchema = z.preprocess((value, ctx) => {
+  // Each valid plan has at most 2,000 outputs, hence at most 2,000 groups and
+  // item briefs. Check their combined size before nested validation: many
+  // individually bounded arrays must not multiply into unbounded error work.
+  const cycles = (value as { cycles?: unknown } | null)?.cycles;
+  if (!Array.isArray(cycles) || cycles.length > 52) return value;
+  let groups = 0;
+  let briefs = 0;
+  for (const cycle of cycles) {
+    const deliverables = cycle?.deliverables;
+    if (!Array.isArray(deliverables) || deliverables.length > 50) continue;
+    groups += deliverables.length;
+    for (const deliverable of deliverables) {
+      if (Array.isArray(deliverable?.itemBriefs)) briefs += deliverable.itemBriefs.length;
+      if (groups > 2000 || briefs > 2000) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["cycles"],
+          message: "A retainer can contain at most 2,000 individual outputs and item briefs",
+          fatal: true,
+        });
+        return z.NEVER;
+      }
+    }
+  }
+  return value;
+}, retainerPlanSchema);
 export type CustomRetainerPlan = z.infer<typeof customRetainerSchema>;
 export type CustomCyclePlan = z.infer<typeof customCycleSchema>;
 export function nextDate(date: string, days = 1): string {
