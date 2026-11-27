@@ -456,6 +456,7 @@ function ProjectModal({ pw, currentUserId, onClose }: {
       apiRequest("POST", `/api/projects/${pw.project.id}/advance`, { note: noteText, authorId: currentUserId }).then(r => r.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", currentUserId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", pw.project.id, "invoice"] });
       setNoteText("");
     },
   });

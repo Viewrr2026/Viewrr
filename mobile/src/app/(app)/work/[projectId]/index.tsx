@@ -1,8 +1,8 @@
 import { InvoicePaymentButton } from "@/components/work/InvoicePaymentButton";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { profileForUser } from "@/navigation/linkResolver";
 import { Activity, ExternalLink, ListChecks, Package } from "lucide-react-native";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { loadProjectDetail, type ProjectDetailSnapshot } from "@/api/work";
@@ -57,6 +57,11 @@ export default function ProjectDetail() {
     loader,
     { enabled: valid, deps: [id] },
   );
+  const visited = useRef(false);
+  useFocusEffect(useCallback(() => {
+    if (visited.current) reload();
+    visited.current = true;
+  }, [reload]));
 
   if (!valid) {
     return (
@@ -81,14 +86,16 @@ export default function ProjectDetail() {
       <AppHeader title="Project" back />
 
       <DataState resource={resource} onRetry={reload} skeleton="dashboard">
-        {({ detail, plan, deliverables, deliverablesFailed }) => {
+        {({ detail, plan, deliverables, deliverablesFailed, billing }) => {
           const { project, client, freelancer } = detail;
           const party = user ? partyFor(project, user.id) : "observer";
           const legacy = isLegacyProject(project);
           const retainer = isRetainer(project);
 
-          const amount = formatPence(project.agreedAmountPence);
-          const paid = project.paymentStatus === "paid";
+          const invoice = billing?.invoice;
+          const availability = billing?.availability;
+          const amount = formatPence(invoice?.totalPence ?? project.agreedAmountPence);
+          const paid = project.paymentStatus === "paid" || invoice?.status === "paid";
 
           const activeStage = plan?.activeStage ?? null;
           const legacyStage = legacy
@@ -107,7 +114,7 @@ export default function ProjectDetail() {
 
                 <View style={styles.badges}>
                   <StatusBadge status={project.status} />
-                  {project.paymentStatus ? <StatusBadge status={project.paymentStatus} /> : null}
+                  {(paid || retainer || invoice) && project.paymentStatus ? <StatusBadge status={project.paymentStatus} /> : null}
                   {retainer ? <StatusBadge status="retainer" /> : null}
                   <StatusBadge status={project.planningStatus} />
                 </View>
@@ -238,24 +245,32 @@ export default function ProjectDetail() {
 
               {/* ── Payment ──────────────────────────────── */}
               <Card>
-                <CardLabel>Payment</CardLabel>
+                <CardLabel>{retainer || paid ? "Payment" : invoice ? "Invoice" : "Agreed price"}</CardLabel>
                 <View style={styles.paymentRow}>
                   <Text style={[styles.amount, { color: colors.foreground }]}>
                     {amount ?? "—"}
                   </Text>
-                  <StatusBadge status={project.paymentStatus ?? "unpaid"} />
+                  {retainer || paid || invoice ? <StatusBadge status={paid ? "paid" : invoice?.status ?? project.paymentStatus ?? "unpaid"} /> : null}
                 </View>
                 <Text style={[styles.copy, { color: colors.mutedForeground }]}>
-                  {amount === null
-                    ? "No agreed amount is recorded on this project."
+                  {retainer
+                    ? paid ? "Payment has been confirmed." : "Open the retainer to view and pay cycle invoices."
                     : paid
                       ? "Payment has been confirmed."
-                      : party === "client"
-                        ? retainer ? "Open the retainer to view and pay cycle invoices." : "Pay securely with Apple Pay or a card."
-                        : "Your client can pay securely with Apple Pay or a card. Originals unlock after verified payment."}
+                      : !availability
+                        ? "Couldn't check invoice availability. Pull down to try again."
+                        : availability.message ?? (availability.canPay
+                          ? "Pay securely with Apple Pay or a card."
+                          : "Your client can pay the submitted invoice. Originals unlock after verified payment.")}
                 </Text>
-                {!paid && !retainer && party === "client" ? (
+                {!paid && !retainer && party === "client" && availability?.canPay && invoice ? (
                   <InvoicePaymentButton target={{ kind: "project", projectId: project.id }} onChanged={reload} />
+                ) : null}
+                {!retainer && party === "freelancer" && availability?.canIssue ? (
+                  <Pressable accessibilityRole="link" onPress={() => Linking.openURL(WEB_WORK_URL)} style={styles.webLink}>
+                    <Text style={[styles.webLinkLabel, { color: colors.primary }]}>Create invoice on website</Text>
+                    <ExternalLink size={14} color={colors.primary} />
+                  </Pressable>
                 ) : null}
               </Card>
 

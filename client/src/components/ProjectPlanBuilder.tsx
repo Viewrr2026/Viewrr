@@ -708,6 +708,11 @@ export function ProjectTimeline({
   );
 
   const completedCount = stages.filter(s => s.status === "completed" || s.status === "approved").length;
+  const stageState = stages.map(s => `${s.id}:${s.status}`).join("|");
+  useEffect(() => {
+    // Also runs when polling observes a transition made by the other party.
+    qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoice"] });
+  }, [qc, projectId, stageState]);
   const progress = stages.length > 0 ? Math.round((completedCount / stages.length) * 100) : 0;
 
   const submitMutation = useMutation({

@@ -40,7 +40,6 @@ export default function ProjectEstimate({projectId,userId}:{projectId:number;use
       <textarea aria-label="Estimate feedback" placeholder="Requested changes" className="w-full border rounded p-2 bg-background" value={feedback} onChange={e=>setFeedback(e.target.value)}/>
       <div className="flex flex-wrap gap-3 text-sm"><button className="bg-orange-600 text-white rounded px-3 py-2" disabled={busy} onClick={()=>save('accept')}>Accept estimate</button><button disabled={busy||!feedback.trim()} onClick={()=>save('request_changes')}>Request changes</button><button disabled={busy} onClick={()=>save('decline')}>Decline</button></div>
     </div>}
-    {data.invoiced&&<a className="block text-sm underline" href={`#/invoice/${projectId}`}>View final invoice and refund history</a>}
     {data.versions.length>1&&<details><summary className="cursor-pointer text-sm">Estimate history</summary>{data.versions.slice(1).map((v:any)=><div key={v.id} className="border-t py-2 text-sm"><p>Version {v.version} · {v.status} · {money(v.snapshot.totalPence)}</p><p className="whitespace-pre-wrap">{v.snapshot.notes}</p>{v.snapshot.lineItems.map((i:any,n:number)=><p key={n}>{i.quantity} × {i.description} · {money(i.totalPence)}</p>)}</div>)}</details>}
     {error&&<p role="alert" className="text-sm text-red-600">{error}</p>}
   </section>;

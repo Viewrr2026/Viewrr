@@ -3,6 +3,7 @@ import { syncChargeRefunds } from "./payment-refund-sync";
 import { confirmStoredPayment } from "./payment-confirmation";
 import { retainerPool } from "./retainer-v1-db";
 import { fulfilVerifiedProjectPayment } from "./project-payment-verification";
+import { loadProjectInvoiceAvailability } from "./project-invoice-availability";
 /**
  * PRD-007 — Viewrr Payment Domain Services
  *
@@ -225,7 +226,8 @@ export async function createPayment(
   if (project.clientId !== actingUserId)
     throw Object.assign(new Error("You are not authorised to pay this project"), { status: 403 });
 
-  // Check existing attempts with Stripe before offering another charge. Fail closed on lookup errors.
+  // Recover first, then read the invoice so a verified payment cannot leave a
+  // stale unpaid invoice in memory and allow a second charge.
   await recoverProjectPayments(projectId, actingUserId);
 
   // 2. Load and validate invoice (FR-01: amount from DB)
@@ -248,6 +250,10 @@ export async function createPayment(
     throw Object.assign(new Error("Invoice has been cancelled"), { status: 409 });
   if (invoice.totalPence <= 0)
     throw Object.assign(new Error("Invoice amount must be greater than zero"), { status: 400 });
+
+  const availability = await loadProjectInvoiceAvailability(project, invoice, actingUserId);
+  if (!availability.canPay)
+    throw Object.assign(new Error(availability.message ?? "This invoice is not available for payment."), { status: 409 });
 
   // 3. Check for existing pending payment for this invoice (idempotency)
   const existingPayment = await db

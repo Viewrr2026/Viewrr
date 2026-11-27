@@ -12,6 +12,7 @@ import { invitationEstimate } from "../shared/project-estimate";
 import { createCompatibleConnectAccount } from "./connect-account-create";
 import { registerProjectEstimateRoutes } from "./project-estimate-routes";
 import { issueProjectInvoice,requireProjectEstimate,acceptEstimatedInvitation } from "./project-estimates";
+import { loadProjectInvoiceAvailability } from "./project-invoice-availability";
 import { adjustedEarnings } from "./payment-refund-sync";
 import { hasVerifiedProjectPayment, rejectClientPaymentConfirmation } from "./project-payment-verification";
 import { registerCustomRetainerRoutes, guardCustomRetainerLegacy } from "./retainer-v1-routes";
@@ -2773,7 +2774,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (pw.project.status === "completed") {
         return res.status(400).json({ error: "Cannot advance a completed project" });
       }
-      await requireProjectEstimate(projectId, (pw.project.currentStage ?? 0) >= 4);
+      // The legacy final-delivery transition opens invoicing; do not require
+      // an invoice while the project is still at Revisions (stage 4).
+      await requireProjectEstimate(projectId);
       const updated = await storage.advanceProjectStage(projectId, note || "", callerId);
       if (!updated) return res.status(404).json({ error: "Project not found" });
       // Notify the client
@@ -4921,9 +4924,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(403).json({ error: "Only the project client can initiate payment" });
       }
 
-      // Find or create the invoice for this project
+      // Checkout is offered only for an issued final-submission invoice.
       const inv = await storage.getInvoiceByProject(Number(projectId));
-      if (!inv) return res.status(400).json({ error: "No invoice found for this project. Please create an invoice first." });
+      const availability = await loadProjectInvoiceAvailability(pw.project, inv, req.auth!.userId);
+      if (!inv || !availability.canPay) return res.status(409).json({ error: availability.message ?? "This invoice is not available for payment." });
 
       const result = await createPayment(Number(projectId), inv.id, req.auth!.userId);
       res.json({
@@ -5633,17 +5637,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (pw.project.clientId !== req.auth!.userId && pw.project.freelancerId !== req.auth!.userId) {
         return res.status(403).json({ error: 'Not authorised' });
       }
-      if (pw.project.isRetainer !== 1) await recoverProjectPayments(projectId, req.auth!.userId);
       res.set("Cache-Control", "private, no-store");
-      const invoice = await storage.getInvoiceByProject(projectId);
-      if (!invoice) return res.status(404).json({ error: 'No invoice found' });
+      let invoice = await storage.getInvoiceByProject(projectId);
+      let availability = await loadProjectInvoiceAvailability(pw.project, invoice, req.auth!.userId);
+      if (!invoice || !availability.canView) return res.json({ invoice: null, template: null, refunds: [], availability });
+      if (pw.project.isRetainer !== 1) {
+        await recoverProjectPayments(projectId, req.auth!.userId);
+        invoice = await storage.getInvoiceByProject(projectId);
+        availability = await loadProjectInvoiceAvailability(pw.project, invoice, req.auth!.userId);
+      }
+      if (!invoice || !availability.canView) return res.json({ invoice: null, template: null, refunds: [], availability });
       // Also attach the freelancer's template for rendering
       const template = await storage.getInvoiceTemplate(invoice.freelancerId);
       const db = neon(process.env.DATABASE_URL!);
       const refunds = await db`SELECT r.stripe_refund_id,r.amount_pence,r.status,r.created_at
         FROM payment_refunds r JOIN payments p ON p.id=r.payment_id
         WHERE p.invoice_id=${invoice.id} ORDER BY r.created_at DESC`;
-      res.json({ invoice, template: resolveInvoicePresentation(invoice, template).branding, refunds });
+      res.json({ invoice, template: resolveInvoicePresentation(invoice, template).branding, refunds, availability });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -5660,6 +5670,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       if (pw.project.freelancerId !== freelancerId) {
         return res.status(403).json({ error: 'Only the freelancer can send an invoice' });
       }
+      const availability = await loadProjectInvoiceAvailability(pw.project, null, freelancerId);
+      if (!availability.canIssue) return res.status(409).json({ error: "Invoices can be issued at the final delivery stage." });
       const { clientName, clientEmail, projectTitle, lineItems, notes, vatPercent } = req.body;
       if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
         return res.status(400).json({ error: 'lineItems required' });
@@ -5693,8 +5705,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         }
       }
       const invoice = await issueProjectInvoice(projectId,freelancerId,req.body);
-      // Notify client that invoice has been sent
-      try {
+      // A prepared invoice stays with the freelancer until final submission.
+      // Submitting the stage already notifies the client to review that work.
+      if (availability.phase === "submitted" || availability.phase === "retainer") try {
         const freelancerUser = await storage.getUser(freelancerId);
         await notify({
           recipientId: resolvedClientId,

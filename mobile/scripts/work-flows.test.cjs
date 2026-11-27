@@ -93,6 +93,10 @@ function harness(
     "lucide-react-native": new Proxy({}, { get: (_, name) => String(name) }),
     "@/api/client": { api },
     "@/api/trust": { blockUser: () => assert.fail("Unexpected block") },
+    "@/payments/checkout": {
+      checkPendingInvoice: async () => null,
+      payInvoice: async (userId, target) => handler("checkout", "invoice", { userId, target }),
+    },
     "@/config/env": { PUBLIC_SITE_URL: "https://viewrr.test" },
     "@/session/SessionProvider": { useSession: () => ({ user }) },
     "@/components/messages/useDmUnread": { refreshDmUnread: async () => {} },
@@ -125,6 +129,7 @@ function harness(
     "TextField",
     "ActionSheet",
     "ReportDialog",
+    "MediaUpload",
   ]) {
     mocks["@/components/" + name] = { [name]: host(name) };
   }
@@ -137,6 +142,8 @@ function harness(
   for (const name of ["MessageComposer", "MessageBubble"])
     mocks["@/components/messages/" + name] = { [name]: host(name) };
   mocks["@/components/work/ProjectCard"] = { ProjectCard: host("ProjectCard") };
+  for (const name of ["DeliverableRow", "ProgressBar"])
+    mocks["@/components/work/" + name] = { [name]: host(name) };
   function load(path) {
     let filename = resolve(__dirname, "..", path);
     if (!existsSync(filename))
@@ -253,6 +260,69 @@ function project(id, status = "active", paymentStatus = "unpaid") {
     freelancer: wol,
   };
 }
+
+for (const screen of ["index", "deliverables"]) {
+  test(`${screen}: early previews and unavailable invoices never expose checkout`, async (t) => {
+    for (const response of [
+      { invoice: null, availability: { phase: "before_final", canPay: false, message: "Your invoice will be available when the final work is submitted." } },
+      { invoice: null, availability: { phase: "submitted", canPay: false, message: "Final work has been submitted. Waiting for your freelancer’s invoice." } },
+      new Error("Invoice service unavailable"),
+    ]) {
+      const h = harness(async (method, path) => {
+        if (method === "checkout") assert.fail("Early checkout must not be called");
+        if (path === "/api/projects/28") return { ...project(28), project: { ...project(28).project, agreedAmountPence: 100, planningStatus: "confirmed" } };
+        if (path.endsWith("/invoice")) { if (response instanceof Error) throw response; return response; }
+        if (path.endsWith("/plan-summary")) return { stages: [], stageCount: 5, progress: 20, activeStage: { title: "Filming", status: "in_progress" } };
+        if (path.endsWith("/deliverables")) return [{ id: 1, locked: true, label: "Early preview" }];
+        throw new Error("Unexpected " + path);
+      });
+      h.setParams({ projectId: "28" });
+      const { tree } = await mount(t, h, `src/app/(app)/work/[projectId]/${screen}.tsx`);
+      assert.equal(tree.root.findAllByType("Button").filter(n => n.props.label === "Pay invoice").length, 0);
+      assert.match(text(tree), response instanceof Error ? /Couldn't check invoice availability/ : new RegExp(response.availability.message.replace(/[.]/g, "\\.")));
+      if (screen === "index") {
+        assert.match(text(tree), /Agreed price/);
+        assert.equal(tree.root.findAllByType("StatusBadge").filter(n => n.props.status === "unpaid").length, 0);
+      }
+    }
+  });
+
+  test(`${screen}: submitted invoice opens checkout, and requested changes remove it on refresh`, async (t) => {
+    let bill = { invoice: { id: 7, status: "sent", totalPence: 1250 }, availability: { phase: "submitted", canPay: true, canView: true, message: null } };
+    let checkedOut;
+    const h = harness(async (method, path, payload) => {
+      if (method === "checkout") { checkedOut = payload; return "cancelled"; }
+      if (path === "/api/projects/28") return { ...project(28), project: { ...project(28).project, agreedAmountPence: 100, planningStatus: "confirmed" } };
+      if (path.endsWith("/invoice")) return bill;
+      if (path.endsWith("/plan-summary")) return { stages: [], stageCount: 5, progress: 80, activeStage: { title: "Final delivery", status: "awaiting_client" } };
+      if (path.endsWith("/deliverables")) return [{ id: 1, locked: true, label: "Final preview" }];
+      throw new Error("Unexpected " + path);
+    });
+    h.setParams({ projectId: "28" });
+    const { tree } = await mount(t, h, `src/app/(app)/work/[projectId]/${screen}.tsx`);
+    if (screen === "index") assert.match(text(tree), /£12.50/);
+    await press(tree, "Pay invoice");
+    assert.deepEqual(checkedOut, { userId: 8, target: { kind: "project", projectId: 28 } });
+    bill = { ...bill, availability: { ...bill.availability, phase: "changes_requested", canPay: false, message: "Changes have been requested. Payment will be available when the final work is resubmitted." } };
+    await act(async () => tree.root.findByType("Screen").props.onRefresh());
+    assert.equal(tree.root.findAllByType("Button").filter(n => n.props.label === "Pay invoice").length, 0);
+    assert.match(text(tree), /final work is resubmitted/);
+  });
+}
+
+test("retainer overview keeps cycle billing and does not request a one-off invoice", async (t) => {
+  const h = harness(async (_method, path) => {
+    if (path === "/api/projects/28") return { ...project(28), project: { ...project(28).project, isRetainer: 1, agreedAmountPence: 100 } };
+    if (path.endsWith("/invoice")) assert.fail("Retainers use cycle invoices");
+    if (path.endsWith("/plan-summary")) return null;
+    if (path.endsWith("/deliverables")) return [];
+    throw new Error("Unexpected " + path);
+  });
+  h.setParams({ projectId: "28" });
+  const { tree } = await mount(t, h, "src/app/(app)/work/[projectId]/index.tsx");
+  assert.match(text(tree), /Open the retainer to view and pay cycle invoices/);
+  assert.equal(tree.root.findAllByType("Button").filter(n => n.props.label === "Pay invoice").length, 0);
+});
 
 test("WOL conversation uses account identity for header, composer, profile and send destination", async (t) => {
   const h = harness(async (method, path, payload) => {

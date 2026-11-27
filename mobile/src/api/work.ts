@@ -395,6 +395,19 @@ export type ProjectDetailSnapshot = {
   deliverables: Deliverable[];
   /** Null when deliverables could not be read — distinct from "none exist". */
   deliverablesFailed: boolean;
+  /** Server-owned invoice visibility and checkout eligibility; null on a failed read. */
+  billing: ProjectBilling | null;
+};
+
+export type ProjectBilling = {
+  invoice: { id: number; status: string; totalPence: number } | null;
+  availability: {
+    phase: "before_final" | "final" | "submitted" | "changes_requested" | "closed" | "retainer";
+    canIssue: boolean;
+    canView: boolean;
+    canPay: boolean;
+    message: string | null;
+  };
 };
 
 export async function loadProjectDetail(
@@ -403,9 +416,12 @@ export async function loadProjectDetail(
 ): Promise<ProjectDetailSnapshot> {
   const detail = await loadProject(projectId, signal);
 
-  const [plan, deliverables] = await Promise.all([
+  const [plan, deliverables, billing] = await Promise.all([
     optional(loadPlanSummary(projectId, signal), null as PlanSummary | null),
     optional(loadDeliverables(projectId, signal), null as Deliverable[] | null),
+    detail.project.isRetainer
+      ? Promise.resolve(null)
+      : optional(api.get<ProjectBilling>(`/api/projects/${projectId}/invoice`, { signal }), null as ProjectBilling | null),
   ]);
 
   return {
@@ -413,6 +429,7 @@ export async function loadProjectDetail(
     plan,
     deliverables: deliverables ?? [],
     deliverablesFailed: deliverables === null,
+    billing,
   };
 }
 
