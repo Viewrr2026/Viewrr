@@ -9,11 +9,12 @@ process.env.NODE_ENV='test';
 before(async()=>{
   await db.exec(await readFile(new URL('./fixtures/retainer-base.sql',import.meta.url),'utf8'));
   await db.exec(`CREATE TABLE project_invitations(id SERIAL PRIMARY KEY,sender_id INTEGER,recipient_id INTEGER,title TEXT,description TEXT,category TEXT,budget TEXT,status TEXT DEFAULT 'pending',is_retainer INTEGER DEFAULT 0);
-    ALTER TABLE projects ADD COLUMN brief_category TEXT,ADD COLUMN planning_status TEXT,ADD COLUMN agreed_amount_pence INTEGER;`);
+    ALTER TABLE projects ADD COLUMN brief_category TEXT,ADD COLUMN planning_status TEXT DEFAULT 'legacy',ADD COLUMN agreed_amount_pence INTEGER;`);
   await db.exec(await readFile(new URL('../../migrations/0015_project_estimates.sql',import.meta.url),'utf8'));
   await db.exec(await readFile(new URL('../../migrations/0020_invoice_customization.sql',import.meta.url),'utf8'));
   await db.exec(`INSERT INTO users(id,name,email,role) VALUES(1,'Client','client@example.test','client'),(2,'Freelancer','freelancer@example.test','freelancer'),(3,'Stranger','stranger@example.test','client');
     INSERT INTO projects(id,client_id,freelancer_id,title,created_at) VALUES(1,1,2,'Estimate test','2026-09-30'),(2,1,2,'Legacy project','2026-09-30')`);
+  await db.exec('UPDATE projects SET current_stage=5');
   setRetainerTestDatabase({query:async(sql,params)=>await db.query(sql,params) as any,transaction:fn=>db.transaction(tx=>fn({query:async(sql,params)=>await tx.query(sql,params) as any}))});
 });
 after(async()=>{setRetainerTestDatabase(undefined);await db.close();});
@@ -59,7 +60,7 @@ test('accepting an invitation records the initial estimate atomically and replay
 });
 
  test('final invoice permits new wording and itemisation at the agreed total, without changing the estimate',async()=>{
-  await db.exec("INSERT INTO projects(id,client_id,freelancer_id,title,created_at) VALUES(30,1,2,'Same price','2026-10-01')");
+  await db.exec("INSERT INTO projects(id,client_id,freelancer_id,title,current_stage,created_at) VALUES(30,1,2,'Same price',5,'2026-10-01')");
   const original={lineItems:[{description:'Readiness check',quantity:1,unitPricePence:1000}],vatPercent:0};
   await proposeEstimate(30,2,0,original);
   await reviewEstimate(30,1,1,'accept','');

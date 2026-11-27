@@ -1,5 +1,6 @@
 import { InvoiceDocument } from "@/components/invoice/InvoiceDocument";
 import { resolveInvoicePresentation } from "@shared/invoice-presentation";
+import type { InvoiceAvailability } from "@shared/project-invoice-availability";
 import { useState } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,7 +25,7 @@ export default function Invoice() {
   const queryClient = useQueryClient();
   const [stripeOpen, setStripeOpen] = useState(false);
 
-  const { data, isLoading, error } = useQuery<{ invoice: any; template: any; refunds: any[] }>({
+  const { data, isLoading, error } = useQuery<{ invoice: any; template: any; refunds: any[]; availability: InvoiceAvailability }>({
     queryKey: ['/api/projects', projectId, 'invoice'],
     queryFn: () => apiRequest('GET', `/api/projects/${projectId}/invoice`).then(r => r.json()),
     enabled: !!projectId,
@@ -41,7 +42,8 @@ export default function Invoice() {
   if (error || !data?.invoice) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-muted-foreground">
-        <p className="text-lg font-semibold">Invoice not found</p>
+        <p className="text-lg font-semibold">{error ? "Couldn't load invoice" : "Invoice not available yet"}</p>
+        {!error && data?.availability?.message && <p>{data.availability.message}</p>}
         <Button variant="outline" onClick={() => window.history.back()}>Back to dashboard</Button>
       </div>
     );
@@ -76,7 +78,7 @@ export default function Invoice() {
           <ArrowLeft size={14} /> Back
         </Button>
         <div className="flex items-center gap-2">
-          {isClient && !isPaid && (
+          {isClient && data.availability?.canPay && (
             <Button
               size="sm"
               className="gap-2 text-white font-semibold"
@@ -98,6 +100,8 @@ export default function Invoice() {
         </div>
       </div>
 
+      {data.availability?.message && <p className="no-print text-center text-sm text-muted-foreground my-4">{data.availability.message}</p>}
+
       {!!data.refunds?.length && <section className="no-print mx-auto max-w-3xl p-5 border rounded-xl my-4" aria-label="Refund history">
         <h2 className="font-semibold">Refund history</h2>
         <p className="text-sm text-muted-foreground">The original invoice is preserved. Refunds are recorded separately.</p>
@@ -114,7 +118,7 @@ export default function Invoice() {
       </div>
 
       <StripePaymentDialog
-        open={stripeOpen}
+        open={stripeOpen && !!data.availability?.canPay}
         onClose={() => setStripeOpen(false)}
         projectId={invoice.projectId}
         projectTitle={invoice.projectTitle || 'Invoice'}

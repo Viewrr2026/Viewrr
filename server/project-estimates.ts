@@ -1,5 +1,6 @@
 import { invoiceIssueDetailsSchema, normalizeInvoiceBranding, createInvoicePresentation } from "../shared/invoice-presentation";
 import { calculateEstimate } from '../shared/project-estimate';
+import { loadProjectInvoiceAvailability } from './project-invoice-availability';
 import { retainerPool,retainerTransaction,retainerError,type RetainerDb } from './retainer-v1-db';
 async function project(db:RetainerDb,id:number,userId:number) {
   const {rows:[p]}=await db.query('SELECT * FROM projects WHERE id=$1 FOR UPDATE',[id]);
@@ -51,6 +52,14 @@ export async function issueProjectInvoice(id:number,freelancerId:number,raw:any)
     if(p.freelancer_id!==freelancerId) retainerError('Only the freelancer can issue the invoice',403);
     const {rows:[existing]}=await db.query('SELECT * FROM invoices WHERE project_id=$1 ORDER BY id LIMIT 1',[id]);
     if(existing) retainerError('This project already has an invoice. Open the existing invoice.');
+    // Stage transitions take this same project lock. Recheck here so an old
+    // composer cannot issue an invoice after the final stage has changed.
+    const availability = await loadProjectInvoiceAvailability({
+      id: p.id, clientId: p.client_id, freelancerId: p.freelancer_id,
+      status: p.status, planningStatus: p.planning_status, currentStage: p.current_stage,
+      isRetainer: p.is_retainer, paymentStatus: p.payment_status, deletedAt: p.deleted_at,
+    }, null, freelancerId, db);
+    if (!availability.canIssue) retainerError('Invoices can be issued at the final delivery stage.');
     const {rows:[latest]}=await db.query('SELECT * FROM project_estimate_versions WHERE project_id=$1 ORDER BY version DESC LIMIT 1',[id]);
     if(latest&&latest.status!=='accepted') retainerError('Both parties must agree the latest estimate before invoicing.');
     const agreed=latest ? calculateEstimate(latest.snapshot) : null;

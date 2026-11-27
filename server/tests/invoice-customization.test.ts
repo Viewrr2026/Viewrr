@@ -12,13 +12,14 @@ const branding=invoiceBrandingSchema.parse({businessName:'Example Studio',busine
 before(async()=>{
   process.env.NODE_ENV='test';
   await db.exec(await readFile(new URL('./fixtures/retainer-base.sql',import.meta.url),'utf8'));
-  await db.exec(`ALTER TABLE projects ADD COLUMN agreed_amount_pence INTEGER;
+  await db.exec(`ALTER TABLE projects ADD COLUMN agreed_amount_pence INTEGER, ADD COLUMN planning_status TEXT DEFAULT 'legacy';
     CREATE TABLE project_invitations(id SERIAL PRIMARY KEY);
     INSERT INTO users(id,name,email,role) VALUES(1,'Client','client@example.com','client'),(2,'Creator','creator@example.com','freelancer'),(3,'Other freelancer','other@example.com','freelancer');
     INSERT INTO projects(id,client_id,freelancer_id,title,created_at) SELECT n,1,2,'Project '||n,'2026-10-29' FROM generate_series(100,110) n;
     INSERT INTO projects(id,client_id,freelancer_id,title,created_at) VALUES(120,1,3,'Other project','2026-10-29');
     INSERT INTO invoice_templates(user_id,business_name,business_email) VALUES(2,'Old studio','old@example.com');
     INSERT INTO invoices(invoice_number,project_id,freelancer_id,client_id,project_title,issued_at,created_at) VALUES('OLD-1',99,2,1,'Old project','2026-10-01','2026-10-01');`);
+  await db.exec('UPDATE projects SET current_stage=5');
   await db.exec(await readFile(new URL('../../migrations/0015_project_estimates.sql',import.meta.url),'utf8'));
   await db.exec(await migration());
   setRetainerTestDatabase({query:async(sql,params)=>await db.query(sql,params) as any,transaction:fn=>db.transaction(tx=>fn({query:async(sql,params)=>await tx.query(sql,params) as any}))});
@@ -66,6 +67,14 @@ test('legacy budget cap remains enforced on the server',async()=>{
   await db.exec('UPDATE projects SET agreed_amount_pence=80000 WHERE id=103');
   await assert.rejects(issueProjectInvoice(103,2,{lineItems:[{description:'Over budget',quantity:1,unitPricePence:90000}]}),/exceeds the agreed budget/);
   const invoice:any=await issueProjectInvoice(103,2,terms);assert.equal(invoice.subtotalPence,80000);
+});
+test('invoice issuance rejects early stages without writing an invoice, then succeeds at final delivery',async()=>{
+  await db.exec('UPDATE projects SET current_stage=4 WHERE id=104');
+  await assert.rejects(issueProjectInvoice(104,2,terms),/final delivery stage/);
+  assert.equal((await db.query('SELECT id FROM invoices WHERE project_id=104')).rows.length,0);
+  await db.exec('UPDATE projects SET current_stage=5 WHERE id=104');
+  const invoice:any=await issueProjectInvoice(104,2,terms);
+  assert.equal(invoice.status,'sent');
 });
 test('invalid presentation values are rejected and unknown identity fields stripped',()=>{
   for(const bad of [{logoUrl:'javascript:alert(1)'},{accentColor:'url(evil)'},{businessName:'x'.repeat(201)},{customization:{font:'evil'}},{customization:{invoicePrefix:'x\nDROP TABLE'}}]) assert.equal(invoiceBrandingSchema.safeParse(bad).success,false);

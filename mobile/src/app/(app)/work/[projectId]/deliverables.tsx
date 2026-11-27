@@ -2,8 +2,8 @@ import { InvoicePaymentButton } from "@/components/work/InvoicePaymentButton";
 import { MediaUpload } from "@/components/MediaUpload";
 import { api } from "@/api/client";
 import { Button } from "@/components/Button";
-import { useLocalSearchParams } from "expo-router";
-import { useCallback, useState } from "react";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import { Alert, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { loadProjectDetail, type ProjectDetailSnapshot } from "@/api/work";
@@ -48,6 +48,11 @@ export default function ProjectDeliverables() {
     loader,
     { enabled: valid, deps: [id] },
   );
+  const visited = useRef(false);
+  useFocusEffect(useCallback(() => {
+    if (visited.current) reload();
+    visited.current = true;
+  }, [reload]));
 
   if (!valid) {
     return (
@@ -72,7 +77,7 @@ export default function ProjectDeliverables() {
       <AppHeader title="Deliverables" back />
 
       <DataState resource={resource} onRetry={reload} skeleton="list" skeletonRows={3}>
-        {({ detail, deliverables, deliverablesFailed }) => {
+        {({ detail, deliverables, deliverablesFailed, billing }) => {
           const project = detail.project;
           const party = user ? partyFor(project, user.id) : "observer";
           const locked = deliverables.filter((item) => item.locked);
@@ -108,7 +113,12 @@ export default function ProjectDeliverables() {
                       ? "Review watermarked previews here. Original files unlock after Viewrr verifies payment."
                       : "Your client can review watermarked previews. Originals unlock after verified payment."}
                   </Text>
-                  {party === "client" && !project.isRetainer ? (
+                  {!project.isRetainer && !billing?.availability?.canPay ? (
+                    <Text style={[styles.copy, { color: colors.foreground }]}>
+                      {billing?.availability?.message ?? "Couldn't check invoice availability. Pull down to try again."}
+                    </Text>
+                  ) : null}
+                  {party === "client" && !project.isRetainer && billing?.availability?.canPay && billing.invoice ? (
                     <InvoicePaymentButton target={{ kind: "project", projectId: project.id }} onChanged={reload} />
                   ) : null}
                 </Card>

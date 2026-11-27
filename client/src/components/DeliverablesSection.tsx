@@ -1,4 +1,5 @@
 import { InvoiceComposer } from "@/components/invoice/InvoiceComposer";
+import type { InvoiceAvailability } from "@shared/project-invoice-availability";
 import UploadedMedia from "@/components/UploadedMedia";
 import VideoEmbed from "@/components/VideoEmbed";
 import { parseVideoUrl } from "@/lib/videoEmbed";
@@ -639,17 +640,18 @@ export default function DeliverablesSection({
   // drift from what the server actually withheld.
   const hasLockedFiles = deliverables.some(d => d.locked === true || !d.url);
 
-  const { data: existingInvoice } = useQuery<{ invoice: any; template: any; refunds?: { status: string; amount_pence: number }[] } | null>({
+  const { data: invoiceResponse, isError: invoiceFailed, isPending: invoiceLoading } = useQuery<{ invoice: any; template: any; refunds?: { status: string; amount_pence: number }[]; availability: InvoiceAvailability }>({
     queryKey: ['/api/projects', projectId, 'invoice'],
     queryFn: async () => {
       const res = await apiRequest('GET', `/api/projects/${projectId}/invoice`);
-      if (res.status === 404) return null;
       return res.json();
     },
     retry: false,
     staleTime: 0,
     refetchOnMount: true,
   });
+  const existingInvoice = invoiceResponse?.invoice ? invoiceResponse : null;
+  const availability = invoiceFailed ? undefined : invoiceResponse?.availability;
   const refundedPence = (existingInvoice?.refunds ?? [])
     .filter(refund => refund.status === "succeeded")
     .reduce((sum, refund) => sum + Number(refund.amount_pence), 0);
@@ -657,8 +659,8 @@ export default function DeliverablesSection({
   const fullyRefunded = invoiceTotal > 0 && refundedPence >= invoiceTotal;
 
   useEffect(() => {
-    if (fullyRefunded) setPaymentDialogOpen(false);
-  }, [fullyRefunded]);
+    if (fullyRefunded || !availability?.canPay) setPaymentDialogOpen(false);
+  }, [fullyRefunded, availability?.canPay]);
 
   const addMutation = useMutation({
     mutationFn: async () => {
@@ -681,8 +683,8 @@ export default function DeliverablesSection({
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "deliverables"] });
       setUrlInput(""); setPreviewUploadUrl(""); setLabelInput(LABEL_OPTIONS[0]); setCustomLabel("");
       setShowAdd(false); setUrlError("");
-      // Auto-open Send Invoice dialog after sharing work
-      if (isFreelancer && !existingInvoice) {
+      // Early previews do not open invoicing; only the final stage does.
+      if (isFreelancer && availability?.canIssue) {
         setInvoiceOpen(true);
       }
     },
@@ -738,8 +740,10 @@ export default function DeliverablesSection({
           )}
         </div>
 
-        {isFreelancer && !existingInvoice && <Button variant="outline" size="sm" onClick={() => setInvoiceOpen(true)}><FileText size={14} /> Create invoice</Button>}
+        {isFreelancer && availability?.canIssue && <Button variant="outline" size="sm" onClick={() => setInvoiceOpen(true)}><FileText size={14} /> Create invoice</Button>}
         {existingInvoice && <Button variant="outline" size="sm" onClick={() => setLocation(`/invoice/${projectId}`)}><FileText size={14} /> View invoice and refund history</Button>}
+        {!availability && !invoiceLoading && <p className="text-sm text-muted-foreground">Couldn't check invoice availability. <button className="underline" onClick={() => queryClient.invalidateQueries({ queryKey: ['/api/projects', projectId, 'invoice'] })}>Try again</button></p>}
+        {availability?.message && <p className="text-sm text-muted-foreground">{availability.message}</p>}
         {fullyRefunded && (
           <div className="rounded-2xl p-4 border border-border bg-secondary/30" role="status">
             <p className="text-sm font-semibold">Fully refunded — delivery access withdrawn.</p>
@@ -757,13 +761,13 @@ export default function DeliverablesSection({
                 <Lock size={18} style={{ color: "#FF5A1F" }} />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold">Work delivered — payment required</p>
+                <p className="text-sm font-semibold">{availability?.canPay ? "Final work submitted — invoice ready" : "Preview access"}</p>
                 <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                  Pay <span className="font-medium text-foreground">{freelancerName}</span> to remove the watermark and receive your files.
+                  Review the attached previews. Originals unlock after verified payment of the final invoice.
                 </p>
               </div>
             </div>
-            {existingInvoice ? (
+            {existingInvoice && availability?.canPay ? (
               <div className="flex flex-col gap-2 px-1">
                 <Button
                   className="w-full text-white rounded-xl gap-2 font-semibold text-sm h-10"
@@ -775,20 +779,12 @@ export default function DeliverablesSection({
                 </Button>
                 <button
                   className="text-xs text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
-                  disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
+                  onClick={() => setPaymentDialogOpen(true)}
                 >
                   Open payment options
                 </button>
               </div>
-            ) : (
-              <Button
-                className="w-full text-white rounded-xl gap-2 font-semibold text-sm h-10"
-                style={{ background: "linear-gradient(135deg,#FF5A1F,#FF8C42)" }}
-                disabled={!existingInvoice} onClick={() => setPaymentDialogOpen(true)}
-              >
-                <FileText size={14} /> Waiting for the freelancer’s invoice
-              </Button>
-            )}
+            ) : null}
           </div>
         )}
 
@@ -989,7 +985,7 @@ export default function DeliverablesSection({
 
       {/* ── Stripe payment dialog ─────────────────────────────────────────── */}
       <StripePaymentDialog
-        open={paymentDialogOpen && !fullyRefunded}
+        open={paymentDialogOpen && !fullyRefunded && !!availability?.canPay}
         projectId={projectId}
         projectTitle={projectTitle}
         freelancerName={freelancerName}
@@ -1003,9 +999,9 @@ export default function DeliverablesSection({
         }}
       />
 
-      {isFreelancer && <InvoiceComposer open={invoiceOpen} onClose={() => setInvoiceOpen(false)}
+      {isFreelancer && <InvoiceComposer open={invoiceOpen && !!availability?.canIssue} onClose={() => setInvoiceOpen(false)}
         projectId={projectId} projectTitle={projectTitle} clientName={clientNameProp} clientEmail={clientEmailProp} agreedAmountPence={agreedAmountPence}
-        onSent={() => {setInvoiceOpen(false);toast({title:'Invoice sent',description:'Your client can now view and pay this invoice.'});setLocation(`/invoice/${projectId}`);}} />}
+        onSent={() => {setInvoiceOpen(false);toast({title:'Invoice created',description:availability?.phase === 'final' ? 'Submit the final work to make it available to your client.' : 'The invoice is saved. Your client can pay once final work is submitted.'});setLocation(`/invoice/${projectId}`);}} />}
     </>
   );
 }

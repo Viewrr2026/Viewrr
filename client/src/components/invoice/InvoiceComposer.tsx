@@ -73,5 +73,6 @@ function ComposerForm(props:Props&{template:any;latest:any;name:string}) {
     {tab==='branding'&&<InvoiceBrandingFields value={branding} onChange={setBranding} onUploadBusy={setUploadBusy}/>}
     {validation&&<p className="text-sm text-muted-foreground mt-4" role="status">{validation}</p>}{error&&<p role="alert" className="invoice-editor-error">{error}</p>}
     </div><div className="invoice-editor-preview"><h3>Live preview</h3><InvoiceDocument invoice={preview} presentation={presentation} preview/></div></div>
-    <div className="invoice-editor-footer"><Button variant="outline" onClick={props.onClose} disabled={sending}>Cancel</Button><Button onClick={send} disabled={sending||uploadBusy||!!validation}>{sending?'Sending…':'Send invoice'}</Button></div></>;
+    <p className="text-sm text-muted-foreground">Your client can view and pay this invoice once the final work has been submitted.</p>
+    <div className="invoice-editor-footer"><Button variant="outline" onClick={props.onClose} disabled={sending}>Cancel</Button><Button onClick={send} disabled={sending||uploadBusy||!!validation}>{sending?'Creating…':'Create invoice'}</Button></div></>;
 }
